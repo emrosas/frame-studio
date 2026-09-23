@@ -1,0 +1,551 @@
+:root {
+  color-scheme: dark;
+  --bg: #111213;
+  --stage: #0b0c0d;
+  --bar: #18191b;
+  --line: #2a2c2f;
+  --text: #e4e5e7;
+  --muted: #8b8f96;
+  --faint: #5d6168;
+  --accent: #f2f3f5;
+  --track: #34373b;
+  /* Selection accent. overlay.ts draws the canvas highlight in the same colour. */
+  --pick: #4da3ff;
+  --pick-soft: rgba(77, 163, 255, 0.3);
+  --pick-ink: #06121f;
+  --error-bg: rgba(38, 14, 16, 0.94);
+  --error-line: #7a2b31;
+  --error-text: #ffc9cc;
+  --mono: ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace;
+  font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  overflow: hidden;
+}
+
+#app {
+  height: 100%;
+}
+
+.viewer {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+/* ---- stage ---- */
+
+.stage {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  overflow: hidden;
+  background: var(--stage);
+}
+
+.stage-canvas {
+  display: block;
+  /* Checkerboard shows through where a scene has no background. */
+  background-color: #1d1f21;
+  background-image:
+    linear-gradient(45deg, #26282b 25%, transparent 25%, transparent 75%, #26282b 75%),
+    linear-gradient(45deg, #26282b 25%, transparent 25%, transparent 75%, #26282b 75%);
+  background-size: 16px 16px;
+  background-position: 0 0, 8px 8px;
+  box-shadow:
+    0 0 0 1px var(--line),
+    0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+.stage-canvas[hidden] {
+  display: none;
+}
+
+.stage-canvas.is-over-layer {
+  cursor: pointer;
+}
+
+/* The canvas, the highlight overlay and the id tags share one box. */
+.stage-frame {
+  position: relative;
+  line-height: 0;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.stage-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  pointer-events: none;
+}
+
+.stage-tag {
+  position: absolute;
+  z-index: 1;
+  max-width: 40ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 1px 6px;
+  border-radius: 3px;
+  font: 500 11px/16px var(--mono);
+  white-space: nowrap;
+  pointer-events: none;
+  /* Above the shape's top edge by default. */
+  transform: translateY(calc(-100% - 4px));
+}
+
+.stage-tag.is-inside {
+  transform: translate(4px, 4px);
+}
+
+.stage-tag.is-selected {
+  background: var(--pick);
+  color: var(--pick-ink);
+}
+
+.stage-tag.is-hover {
+  background: rgba(17, 18, 19, 0.88);
+  color: #cfe5ff;
+  box-shadow: inset 0 0 0 1px rgba(207, 229, 255, 0.45);
+}
+
+.stage-tag[hidden] {
+  display: none;
+}
+
+/* ---- error panel ---- */
+
+.error-panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  max-height: calc(100% - 24px);
+  overflow: auto;
+  padding: 12px 14px;
+  background: var(--error-bg);
+  border: 1px solid var(--error-line);
+  border-radius: 6px;
+  color: var(--error-text);
+  font: 12px/1.5 var(--mono);
+  z-index: 2;
+}
+
+.error-panel[hidden] {
+  display: none;
+}
+
+.error-block + .error-block {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--error-line);
+}
+
+.error-panel h2 {
+  margin: 0 0 6px;
+  font: 600 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif;
+  color: #fff;
+}
+
+.error-panel ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.error-panel li {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.error-panel pre {
+  margin: 8px 0 0;
+  padding: 8px;
+  background: rgba(0, 0, 0, 0.35);
+  border-radius: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #e9b7ba;
+  max-height: 16em;
+  overflow: auto;
+}
+
+/* ---- controls ---- */
+
+.controls {
+  flex: 0 0 auto;
+  background: var(--bar);
+  border-top: 1px solid var(--line);
+  padding: 10px 16px 8px;
+  user-select: none;
+}
+
+.controls-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.controls-row + .controls-row {
+  margin-top: 6px;
+}
+
+.play-button {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #222427;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.play-button:hover:not(:disabled) {
+  background: #2b2e32;
+}
+
+.play-button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.play-button svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
+.timecode,
+.frame-readout,
+.fps-readout {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.timecode {
+  font-size: 15px;
+  letter-spacing: 0.02em;
+  color: var(--accent);
+}
+
+.frame-readout {
+  color: var(--muted);
+  min-width: 13ch;
+  text-align: right;
+}
+
+.fps-readout {
+  color: var(--muted);
+}
+
+/* ---- scrubber ---- */
+
+.scrubber-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 80px;
+  display: flex;
+  align-items: center;
+}
+
+.scrubber {
+  --progress: 0%;
+  position: relative;
+  z-index: 1;
+  flex: 1 1 auto;
+  min-width: 80px;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  -webkit-appearance: none;
+  cursor: pointer;
+}
+
+.scrubber:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.scrubber::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 2px;
+  background: linear-gradient(to right, var(--accent) var(--progress), var(--track) var(--progress));
+}
+
+.scrubber::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  margin-top: -4px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+}
+
+.scrubber::-moz-range-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--track);
+}
+
+.scrubber::-moz-range-progress {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.scrubber::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+}
+
+.scrubber:focus-visible {
+  outline: 1px solid var(--muted);
+  outline-offset: 4px;
+  border-radius: 2px;
+}
+
+/*
+ * The frame range behind the scrubber track. --in and --out are fractions of
+ * the thumb's travel (frame / (frameCount - 1)), half a frame out from the in
+ * and out frames; the thumb is 12px wide, so its centre travels 100% - 12px.
+ */
+.range-band {
+  --in: 0;
+  --out: 1;
+  position: absolute;
+  top: 50%;
+  height: 12px;
+  left: clamp(0px, calc(6px + (100% - 12px) * var(--in)), 100%);
+  right: clamp(0px, calc(6px + (100% - 12px) * (1 - var(--out))), 100%);
+  transform: translateY(-50%);
+  background: var(--pick-soft);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.range-band[hidden] {
+  display: none;
+}
+
+.range-mark {
+  position: absolute;
+  top: -3px;
+  bottom: -3px;
+  width: 4px;
+  border: 2px solid var(--pick);
+}
+
+.range-mark.is-in {
+  left: 0;
+  border-right: none;
+}
+
+.range-mark.is-out {
+  right: 0;
+  border-left: none;
+}
+
+/* ---- info row ---- */
+
+.scene-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.scene-select {
+  font: inherit;
+  color: var(--text);
+  background: #222427;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 6px;
+  max-width: 28ch;
+}
+
+.spacer {
+  flex: 1 1 auto;
+}
+
+.hint {
+  color: var(--faint);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hint .sep {
+  margin: 0 4px;
+}
+
+.hint kbd {
+  display: inline-block;
+  min-width: 1.6em;
+  padding: 0 4px;
+  margin: 0 1px;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  font: 11px/1.5 var(--mono);
+  color: var(--muted);
+  text-align: center;
+}
+
+/* ---- selection bar ---- */
+
+.selection-bar {
+  flex-wrap: wrap;
+  row-gap: 4px;
+  column-gap: 14px;
+  min-height: 24px;
+}
+
+.selection-bar.is-disabled .sel-group {
+  opacity: 0.5;
+}
+
+.sel-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.sel-group .label {
+  color: var(--muted);
+}
+
+.sel-value {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--text);
+}
+
+.sel-layer {
+  max-width: 36ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--pick);
+}
+
+.sel-value.is-empty {
+  color: var(--faint);
+}
+
+.sel-timecodes,
+.sel-count {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  color: var(--muted);
+}
+
+.sel-timecodes[hidden] {
+  display: none;
+}
+
+.sel-field {
+  width: 9ch;
+  font: 12px/1.4 var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  background: #222427;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 6px;
+}
+
+.sel-field::placeholder {
+  color: var(--faint);
+}
+
+.sel-field:focus {
+  outline: none;
+  border-color: var(--pick);
+}
+
+.sel-field[aria-invalid='true'] {
+  border-color: #c9545c;
+}
+
+.sel-clear {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.sel-clear:hover:not(:disabled) {
+  background: #2b2e32;
+  color: var(--text);
+}
+
+.sel-clear:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.sel-clear svg {
+  width: 10px;
+  height: 10px;
+  fill: currentColor;
+}
+
+.sel-error {
+  color: var(--error-text);
+  font-size: 12px;
+}
+
+.sel-notice {
+  color: #f0c674;
+  font-size: 12px;
+}
+
+.sel-error[hidden],
+.sel-notice[hidden] {
+  display: none;
+}
+
+/* A message takes the hint's place, so the row does not wrap and resize the stage. */
+.selection-bar:has(.sel-error:not([hidden])) .hint,
+.selection-bar:has(.sel-notice:not([hidden])) .hint {
+  display: none;
+}
+
+@media (max-width: 720px) {
+  .hint {
+    display: none;
+  }
+}

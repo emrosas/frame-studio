@@ -1,0 +1,29 @@
+{
+  "id": "hello",
+  "fps": 24,
+  "duration": 3,
+  "size": [1280, 720],
+  "seed": 7,
+  "background": { "rig": "paper" },
+  "layers": [
+    {
+      "id": "ball",
+      "rig": "circle",
+      "params": { "x": 640, "radius": 60, "fill": "#e05a4f" },
+      "tracks": [
+        {
+          "param": "y",
+          "keys": [
+            { "t": 0, "v": 160 },
+            { "t": 0.5, "v": 560, "ease": "inQuad" },
+            { "t": 1, "v": 160, "ease": "outQuad" },
+            { "t": 1.5, "v": 560, "ease": "inQuad" },
+            { "t": 2, "v": 160, "ease": "outQuad" },
+            { "t": 2.5, "v": 560, "ease": "inQuad" },
+            { "t": 3, "v": 160, "ease": "outQuad" }
+          ]
+        }
+      ]
+    }
+  ]
+}

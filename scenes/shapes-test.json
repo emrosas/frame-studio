@@ -1,0 +1,108 @@
+{
+  "id": "shapes-test",
+  "fps": 12,
+  "duration": 6,
+  "size": [1920, 1080],
+  "seed": 42,
+  "background": {
+    "rig": "paper",
+    "params": { "tone": "#f4efe6", "grain": 0.6, "fibres": 0.5, "mottle": 0.6, "vignette": 0.35 }
+  },
+  "layers": [
+    {
+      "id": "onOnes",
+      "rig": "circle",
+      "stepFps": 12,
+      "params": { "y": 200, "radius": 70, "fill": "#e05a4f", "wobble": 2 },
+      "tracks": [
+        {
+          "param": "x",
+          "keys": [
+            { "t": 0, "v": 240 },
+            { "t": 3, "v": 1680, "ease": "inOutSine" },
+            { "t": 6, "v": 240, "ease": "inOutSine" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "onTwos",
+      "rig": "circle",
+      "stepFps": 6,
+      "params": { "y": 400, "radius": 70, "fill": "#4f7fe0", "wobble": 2 },
+      "tracks": [
+        {
+          "param": "x",
+          "keys": [
+            { "t": 0, "v": 240 },
+            { "t": 3, "v": 1680, "ease": "inOutSine" },
+            { "t": 6, "v": 240, "ease": "inOutSine" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "star",
+      "rig": "star",
+      "params": { "x": 960, "y": 640, "points": 5, "outerRadius": 110, "innerRadius": 48, "wobble": 3 },
+      "tracks": [
+        {
+          "param": "rotation",
+          "keys": [
+            { "t": 0, "v": 0 },
+            { "t": 6, "v": 144 }
+          ]
+        },
+        {
+          "param": "scale",
+          "keys": [
+            { "t": 0, "v": 1 },
+            { "t": 0.35, "v": 1.25, "ease": "outBack" },
+            { "t": 1.5, "v": 1, "ease": "inOutSine" },
+            { "t": 1.85, "v": 1.25, "ease": "outBack" },
+            { "t": 3, "v": 1, "ease": "inOutSine" },
+            { "t": 3.35, "v": 1.25, "ease": "outBack" },
+            { "t": 4.5, "v": 1, "ease": "inOutSine" },
+            { "t": 4.85, "v": 1.25, "ease": "outBack" },
+            { "t": 6, "v": 1, "ease": "inOutSine" }
+          ]
+        },
+        {
+          "param": "fill",
+          "keys": [
+            { "t": 0, "v": "#f2b134" },
+            { "t": 1.5, "v": "#ef7d57" },
+            { "t": 3, "v": "#9b6cd9" },
+            { "t": 4.5, "v": "#5bb8d9" }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "block",
+      "rig": "rect",
+      "params": { "y": 930, "width": 240, "height": 140, "cornerRadius": 22, "fill": "#7fb069" },
+      "tracks": [
+        {
+          "param": "x",
+          "keys": [
+            { "t": 0, "v": 1600 },
+            { "t": 2, "v": 320, "ease": "outCubic" },
+            { "t": 5, "v": 1600, "ease": "inOutCubic" }
+          ]
+        },
+        {
+          "param": "rotation",
+          "keys": [
+            { "t": 0, "v": 0 },
+            { "t": 2, "v": -450, "ease": "outCubic" },
+            { "t": 5, "v": 0, "ease": "inOutCubic" }
+          ]
+        }
+      ],
+      "overrides": [
+        { "from": 36, "to": 48, "params": { "fill": "#e0457b", "wobble": 10, "strokeWidth": 9 } }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <title>Frame Studio</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111213; color: #e4e5e7; }
+      #boot-error { position: fixed; inset: 16px; overflow: auto; padding: 14px 16px; border: 1px solid #7a2b31; border-radius: 6px;
+        background: #260e10; color: #ffc9cc; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; z-index: 10; }
+      #boot-error[hidden] { display: none; }
+      #boot-error strong { display: block; margin-bottom: 6px; color: #fff; font: 600 13px/1.4 system-ui, sans-serif; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <div id="boot-error" role="alert" hidden></div>
+    <script>
+      // Boot guard: if the viewer's modules fail to load or throw before the app
+      // starts, show why instead of a blank page. main.ts calls done() once its
+      // own error panel is up.
+      (function () {
+        var started = false;
+        var box = document.getElementById('boot-error');
+        function show(title, detail) {
+          if (started) return;
+          box.hidden = false;
+          var heading = document.createElement('strong');
+          heading.textContent = title;
+          var body = document.createElement('div');
+          body.textContent = detail;
+          box.append(heading, body);
+        }
+        function onError(e) {
+          var err = e.error || e.reason;
+          show('The viewer failed to start', (err && (err.stack || err.message)) || e.message || String(err));
+        }
+        window.addEventListener('error', onError);
+        window.addEventListener('unhandledrejection', onError);
+        window.__studioBootFailed = function (src) {
+          show('The viewer failed to load', 'Could not load ' + src + ' or one of its imports (a missing file or a syntax error).\n' +
+            'Check the Vite terminal and the browser console. Saving a fix reloads the page.');
+        };
+        window.addEventListener('load', function () {
+          setTimeout(function () {
+            if (!started && box.hidden) show('The viewer did not start', 'main.ts loaded but never finished booting. Check the browser console.');
+          }, 1500);
+        });
+        window.__studioBoot = {
+          done: function () {
+            started = true;
+            window.removeEventListener('error', onError);
+            window.removeEventListener('unhandledrejection', onError);
+          },
+        };
+      })();
+    </script>
+    <script type="module" src="/src/viewer/main.ts" onerror="window.__studioBootFailed('/src/viewer/main.ts')"></script>
+  </body>
+</html>
