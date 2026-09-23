@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-23, after the M2 review.
+Last updated 2026-09-23, after ticket 14 (export encoding).
 
 ## Done
 
@@ -141,8 +141,8 @@ A `/code-review` at high effort over the M2 engine, rig and viewer files found t
 
 ## Next
 
-1. Ticket 14, `.scratch/frame-studio/issues/14-export-encoding.md`, is research on how exports encode MP4 and GIF in the web app, in Electron and from the CLI. `docs/adr/0001-web-and-electron-targets.md` makes the web app a ship target, and a browser tab has no ffmpeg. M3 waits on this ticket.
-2. M3, ticket 07. Headless render, MP4 and GIF. Capture as ticket 03 found: CPU raster with `--disable-accelerated-2d-canvas --disable-skia-runtime-opts`, and `canvas.toBlob`, not screenshots. Use `bear-test` where the roadmap says `fly-test`. The render path should also replace the throwaway CDP scripts this session and M1 used for visual checks.
+1. M3, ticket 07. Headless render, MP4 and GIF. Ticket 14 settled the encoder, and `.scratch/frame-studio/research/export-encoding.md` ends with a numbered recommendation for M3. The render page encodes H.264 with WebCodecs and muxes with Mediabunny, and writes GIFs with gifenc plus our own palette code. The CLI, Electron and the web app share that code and differ only in where the bytes go. Use Playwright 1.57 or later, and re-run ticket 03's pixel checks on it. Capture as ticket 03 found, and use `bear-test` where the roadmap says `fly-test`. The render path should also replace the throwaway CDP scripts M1 and M2 used for visual checks.
+2. Ticket 15, `.scratch/frame-studio/issues/15-mp4-colour-tags.md`, is research on MP4 colour tags. QuickTime shifts the `bear-test` orange in most WebCodecs files. M3 can start without it but closes only once it is settled.
 
 ## Open questions
 

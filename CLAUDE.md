@@ -139,16 +139,15 @@ Users can attach reference images to a prompt. References are **input to the age
 
 - Audio generators schedule Web Audio nodes for a time range, seeded like visuals.
 - Preview plays live through an AudioContext synced to the viewer clock, including after seeking.
-- Video export renders the same graph through an `OfflineAudioContext` to WAV, then muxes it via ffmpeg. Audio and video share the scene timeline as the single master clock.
+- Video export renders the same graph through an `OfflineAudioContext`, encodes it with WebCodecs `AudioEncoder` (AAC-LC at 48 kHz, or Opus where there is no AAC encoder), and muxes it next to the video. Signal AAC priming with an edit list and a `roll` sample group, or it plays 44 ms late. Audio and video share the scene timeline as the single master clock.
 - The HTML embed includes the audio generators unless exported silent. GIF is always silent.
 
 ## Headless rendering and export
 
 - The viewer has a render mode (no UI, fixed size) exposing `window.studio.renderFrame(n)`.
-- Playwright loads it, calls `renderFrame`, and captures the canvas as PNG.
-- MP4 via ffmpeg (H.264) at scene fps. GIF via palette generation from the same frames.
-- ffmpeg is an external dependency: check for it and fail with a clear message.
-- A browser tab has no ffmpeg, so the encoder choice is open until ticket 14 (`.scratch/frame-studio/issues/14-export-encoding.md`) settles it. WebCodecs with a JS muxer is the main alternative.
+- Playwright loads it, calls `renderFrame`, and captures the canvas as PNG. Use Playwright 1.57 or later: its Chrome for Testing build has an H.264 encoder, and the older open-source headless shell does not.
+- The page that draws the frames also encodes them. MP4 is H.264 through WebCodecs `VideoEncoder` at scene fps, muxed with Mediabunny. GIF is gifenc with our own palette code. The CLI, Electron and the web app run the same export code and differ only in where the bytes go (ticket 14, `.scratch/frame-studio/research/export-encoding.md`).
+- No shipped build bundles ffmpeg. It is a dev-only tool for checking exported files: frame count, duration, frame rate.
 
 ## MCP server (the agent's API)
 

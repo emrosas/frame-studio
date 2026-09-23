@@ -28,6 +28,7 @@ Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance crite
 - [How far can drawing code push a painted look?](issues/13-painted-look-prototype.md) Far enough. Gouache beat pastel and watercolour on likeness and cost (about 155 ms a frame), and became the `bear` rig and the `bears` scene.
 - [What is the first character, and what does it need to do?](issues/05-first-character.md) The painted bear, with paws, four poses, four expressions, seeded blinks and a `bear.bandaged` variant. Every mark sits in a part with its own RNG fork.
 - [M2: First character rig and hit testing](issues/06-m2-character-rig-and-hit-testing.md) M2 is done. The bear and `bear.bandaged` are the character, and `hitTest` uses per-layer alpha probes, now written into `CLAUDE.md`. The viewer selects a layer, a part, or a frame range, and hides the highlight during playback.
+- [How should exports encode MP4 and GIF in the web app, in Electron and from the CLI?](issues/14-export-encoding.md) One path for all three: the render page encodes H.264 with WebCodecs and muxes with Mediabunny, and only where the bytes go differs. GIF uses gifenc with our own palette code. Audio is AAC with signalled priming, falling back to Opus. No shipped build bundles ffmpeg. The CLI needs Playwright 1.57 or later, and ticket 15 follows up on colour tags.
 
 ## Not yet specified
 

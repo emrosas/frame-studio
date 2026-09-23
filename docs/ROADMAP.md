@@ -79,7 +79,7 @@ Acceptance:
 
 - Audio generator interface with 2 to 3 examples (e.g. ambient pad, a buzz or footstep, a UI blip).
 - Live preview synced to the viewer clock, including after seeking.
-- Offline render to WAV, muxed into MP4. Generators included in the HTML embed.
+- Offline render through `OfflineAudioContext`, encoded with WebCodecs `AudioEncoder` and muxed into MP4 (ticket 14). Generators included in the HTML embed.
 
 Acceptance:
 - Exported MP4 audio aligns to within one frame of scene timings.
