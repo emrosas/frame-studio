@@ -32,7 +32,7 @@ Acceptance:
 ## M3: Headless render, MP4, and GIF
 
 - Viewer render mode (no UI) exposing `window.studio.renderFrame(n)`.
-- Playwright scripts: one frame to PNG; a range to MP4 and GIF.
+- Playwright scripts: one frame to PNG; a range to MP4 and GIF. The encoder follows ticket 14, and the export path must also run in Electron and a browser tab (ADR 0001).
 - Determinism test: render frame N by seeking directly and after sequential playback from 0, then compare pixels.
 - Contact sheet generator (a grid of every Nth frame in one PNG).
 
@@ -66,6 +66,7 @@ Acceptance:
 
 ## M6: Selection-to-prompt in the viewer
 
+- First, move the viewer's UI to Svelte 5 (ADR 0002). Plain TypeScript modules stay plain, and components wrap them.
 - Viewer selection bar: pick a layer by clicking, set a frame range (from the scrubber or by typing timecodes), optionally attach reference images.
 - Produce a selection payload (`{ sceneId, layerId, partId?, from, to }` plus prompt text and reference paths) that the user can hand to the agent, e.g. copy to clipboard or write to a file the MCP server can read.
 - "Whole frame range" selection with no layer, for prompts like "redo frames 3 to 4".

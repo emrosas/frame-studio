@@ -141,7 +141,8 @@ A `/code-review` at high effort over the M2 engine, rig and viewer files found t
 
 ## Next
 
-1. M3, ticket 07. Headless render, MP4 and GIF. Capture as ticket 03 found: CPU raster with `--disable-accelerated-2d-canvas --disable-skia-runtime-opts`, and `canvas.toBlob`, not screenshots. Use `bear-test` where the roadmap says `fly-test`. The render path should also replace the throwaway CDP scripts this session and M1 used for visual checks.
+1. Ticket 14, `.scratch/frame-studio/issues/14-export-encoding.md`, is research on how exports encode MP4 and GIF in the web app, in Electron and from the CLI. `docs/adr/0001-web-and-electron-targets.md` makes the web app a ship target, and a browser tab has no ffmpeg. M3 waits on this ticket.
+2. M3, ticket 07. Headless render, MP4 and GIF. Capture as ticket 03 found: CPU raster with `--disable-accelerated-2d-canvas --disable-skia-runtime-opts`, and `canvas.toBlob`, not screenshots. Use `bear-test` where the roadmap says `fly-test`. The render path should also replace the throwaway CDP scripts this session and M1 used for visual checks.
 
 ## Open questions
 

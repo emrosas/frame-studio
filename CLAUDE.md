@@ -71,6 +71,8 @@ Rules:
 - `src/engine` never imports from `viewer`, `tools`, or UI code. It runs unchanged in the viewer, the headless renderer, the single-file embed, and any future desktop shell.
 - The canvas renders at the scene's fixed resolution and is scaled with CSS for display. Handle devicePixelRatio for preview only; exports are always native resolution.
 - UI is regular HTML/CSS positioned over the canvas, never drawn into it.
+- The studio ships as a web app and as an Electron app from one viewer (`docs/adr/0001-web-and-electron-targets.md`). `src/viewer` uses web platform APIs only. Anything that needs the machine, such as scene files, export writing, video encoding or the MCP connection, goes behind an interface with a web implementation and an Electron one.
+- The viewer stays plain TypeScript until M6, then its UI moves to Svelte 5 with Vite, not SvelteKit (`docs/adr/0002-svelte-from-m6.md`). The runtime never imports Svelte.
 
 ## Scene format (JSON)
 
@@ -146,6 +148,7 @@ Users can attach reference images to a prompt. References are **input to the age
 - Playwright loads it, calls `renderFrame`, and captures the canvas as PNG.
 - MP4 via ffmpeg (H.264) at scene fps. GIF via palette generation from the same frames.
 - ffmpeg is an external dependency: check for it and fail with a clear message.
+- A browser tab has no ffmpeg, so the encoder choice is open until ticket 14 (`.scratch/frame-studio/issues/14-export-encoding.md`) settles it. WebCodecs with a JS muxer is the main alternative.
 
 ## MCP server (the agent's API)
 
@@ -167,7 +170,7 @@ Keep inputs and outputs simple JSON. Tools:
 
 ## Later (don't build yet)
 
-- Desktop shell (Electron) wrapping the viewer. Chromium keeps canvas output identical between preview and export.
+- Desktop shell (Electron) wrapping the viewer. Chromium keeps canvas output identical between preview and export. The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
 - Camera layer (pan, zoom, shake), scene transitions, multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.

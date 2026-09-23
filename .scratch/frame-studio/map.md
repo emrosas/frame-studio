@@ -14,7 +14,8 @@ Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance crite
 - Grilling tickets use `/grilling` and `/domain-modeling`. Prototype tickets use `/prototype`. Research tickets use `/research` and save findings under `research/` next to this map, with the answer gisted in the ticket.
 - Look at rendered frames after any drawing change. Until M3 lands a headless renderer, open the viewer at `?scene=<id>&frame=<n>`.
 - Dev machine toolchain, checked 2026-09-22. Node 26.8, npm 11.19, ffmpeg 7.1.1 at `/opt/homebrew/bin/ffmpeg`, and Playwright's headless Chromium already cached.
-- The repo has no commits yet, so research lives in files next to this map instead of on `research/*` branches.
+- Research lives in files next to this map, not on `research/*` branches. The repo's first commit, on `main`, came after M2.
+- The studio ships as a web app and as an Electron app (`docs/adr/0001-web-and-electron-targets.md`). The viewer moves to Svelte at the start of M6 (`docs/adr/0002-svelte-from-m6.md`).
 
 ## Decisions so far
 
@@ -36,6 +37,9 @@ Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance crite
 - Text. The first scene that needs words will choose between vector paths in code and generic system fonts. System fonts render differently per machine, which may break the embed's pixel match.
 - Where shared rig parts live. M2 produces one character. The second character will show which parts are actually shared.
 - Frame-range picking moved into M2 at the user's request. M6 still owns the handoff to the agent.
+
+- Where the Electron build keeps scenes. Local files come first (ADR 0001), but `import.meta.glob` and hot reload only work in dev. The web app's backend comes after the local path works.
+- How the web app reaches an MCP agent on the user's machine. Electron can connect directly, and the web app needs a bridge or the hosted service.
 
 ## Out of scope
 
