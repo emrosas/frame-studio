@@ -34,6 +34,7 @@ Every milestone in `docs/ROADMAP.md`, M1 through M8, passes its acceptance crite
 - [M4: Single-file HTML embed](issues/08-m4-single-file-html-embed.md) M4 is done. `--target html` bundles the player, the scene's own rigs and the scene into one file with no requests, about 54 KB for `bear-test`. It matches the headless renders byte for byte, ships no validator, and takes `window.studio` or `postMessage` commands.
 - [M5: MCP server](issues/09-m5-mcp-server.md) M5 is done. `node tools/mcp/server.ts` serves the nine tools over stdio, and `.mcp.json` registers it for Claude Code. One watching Vite server feeds Node and a lazily started Playwright page, and tools run one at a time. Edits validate before saving and split overlapping overrides.
 - [How does a selection reach the agent?](issues/10-selection-handoff.md) Through files in `.frame-studio/`: a current selection, and a queue of request files the agent claims atomically through MCP tools, plus a Claude Code slash command and resource. Scene checkpoints on claim allow Revert and Try again. The viewer uses one studio server protocol, T3 Code-style (ADR 0003, ADR 0001 amended), and an integrated AI becomes M8 (ADR 0004).
+- [M6: Selection-to-prompt in the viewer](issues/11-m6-selection-to-prompt.md) M6 is done. The viewer UI is Svelte (TypeScript 6 for svelte-check). The request queue, studio server, MCP request tools and Requests panel work end to end, with checkpoints, Revert and Try again. The studio server takes same-origin JSON only.
 
 ## Not yet specified
 

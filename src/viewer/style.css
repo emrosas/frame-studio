@@ -549,3 +549,319 @@ body {
     display: none;
   }
 }
+
+/* ---- workspace: the stage and the request panel side by side ---- */
+
+.workspace {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+
+.workspace > .stage {
+  min-width: 0;
+}
+
+/* ---- request panel (ADR 0003) ---- */
+
+.studio-panel {
+  flex: 0 0 320px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--line);
+  background: var(--bar);
+}
+
+.studio-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 12px 14px 8px;
+}
+
+.studio-head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.studio-count {
+  color: var(--pick);
+  font-size: 12px;
+}
+
+.studio-note {
+  margin: 8px 14px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.studio-note.is-error,
+.composer-status.is-error {
+  color: var(--error-text);
+}
+
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 14px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.composer-target {
+  color: var(--muted);
+  font: 12px var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer textarea,
+.retry textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--stage);
+  color: var(--text);
+  font: inherit;
+}
+
+.composer textarea:focus,
+.retry textarea:focus {
+  outline: none;
+  border-color: var(--pick);
+}
+
+.composer-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.composer-refs li {
+  position: relative;
+}
+
+.composer-refs img {
+  display: block;
+  width: 64px;
+  height: 64px;
+  object-fit: cover;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+}
+
+.ref-remove {
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--bar);
+  color: var(--text);
+  line-height: 14px;
+  cursor: pointer;
+}
+
+.composer-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.attach {
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.attach:hover {
+  color: var(--text);
+}
+
+.studio-panel button {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.studio-panel button:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+
+.studio-panel button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.studio-panel button.send {
+  border-color: var(--pick);
+  background: var(--pick);
+  color: var(--pick-ink);
+  font-weight: 600;
+}
+
+.composer-status {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.queue {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+}
+
+.request {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.studio-panel .request-main {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 0;
+  text-align: left;
+}
+
+.studio-panel .request-main:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.request-top {
+  display: flex;
+  justify-content: space-between;
+  font: 11px var(--mono);
+}
+
+.request-id {
+  color: var(--muted);
+}
+
+.request-status {
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.request.is-pending .request-status,
+.request.is-in_progress .request-status {
+  color: var(--pick);
+}
+
+.request.is-done .request-status {
+  color: #7fd18b;
+}
+
+.request.is-failed .request-status,
+.request.is-stalled .request-status {
+  color: #f0a15c;
+}
+
+.request.is-cancelled,
+.request.is-reverted {
+  opacity: 0.55;
+}
+
+.request-prompt {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.request-meta {
+  color: var(--faint);
+  font: 11px var(--mono);
+}
+
+.request-summary {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 10px 8px;
+}
+
+.request-actions:empty {
+  display: none;
+}
+
+.retry {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+
+.clear-finished {
+  align-self: flex-start;
+}
+
+/* ---- finished-request notice ---- */
+
+.toast {
+  position: absolute;
+  right: 20px;
+  bottom: 20px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  max-width: min(520px, calc(100% - 40px));
+  padding: 9px 10px 9px 14px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bar);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
+}
+
+.toast.is-failed {
+  border-color: #f0a15c;
+}
+
+.toast-text {
+  font-size: 13px;
+}
+
+.toast button {
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.toast .toast-view {
+  border-color: var(--pick);
+  color: var(--pick);
+}

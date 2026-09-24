@@ -10,6 +10,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import { STUDIO_DIR } from '../studio/plugin.ts';
+import { StudioQueue } from '../studio/queue.ts';
 import { Workspace } from './workspace.ts';
 
 const frame = z
@@ -34,24 +36,31 @@ const ws = () =>
     throw err;
   }));
 
-// The SDK runs requests concurrently, but the tools share one page and read, patch and write scene files.
-// One tool runs at a time.
-let queue: Promise<unknown> = Promise.resolve();
+// The SDK runs requests concurrently, but the tools share one page and read, patch and write scene
+// files, and the /next prompt claims requests and copies scenes. One of them runs at a time.
+let turn: Promise<unknown> = Promise.resolve();
+function serial<T>(fn: () => Promise<T>): Promise<T> {
+  const run = turn.then(fn);
+  turn = run.catch(() => {});
+  return run;
+}
 
 /** Runs a tool body in turn, turning any error into a readable tool error instead of a protocol error. */
 function tool<A>(body: (w: Workspace, args: A) => Promise<CallToolResult>) {
-  return (args: A): Promise<CallToolResult> => {
-    const run = queue.then(async () => {
+  return (args: A): Promise<CallToolResult> =>
+    serial(async () => {
       try {
         return await body(await ws(), args);
       } catch (err) {
         return failure(err);
       }
     });
-    queue = run;
-    return run;
-  };
 }
+
+/** Reads the viewer's current selection straight from its file, without starting Vite or a browser. */
+const selections = new StudioQueue(STUDIO_DIR, async () => {
+  throw new Error('reading the selection needs no scene file');
+});
 
 const server = new McpServer({ name: 'frame-studio', version: '0.1.0' });
 
@@ -199,6 +208,99 @@ server.registerTool(
   tool(async (w, { sceneId: id, target, from, to }: { sceneId: string; target: 'mp4' | 'gif' | 'html'; from?: number | string; to?: number | string }) =>
     text(await w.export(id, target, { from, to })),
   ),
+);
+
+// ---- The viewer's request queue (ADR 0003) ----
+
+const noneWaiting = 'There are no pending Frame Studio requests. Send one from the viewer: select something, write a prompt, and press Send to agent.';
+
+server.registerTool(
+  'next_request',
+  {
+    title: 'Take the next request',
+    description:
+      "Claims the oldest pending request from the viewer's queue and returns it: the prompt, the selection (scene, layer, part, frame range), the frame on screen, where the user clicked, and reference image paths. The scene is saved first so the user can revert. Call complete_request when you finish.",
+  },
+  tool(async (w) => {
+    const request = await w.nextRequest();
+    return text(request ? `${await w.describeRequest(request)}\n\n${JSON.stringify(request, null, 2)}` : noneWaiting);
+  }),
+);
+
+server.registerTool(
+  'get_request',
+  {
+    title: 'Get a request',
+    description: 'A request from the viewer by id, as in a line the user pasted ("Frame Studio request #7 ..."). If it is still pending, this claims it for you and saves the scene first, so the user can revert. Call complete_request when you finish.',
+    inputSchema: { id: z.number().int().min(1).describe('The request number') },
+  },
+  tool(async (w, { id }: { id: number }) => {
+    const request = await w.getRequest(id);
+    return text(`${await w.describeRequest(request)}\n\n${JSON.stringify(request, null, 2)}`);
+  }),
+);
+
+server.registerTool(
+  'complete_request',
+  {
+    title: 'Complete a request',
+    description: 'Marks a request you worked on as done or failed, with a one-line summary the user sees in the viewer, e.g. "set pip\'s expression to sad over frames 24 to 48".',
+    inputSchema: {
+      id: z.number().int().min(1),
+      status: z.enum(['done', 'failed']),
+      summary: z.string().min(1).describe('One line: what you changed, or why it failed'),
+    },
+  },
+  tool(async (w, { id, status, summary }: { id: number; status: 'done' | 'failed'; summary: string }) => text(await w.completeRequest(id, status, summary))),
+);
+
+server.registerTool(
+  'get_selection',
+  {
+    title: 'Get the current selection',
+    description: "What the user has selected in the viewer right now: scene, layer, part, frame range [from, to), the frame on screen and where they clicked. Use it when the user says \"this\" or \"the selection\" without sending a request.",
+    annotations: { readOnlyHint: true },
+  },
+  () =>
+    serial(async () => {
+      try {
+        return text((await selections.readSelection()) ?? 'Nothing is selected in the viewer.');
+      } catch (err) {
+        return failure(err);
+      }
+    }),
+);
+
+server.registerPrompt(
+  'next',
+  {
+    title: 'Next Frame Studio request',
+    description: "Takes the oldest pending request from the viewer's queue and starts on it.",
+  },
+  () =>
+    serial(async () => {
+      try {
+        const w = await ws();
+        const request = await w.nextRequest();
+        const body = request ? `Please work on this Frame Studio request.\n\n${await w.describeRequest(request)}` : noneWaiting;
+        return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text: body } }] };
+      } catch (err) {
+        const message = `Frame Studio could not read its queue: ${err instanceof Error ? err.message : String(err)}`;
+        return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text: message } }] };
+      }
+    }),
+);
+
+server.registerResource(
+  'selection',
+  'selection://current',
+  { title: 'Current selection', description: "What is selected in the Frame Studio viewer right now.", mimeType: 'application/json' },
+  (uri) =>
+    serial(async () => {
+      const selection = await selections.readSelection();
+      const body = selection ?? { selection: null, note: 'Nothing is selected in the viewer.' };
+      return { contents: [{ uri: uri.href, mimeType: 'application/json', text: JSON.stringify(body, null, 2) }] };
+    }),
 );
 
 const transport = new StdioServerTransport();

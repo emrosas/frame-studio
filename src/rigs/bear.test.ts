@@ -6,6 +6,7 @@ import { createRecordingContext, type LogEntry } from '../engine/testing/recordi
 import type { Params } from '../engine/types';
 import { BEAR_EXPRESSIONS, BEAR_POSES, bear } from './bear';
 import { bearBandaged } from './bear-bandaged';
+import { bearBlush } from './bear-blush';
 import { createDefaultRegistry } from './index';
 import { drawRecorded, marksOf, partEntries, unmarked, withParts, withoutPart } from './testing/parts';
 
@@ -287,6 +288,35 @@ describe('bear.bandaged', () => {
     expect(plaster({ plasterX: 0.1 })).not.toBe(home);
     expect(plaster({ plasterAngle: 40 })).not.toBe(home);
     expect(plaster({ plasterColor: '#ffeecc' })).not.toBe(home);
+  });
+});
+
+describe('bear.blush', () => {
+  it('takes every bear param with the same schema, plus blush params', () => {
+    for (const [name, spec] of Object.entries(bear.params)) expect(bearBlush.params[name], name).toEqual(spec);
+    const extra = Object.keys(bearBlush.params).filter((name) => !(name in bear.params));
+    expect(extra.length).toBeGreaterThanOrEqual(3);
+    expect(extra.every((name) => name.startsWith('blush'))).toBe(true);
+    expect(bearBlush.parts).toEqual([...(bear.parts ?? []), 'blush']);
+  });
+
+  it.each([
+    ['defaults', {}, 0],
+    ['wave, happy, tilted face', { pose: 'wave', expression: 'happy', faceTilt: 8 }, 0.7],
+    ['bears.json white bear', bearsJson.layers[0].params as unknown as Params, 0],
+  ] as [string, Params, number][])('draws exactly what bear draws, plus the blush (%s)', (_name, params, t) => {
+    const base = drawRecorded(bear, { params, t }).log;
+    const blush = drawRecorded(bearBlush, { params, t }).log;
+    expect(JSON.stringify(withoutPart(blush, 'blush'))).toBe(JSON.stringify(unmarked(base)));
+    expect(partEntries(blush, 'blush').length).toBeGreaterThan(0);
+  });
+
+  it('moves, colours and hides the cheeks with its params', () => {
+    const cheeks = (params: Params) => marksOf(partEntries(drawRecorded(bearBlush, { params }).log, 'blush'));
+    const home = cheeks({});
+    expect(cheeks({ blushX: 0.35 })).not.toBe(home);
+    expect(cheeks({ blushColor: '#e05a4f' })).not.toBe(home);
+    expect(cheeks({ blushSize: 0 })).toBe(cheeks({ blushStrength: 0 }));
   });
 });
 

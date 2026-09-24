@@ -51,15 +51,16 @@ export interface OpenOptions {
 /**
  * Starts Vite for render.html on a free port. With watch, file edits
  * invalidate Vite's module cache, so a reloaded page sees them; the render
- * CLI runs once and leaves it off.
+ * CLI runs once and leaves it off. With hmr, open pages get hot updates, as
+ * the viewer does under npm run dev.
  */
-export async function startVite(options: { watch?: boolean } = {}): Promise<ViteDevServer> {
+export async function startVite(options: { watch?: boolean; hmr?: boolean } = {}): Promise<ViteDevServer> {
   // Port 0: the OS picks a free port as Vite binds it, so parallel runs cannot collide.
   const server = await createServer({
     root: ROOT,
     configFile: resolve(ROOT, 'vite.config.ts'),
     logLevel: 'error',
-    server: { host: '127.0.0.1', port: 0, strictPort: true, hmr: false, ...(options.watch ? {} : { watch: null }) },
+    server: { host: '127.0.0.1', port: 0, strictPort: true, hmr: options.hmr ?? false, ...(options.watch ? {} : { watch: null }) },
   });
   try {
     await server.listen();

@@ -29,10 +29,29 @@ export interface PlaybackAnchor {
  * than the anchor (an animation frame's start time can precede a clock read taken
  * in an event handler) counts as zero elapsed.
  */
-export function playbackFrame(anchor: PlaybackAnchor, nowMs: number, fps: number, frameCount: number, loop = true): number {
-  const elapsedMs = Math.max(0, nowMs - anchor.anchorMs);
-  const frame = anchor.anchorFrame + Math.floor((elapsedMs * fps) / 1000);
+export function playbackFrame(
+  anchor: PlaybackAnchor,
+  nowMs: number,
+  fps: number,
+  frameCount: number,
+  loop = true,
+  range: LoopRange | null = null,
+): number {
+  const elapsed = Math.floor((Math.max(0, nowMs - anchor.anchorMs) * fps) / 1000);
+  // A range only applies while playback started inside it.
+  if (range && anchor.anchorFrame >= range.from && anchor.anchorFrame < range.to) {
+    const offset = anchor.anchorFrame - range.from + elapsed;
+    const span = range.to - range.from;
+    return loop ? range.from + (offset % span) : Math.min(range.from + offset, range.to - 1);
+  }
+  const frame = anchor.anchorFrame + elapsed;
   return loop ? wrapFrame(frame, frameCount) : Math.min(frame, frameCount - 1);
+}
+
+/** Frames [from, to) that playback stays inside. */
+export interface LoopRange {
+  from: number;
+  to: number;
 }
 
 export interface Timeline {
@@ -50,6 +69,8 @@ export class PlaybackClock {
   private isPlaying = false;
   private anchor: PlaybackAnchor = { anchorFrame: 0, anchorMs: 0 };
   private tl: Timeline | null = null;
+  /** The range as asked for; loopRange clamps it to whatever timeline is current. */
+  private requested: LoopRange | null = null;
   private readonly loop: boolean;
   private readonly now: () => number;
 
@@ -68,6 +89,26 @@ export class PlaybackClock {
 
   get timeline(): Timeline | null {
     return this.tl;
+  }
+
+  /** The range playback stays inside, clamped to the timeline; null when none. */
+  get loopRange(): LoopRange | null {
+    const r = this.requested;
+    const count = this.tl?.frameCount ?? 0;
+    if (!r) return null;
+    const from = Math.max(0, r.from);
+    const to = Math.min(count, r.to);
+    return to - from >= 1 ? { from, to } : null;
+  }
+
+  /**
+   * Keeps playback inside frames [from, to): it loops there, or stops on its
+   * last frame with loop off, and play() outside it starts from `from`. The
+   * range is clamped to the timeline; null, or a range with no frames, clears it.
+   */
+  setLoopRange(range: LoopRange | null): void {
+    this.requested = range ? { from: range.from, to: range.to } : null;
+    if (this.isPlaying) this.reanchor();
   }
 
   /**
@@ -89,7 +130,9 @@ export class PlaybackClock {
   play(): boolean {
     if (!this.tl) return false;
     if (!this.isPlaying) {
-      if (!this.loop && this.currentFrame === this.tl.frameCount - 1) this.currentFrame = 0;
+      const r = this.loopRange;
+      if (r && (this.currentFrame < r.from || this.currentFrame >= r.to)) this.currentFrame = r.from;
+      else if (!this.loop && this.currentFrame === (r ? r.to : this.tl.frameCount) - 1) this.currentFrame = r ? r.from : 0;
       this.isPlaying = true;
       this.reanchor();
     }
@@ -126,8 +169,10 @@ export class PlaybackClock {
   /** Advances playback to nowMs. Returns true when the frame changed. */
   tick(nowMs: number): boolean {
     if (!this.isPlaying || !this.tl) return false;
-    const last = this.tl.frameCount - 1;
-    const next = playbackFrame(this.anchor, nowMs, this.tl.fps, this.tl.frameCount, this.loop);
+    const range = this.loopRange;
+    const inRange = range !== null && this.anchor.anchorFrame >= range.from && this.anchor.anchorFrame < range.to;
+    const last = (inRange ? range.to : this.tl.frameCount) - 1;
+    const next = playbackFrame(this.anchor, nowMs, this.tl.fps, this.tl.frameCount, this.loop, range);
     if (!this.loop && next === last) this.isPlaying = false;
     if (next === this.currentFrame) return false;
     this.currentFrame = next;

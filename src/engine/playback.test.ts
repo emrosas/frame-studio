@@ -230,3 +230,78 @@ describe('playing once (loop off)', () => {
     expect(clock.playing).toBe(true);
   });
 });
+
+describe('looping inside a frame range', () => {
+  function clockAt(options: { loop?: boolean } = {}) {
+    const time = { now: 0 };
+    const clock = new PlaybackClock(() => time.now, options);
+    clock.setTimeline({ fps: 12, frameCount: 96 });
+    return { clock, time };
+  }
+
+  it('plays [from, to) over and over', () => {
+    const { clock, time } = clockAt();
+    clock.setLoopRange({ from: 10, to: 14 });
+    clock.seek(10);
+    clock.play();
+    time.now = 500; // 6 frames at 12 fps
+    clock.tick(time.now);
+    expect(clock.frame).toBe(12);
+    time.now = 1000; // 12 frames
+    clock.tick(time.now);
+    expect(clock.frame).toBe(10);
+  });
+
+  it('starts from the range when play is pressed outside it', () => {
+    const { clock } = clockAt();
+    clock.seek(50);
+    clock.setLoopRange({ from: 10, to: 14 });
+    clock.play();
+    expect(clock.frame).toBe(10);
+  });
+
+  it('keeps going from the frame on screen when the range is cleared', () => {
+    const { clock, time } = clockAt();
+    clock.setLoopRange({ from: 10, to: 14 });
+    clock.seek(12);
+    clock.play();
+    clock.setLoopRange(null);
+    time.now = 1000;
+    clock.tick(time.now);
+    expect(clock.frame).toBe(24);
+  });
+
+  it('with loop off, stops on the range\'s last frame', () => {
+    const { clock, time } = clockAt({ loop: false });
+    clock.setLoopRange({ from: 10, to: 14 });
+    clock.play();
+    time.now = 2000;
+    clock.tick(time.now);
+    expect(clock.frame).toBe(13);
+    expect(clock.playing).toBe(false);
+  });
+
+  it('ignores a range outside the timeline or with no frames', () => {
+    const { clock, time } = clockAt();
+    clock.setLoopRange({ from: 90, to: 200 });
+    clock.seek(94);
+    clock.play();
+    time.now = 500;
+    clock.tick(time.now);
+    expect(clock.frame).toBe(90 + ((94 - 90 + 6) % 6));
+    clock.setLoopRange({ from: 5, to: 5 });
+    expect(clock.loopRange).toBeNull();
+  });
+});
+
+describe('a loop range across timeline changes', () => {
+  it('clamps against the timeline that is current, not the one it was set under', () => {
+    const time = { now: 0 };
+    const clock = new PlaybackClock(() => time.now);
+    clock.setTimeline({ fps: 12, frameCount: 24 });
+    clock.setLoopRange({ from: 20, to: 60 });
+    expect(clock.loopRange).toEqual({ from: 20, to: 24 });
+    clock.setTimeline({ fps: 12, frameCount: 96 });
+    expect(clock.loopRange).toEqual({ from: 20, to: 60 });
+  });
+});

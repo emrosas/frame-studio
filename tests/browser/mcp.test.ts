@@ -6,7 +6,8 @@
  * (gitignored) and removed afterwards, so the real scenes are never edited.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
@@ -15,10 +16,15 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { ALL_FORMATS, BufferSource, Input } from 'mediabunny';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ROOT } from '../../tools/scene-files';
+import { StudioQueue } from '../../tools/studio/queue';
 
 const ID = `mcp-test-${process.pid}`;
 const SCENE_FILE = join(ROOT, 'scenes', `${ID}.json`);
 const OUT_DIR = join(ROOT, 'out', ID);
+/** A throwaway handoff folder, so the tests never see or touch a real queue. */
+const STUDIO = mkdtempSync(join(tmpdir(), 'frame-studio-handoff-'));
+/** The viewer's side of the queue, as its studio server would use it. */
+const viewerQueue = new StudioQueue(STUDIO, async () => SCENE_FILE);
 
 let client: Client;
 
@@ -26,13 +32,22 @@ beforeAll(async () => {
   const scene = JSON.parse(readFileSync(join(ROOT, 'scenes/bear-test.json'), 'utf8'));
   writeFileSync(SCENE_FILE, `${JSON.stringify({ ...scene, id: ID }, null, 2)}\n`);
   client = new Client({ name: 'frame-studio-test', version: '0.0.0' });
-  await client.connect(new StdioClientTransport({ command: process.execPath, args: ['tools/mcp/server.ts'], cwd: ROOT, stderr: 'pipe' }));
+  await client.connect(
+    new StdioClientTransport({
+      command: process.execPath,
+      args: ['tools/mcp/server.ts'],
+      cwd: ROOT,
+      stderr: 'pipe',
+      env: { ...(process.env as Record<string, string>), FRAME_STUDIO_DIR: STUDIO },
+    }),
+  );
 });
 
 afterAll(async () => {
   await client?.close();
   rmSync(SCENE_FILE, { force: true });
   rmSync(OUT_DIR, { recursive: true, force: true });
+  rmSync(STUDIO, { recursive: true, force: true });
 });
 
 async function call(name: string, args: Record<string, unknown> = {}): Promise<CallToolResult> {
@@ -66,7 +81,21 @@ describe('an agent session', () => {
   it('lists the tools CLAUDE.md names', async () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ['apply_to_selection', 'export', 'get_scene', 'hit_test', 'list_rigs', 'list_scenes', 'render_contact_sheet', 'render_frame', 'update_scene'].sort(),
+      [
+        'apply_to_selection',
+        'complete_request',
+        'export',
+        'get_request',
+        'get_scene',
+        'get_selection',
+        'hit_test',
+        'list_rigs',
+        'list_scenes',
+        'next_request',
+        'render_contact_sheet',
+        'render_frame',
+        'update_scene',
+      ].sort(),
     );
   });
 
@@ -77,7 +106,7 @@ describe('an agent session', () => {
     expect(mine?.layers?.map((l) => l.id)).toEqual(['background', 'bruno', 'pip']);
     const rigs = json<{ id: string; variants: string[]; parts: string[]; base: string | null; params: Record<string, { description?: string }> }[]>(await call('list_rigs'));
     const bear = rigs.find((r) => r.id === 'bear');
-    expect(bear?.variants).toEqual(['bear.bandaged']);
+    expect(bear?.variants).toEqual(expect.arrayContaining(['bear.bandaged', 'bear.blush']));
     expect(bear?.parts).toContain('muzzle');
     expect(bear?.params.body.description).toMatch(/colour/);
     expect(rigs.find((r) => r.id === 'bear.bandaged')?.base).toBe('bear');
@@ -190,3 +219,75 @@ describe('an agent session', () => {
     expect(existsSync(join(ROOT, gif.file))).toBe(true);
   });
 });
+
+describe('the request queue (M6)', () => {
+  it('works a viewer request end to end: background over [1, 14), only those frames change, and Revert restores it', async () => {
+    const original = readFileSync(SCENE_FILE, 'utf8');
+    const before = new Map<number, string>();
+    for (const f of [0, 1, 13, 14]) before.set(f, await imageHash(await render(f)));
+
+    // The viewer sends a request for the background over frames 1 to 14.
+    const sent = await viewerQueue.create({
+      selection: { sceneId: ID, layerId: 'background', from: 1, to: 14 },
+      frame: 5,
+      prompt: 'make the ground a deep blue for the first second',
+      references: [],
+    });
+
+    // The agent takes it, reads it, and does it.
+    const taken = await call('next_request');
+    const described = textOf(taken);
+    expect(described).toContain(`Frame Studio request #${sent.id}`);
+    expect(described).toContain('Prompt: make the ground a deep blue for the first second');
+    expect(described).toContain('layer background, frames [1, 14)');
+    expect(described).toMatch(/complete_request with id \d+/);
+    expect((await viewerQueue.get(sent.id)).status).toBe('in_progress');
+    json(await call('apply_to_selection', { selection: { ...sent.selection }, patch: { params: { tone: '#1d3a8a' } } }));
+    const done = json<{ status: string; summary: string }>(
+      await call('complete_request', { id: sent.id, status: 'done', summary: 'set the ground to #1d3a8a over frames 1 to 14' }),
+    );
+    expect(done).toMatchObject({ status: 'done', summary: 'set the ground to #1d3a8a over frames 1 to 14' });
+
+    const after = new Map<number, string>();
+    for (const f of [0, 1, 13, 14]) after.set(f, await imageHash(await render(f)));
+    expect(after.get(0)).toBe(before.get(0));
+    expect(after.get(14)).toBe(before.get(14));
+    expect(after.get(1)).not.toBe(before.get(1));
+    expect(after.get(13)).not.toBe(before.get(13));
+
+    // Revert puts the scene back byte for byte, and the frames with it.
+    await viewerQueue.revert(sent.id);
+    expect(readFileSync(SCENE_FILE, 'utf8')).toBe(original);
+    expect(await imageHash(await render(1))).toBe(before.get(1));
+  });
+
+  it('claims a pasted request by id, serves the /next prompt, and reports an empty queue plainly', async () => {
+    const pasted = await viewerQueue.create({ selection: { sceneId: ID, layerId: 'pip', from: 0, to: 12 }, frame: 0, prompt: 'wave', references: [] });
+    expect(textOf(await call('get_request', { id: pasted.id }))).toContain('Status: in progress.');
+    expect((await viewerQueue.get(pasted.id)).checkpoint).toBe(true);
+    json(await call('complete_request', { id: pasted.id, status: 'failed', summary: 'could not find a wave pose' }));
+
+    const queued = await viewerQueue.create({ selection: { sceneId: ID, from: 0, to: 4 }, frame: 0, prompt: 'redo these frames', references: ['references/x.png'] });
+    const prompt = await client.getPrompt({ name: 'next' });
+    const message = prompt.messages[0].content;
+    expect(message.type === 'text' && message.text).toContain(`request #${queued.id}`);
+    expect(message.type === 'text' && message.text).toContain('all layers (a whole-frame-range selection)');
+    expect(message.type === 'text' && message.text).toContain('references/x.png');
+    expect(textOf(await call('next_request'))).toMatch(/no pending Frame Studio requests/);
+    const late = await call('complete_request', { id: 999, status: 'done', summary: 'x' });
+    expect(late.isError).toBe(true);
+    expect(textOf(late)).toMatch(/no request #999/);
+  });
+
+  it('serves the current selection as a tool and an @-mentionable resource', async () => {
+    expect(textOf(await call('get_selection'))).toBe('Nothing is selected in the viewer.');
+    await viewerQueue.writeSelection({ sceneId: ID, layerId: 'bruno', partId: 'nose', from: 24, to: 48, frame: 30, point: { x: 760, y: 500 } });
+    expect(json<{ layerId: string }>(await call('get_selection')).layerId).toBe('bruno');
+    const resources = await client.listResources();
+    expect(resources.resources.map((r) => r.uri)).toContain('selection://current');
+    const read = await client.readResource({ uri: 'selection://current' });
+    const content = read.contents[0];
+    expect('text' in content ? JSON.parse(content.text as string) : null).toMatchObject({ partId: 'nose', frame: 30 });
+  });
+});
+

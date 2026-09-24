@@ -11,6 +11,7 @@
   "include": [
     "tools",
     "tests/browser",
+    "tests/node",
     "vite.config.ts",
     "vitest.browser.config.ts",
     "src/export/gifenc.d.ts"

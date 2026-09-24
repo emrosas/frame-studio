@@ -11,7 +11,10 @@
 //   boots from them.
 
 import './style.css';
+import { flushSync, mount } from 'svelte';
 import { App, RESUME_KEY, type StudioApi } from './app';
+import Viewer from './components/Viewer.svelte';
+import { ViewerUi, type ViewerActions } from './ui.svelte';
 import { loadLibrary } from './scenes';
 import { bootUrlState, readUrlState, RELOAD_KEY } from './url';
 
@@ -53,12 +56,26 @@ const root = document.getElementById('app');
 if (!root) throw new Error('index.html is missing <div id="app">.');
 
 const url = bootUrlState(readUrlState(location.search), takeReloadRecord(), navigationType());
-const app = new App(root, loadLibrary(), {
-  scene: url.scene,
-  frame: url.frame,
-  autoplay: takeResumeFlag(),
-  selection: { layer: url.layer, part: url.part, from: url.from, to: url.to },
-});
+
+// The layout mounts first, so the footer takes its height out of the stage
+// before the canvas measures it. The components only call actions once the
+// user acts, by which time the App has filled them in.
+const ui = new ViewerUi();
+const actions = {} as ViewerActions;
+mount(Viewer, { target: root, props: { ui, actions } });
+flushSync();
+const app = new App(
+  root,
+  loadLibrary(),
+  {
+    scene: url.scene,
+    frame: url.frame,
+    autoplay: takeResumeFlag(),
+    selection: { layer: url.layer, part: url.part, from: url.from, to: url.to },
+  },
+  ui,
+);
+Object.assign(actions, app.actions);
 
 window.studio = app.api;
 window.addEventListener('error', (e) => app.reportRuntimeError(e.error ?? e.message));

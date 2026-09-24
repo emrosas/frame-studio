@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-24, after ticket 10 (selection handoff).
+Last updated 2026-09-24, after the M6 review.
 
 ## Done
 
@@ -267,16 +267,69 @@ A `/code-review` at high effort found ten issues, and all ten are fixed. The sui
 - The html export started its own Vite server. It now reuses the workspace's.
 - The write-then-rename pattern and `ROOT` were defined several times. Each now lives in one place.
 
+### M6: Selection-to-prompt in the viewer
+
+M6 is done and its acceptance criteria pass. The viewer's UI moved to Svelte first, then the handoff from ticket 10 (ADR 0003) was built on top.
+
+What M6 delivered:
+
+- **Svelte port (ADR 0002).** The controls, the selection bar and the error panel are now Svelte 5 components, reading a reactive `ViewerUi` state that the App class writes. The App keeps all its logic. Nine viewer browser tests were written against the old DOM first, finding elements by accessible name, and they passed unchanged after the port. The repo moved from TypeScript 7 to 6.0.3, because svelte-check needs TypeScript's JavaScript API and 7 has none. It typechecked with no changes, and `npm run typecheck` now runs svelte-check too.
+- **Range loop.** `PlaybackClock.setLoopRange` keeps playback inside a range, and the viewer loops inside its selected range, like in and out points.
+- **The handoff protocol**, `src/studio/protocol.ts`: request and selection shapes, and the shared rules. Those are the stalled status, the clipboard line, time-based `canRevert`, and request validation.
+- **The queue on disk**, `tools/studio/queue.ts`:
+  - Requests are created by hard-linking a temp file and claimed by exclusively creating `NNNN.claim`, so neither can collide.
+  - The scene is checkpointed on claim, with its `checkpointAt` time.
+  - It handles complete, cancel, requeue, revert and retry.
+  - Clearing archives requests, so ids are never reused.
+- **The studio server**, `tools/studio/plugin.ts`: a Vite plugin serving `/__studio/` for the queue, the selection and reference uploads. It pushes the queue over Vite's websocket 100 ms after `.frame-studio/requests/` changes, and refuses anything but same-origin JSON.
+- **MCP**: `next_request`, `get_request`, `complete_request` and `get_selection`, the `/frame-studio:next` prompt, and the `selection://current` resource.
+- **The Requests panel**: a composer that shows the selection it applies to, takes a prompt and images you attach, paste or drop, and sends the request while copying a line to paste into any agent. Below it, the queue shows statuses and summaries, with View, Revert, Try again, Cancel, Requeue and Clear finished. Clicking a request restores its selection. A notice with **View** appears when a request finishes. The viewer keeps `.frame-studio/selection.json` current.
+- **The `bear.blush` variant**, made while playing the agent for acceptance 2 (below). Rosy gouache cheeks, with tests like `bear.bandaged`'s.
+
+### How each M6 acceptance criterion was verified
+
+1. Select the background for frames 1 to 14, prompt a change through the agent, and only those frames change. `tests/browser/mcp.test.ts` sends that request as the viewer would. An MCP client session takes it with `next_request`, applies a ground colour over its selection and completes it. Frames 0 and 14 render identical to before, and frames 1 and 13 change. Revert then restores the scene file byte for byte, and frame 1 renders as it did at the start.
+2. Select the character, attach a reference image, prompt a redraw, and the agent produces a rig variant applied through an override, with the reference in no scene file or export. I ran the real loop, in the running dev server and the real queue:
+   1. In the viewer, selecting pip over [36, 72), attaching `references/bears-reference.png` and sending "Give pip rosy cheeks, painted in the same dry-brush gouache as the reference."
+   2. Then, as the agent through MCP: taking it with `get_request(1)`, which claims it and takes the checkpoint.
+   3. Writing `bear.blush`.
+   4. Applying it with `apply_to_selection` and rendering frames 35 and 48 to check.
+   5. Strengthening the params, since pink barely showed on red-orange fur.
+   6. Completing the request.
+
+   No scene file names the reference. The HTML, MP4 and GIF exports contain neither its path nor any of its bytes. The viewer showed the request done with the summary, and **Revert** there put `bear-test.json` back exactly as committed.
+3. Revert on a finished request restores the scene exactly, and Try again queues the same ask as attempt 2. `tests/browser/handoff.test.ts` drives the viewer against a throwaway queue: it covers the selection file with the click point, Send with a reference upload and the clipboard line, live statuses, the finished notice and View looping the range, Revert byte for byte, Try again with an edited prompt as attempt 2, Cancel, and Clear finished.
+
+The suites are at 966 unit tests and 60 browser tests.
+
+### M6 review
+
+A `/code-review` at high effort found ten issues, and all ten are fixed.
+
+- **Security.** Any website open in the browser could POST to the dev server's `/__studio/` endpoints: queue prompts for the agent, name arbitrary files as references, or revert scenes. The server now refuses requests that aren't same-origin, going by `Sec-Fetch-Site` or `Origin`, and takes JSON only, which forces a preflight on other sites. `checkNewRequest` validates every field, and reference paths must be images directly in `references/`. I checked all four of those defences with curl.
+- **Typing in a range field while playing.** The typed text was wiped on every frame, because the reset effect depended on the whole selection object. It now depends only on the range's signature. A new viewer test types during playback.
+- **Stuck requests.** A checkpoint that failed, for example on a missing scene, left the claim file behind, so the request could never be claimed again. The claim is now released.
+- **Id reuse.** Clear finished deleted request files, so ids came back and an old pasted line could reach a different request. Finished requests are archived instead, and ids count the archive.
+- **Revert discarding work.** Revert went by id, which could throw away work from a second agent session or a requeued request. `canRevert` now goes by time: any other request on the scene that was active after the checkpoint blocks it.
+- **Stale frame.** The selection file's frame wasn't updated while seeking. It now updates on seek and pause.
+- **Startup race.** The first queue fetch could land after a pushed update and roll the panel back. A push now wins.
+- **Needless reloads.** The MCP workspace invalidated every module whenever a render switched scenes, and loaded the scene library twice per render. Stamps are now kept per scene file, and the file is passed through.
+- **`get_selection`** started Vite just to read a file, and the `/next` prompt and the resource bypassed the one-at-a-time rule. The selection is now read directly, and all three run in turn with the tools.
+- **Copied rules.** The reference types and size limit, the queue event name and the target label were written out in several places. They now come from `protocol.ts`.
+
+The MCP server now also checks a scene file's modification time and size before each render. That caught a real race, where a revert from the viewer landed before the watcher reported it.
+
 ## Next
 
-1. M6, ticket 11: selection-to-prompt in the viewer. Ticket 10 settled the handoff, recorded in ADR 0003:
-   - a file queue in `.frame-studio/`
-   - MCP request tools, plus a Claude Code slash command and resource
-   - a queue panel
-   - checkpoints with Revert and Try again
+1. **Your own test of a complete creation**, with the MCP server in Claude Code:
+   1. Approve `frame-studio` with `/mcp` in a session started in the repo.
+   2. Run `npm run dev` and open the viewer.
+   3. Select something, send a request, and run `/frame-studio:next` in Claude Code.
+   4. Check the result with View, and export it yourself.
 
-   The viewer talks to one studio server protocol, served by a Vite dev-server plugin (ADR 0001, amended after looking at T3 Code). M6 starts by moving the viewer's UI to Svelte (ADR 0002).
-2. After M7, M8 is the integrated AI (ADR 0004, ticket 16). The user added it on 2026-09-24 as the last milestone, treated as polish.
+   Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
+2. M7, ticket 12: procedural audio. The findings in tickets 04 and 14 apply.
+3. M8, ticket 16: the integrated AI. It starts with a grilling session on its scope.
 
 ## Open questions
 
@@ -294,3 +347,4 @@ A `/code-review` at high effort found ten issues, and all ten are fixed. The sui
 - The selection outline traces every gap where the ground shows through a layer, such as the small triangle between `bruno`'s left ear and his head. It follows the pixels correctly but reads as a stray mark.
 - A hover probe draws every layer in full, 5 to 11 ms on `bear-test`. Scenes with many layers or heavier rigs will feel it. A bounds cull would need rigs to declare bounds.
 - Browser tests need the headless shell downloaded once (`npx playwright install chromium-headless-shell`). Installing a newer Playwright deletes cached browsers that no installed Playwright uses. On 2026-09-23 that removed the Chromium 140 build ticket 03 used, which had to be reinstalled through Playwright 1.55 in `/tmp`.
+- `apply_to_selection` can add or merge overrides, but not remove one. In the user's first MCP test on 2026-09-24 ("remove the plaster"), the agent removed bruno's `bear.bandaged` override through `update_scene`, sending the whole `layers` array. Both the agent and I flagged this as clunky. A small "remove override" option on `apply_to_selection` would fix it.

@@ -6,8 +6,7 @@ import { formatTimecode, frameCount as countFrames, hitTest, render, type HitRes
 import type { Scene } from '../engine/types';
 import { CanvasView } from './canvas';
 import { FpsMeter, PlaybackClock } from './clock';
-import { Controls, type SceneOption } from './controls';
-import { ErrorPanel, errorText } from './errors';
+import { ErrorLog, errorText } from './errors';
 import { focusKeepsKey, keyAction } from './keys';
 import { findEntry, openingEntry, type SceneEntry, type SceneLibrary } from './library';
 import { SelectionOverlay } from './overlay';
@@ -28,7 +27,9 @@ import {
   type SceneShape,
   type SelectionParams,
 } from './selection';
-import { SelectionBar } from './selection-bar';
+import { clipboardLine, type CurrentSelection, type RequestSelection, type StudioRequest } from '../studio/protocol';
+import { StudioClient } from './studio-client';
+import type { SceneOption, ViewerActions, ViewerUi } from './ui.svelte';
 import { parseFrameParam, RELOAD_KEY, reloadRecord, UrlSync, type UrlPosition } from './url';
 
 /** window.studio.selection: what is picked, in the shape agent tools take. */
@@ -122,10 +123,11 @@ export class App {
   private readonly meter = new FpsMeter();
   private readonly url = new UrlSync();
   private readonly view: CanvasView;
-  private readonly controls: Controls;
-  private readonly bar: SelectionBar;
+  private readonly ui: ViewerUi;
+  /** What the Svelte components call (ui.svelte.ts). */
+  readonly actions: ViewerActions;
   private readonly overlay: SelectionOverlay;
-  private readonly errors: ErrorPanel;
+  private readonly errors: ErrorLog;
   private raf = 0;
   private canvasDirty = true;
   private uiDirty = true;
@@ -141,7 +143,15 @@ export class App {
   // ---- selection ----
   private layerId: string | null = null;
   private partId: string | null = null;
-  private range: FrameRange | null = null;
+  private rangeValue: FrameRange | null = null;
+  /** The selected frame range. Playback loops inside it while it is set. */
+  private get range(): FrameRange | null {
+    return this.rangeValue;
+  }
+  private set range(range: FrameRange | null) {
+    this.rangeValue = range;
+    this.clock.setLoopRange(range);
+  }
   /** Shown in the selection bar until the selection next changes. */
   private notice: string | null = null;
   /** ?layer=&part=&from=&to= waiting for a valid scene to be checked against. */
@@ -166,22 +176,29 @@ export class App {
   private hoverFailedFrame: number | null = null;
   private scrubbing = false;
 
-  constructor(root: HTMLElement, library: SceneLibrary, options: AppOptions) {
+  // ---- handoff to the agent (ADR 0003) ----
+  private readonly studio = new StudioClient();
+  /** Where the click that picked the layer landed, in scene pixels; sent with the selection. */
+  private selectionPoint: Point | null = null;
+  private publishTimer: ReturnType<typeof setTimeout> | null = null;
+  private requests: StudioRequest[] = [];
+
+  /**
+   * `root` holds the mounted Viewer.svelte, whose .stage and .stage-frame the
+   * canvas and overlay go into. `ui` is the state its components show.
+   */
+  constructor(root: HTMLElement, library: SceneLibrary, options: AppOptions, ui: ViewerUi) {
     this.library = library;
+    this.ui = ui;
     this.pendingFrameParam = options.frame;
     const sel = options.selection;
     this.pendingSelection = sel && (sel.layer ?? sel.part ?? sel.from ?? sel.to) !== null ? sel : null;
 
-    const shell = document.createElement('main');
-    shell.className = 'viewer';
-    const stage = document.createElement('div');
-    stage.className = 'stage';
-    shell.appendChild(stage);
-    root.replaceChildren(shell);
+    const stage = root.querySelector<HTMLElement>('.stage');
+    const frame = root.querySelector<HTMLElement>('.stage-frame');
+    if (!stage || !frame) throw new Error('The viewer layout is missing .stage or .stage-frame.');
 
-    // Controls first: the footer takes its height out of the stage before
-    // CanvasView measures it, so the first render is already the right size.
-    this.controls = new Controls(shell, {
+    this.actions = {
       togglePlay: () => this.togglePlay(),
       scrubStart: () => {
         this.resumeAfterScrub = this.clock.playing;
@@ -189,7 +206,7 @@ export class App {
         this.scrubbing = true;
         this.hoverLayer = null;
       },
-      scrub: (frame) => this.seekInternal(frame, false),
+      scrub: (f) => this.seekInternal(f, false),
       scrubEnd: () => {
         this.scrubbing = false;
         this.requestHover();
@@ -200,8 +217,6 @@ export class App {
         const next = findEntry(this.library, key);
         if (next) this.userSelect(next);
       },
-    });
-    this.bar = new SelectionBar(this.controls.element, {
       clearLayer: () => {
         this.userSetLayer(null, null);
         this.flushNow();
@@ -219,11 +234,22 @@ export class App {
         this.flushNow();
         return null;
       },
-    });
-    // The canvas and the overlay share one box, so the overlay lines up with the canvas exactly.
-    const frame = document.createElement('div');
-    frame.className = 'stage-frame';
-    stage.appendChild(frame);
+      sendRequest: (prompt, files) => this.sendRequest(prompt, files),
+      requestAction: async (id, action, prompt) => {
+        try {
+          await this.studio.act(id, action, prompt);
+          return null;
+        } catch (err) {
+          return errorText(err).message;
+        }
+      },
+      clearFinished: async () => {
+        await this.studio.clearFinished().catch(() => {});
+      },
+      restoreRequest: (id) => this.restoreRequest(id, false),
+      viewRequest: (id) => this.restoreRequest(id, true),
+      dismissToast: () => (this.ui.toast = null),
+    };
     this.view = new CanvasView(
       stage,
       () => {
@@ -233,7 +259,7 @@ export class App {
       frame,
     );
     this.overlay = new SelectionOverlay(frame);
-    this.errors = new ErrorPanel(stage);
+    this.errors = new ErrorLog((blocks) => (this.ui.errors = blocks));
 
     // The letterbox around the canvas is outside the scene: a click there clears the layer.
     this.stageElement = stage;
@@ -258,6 +284,7 @@ export class App {
     if (options.autoplay) this.playInternal();
 
     this.api = this.createApi();
+    this.startQueue();
   }
 
   /** Swaps in a freshly loaded library (hot edit of a scene or rig), keeping scene, frame, and play state. */
@@ -370,9 +397,11 @@ export class App {
     this.meter.reset();
     this.errors.set('render', null);
     this.syncErrors();
-    this.controls.setScenes(this.sceneOptions(), entry?.key ?? null);
+    this.ui.scenes = this.sceneOptions();
+    this.ui.selectedScene = entry?.key ?? null;
     document.title = entry ? `${entry.key} · Frame Studio` : 'Frame Studio';
     this.syncUrl();
+    this.schedulePublish();
     this.invalidate();
   }
 
@@ -483,6 +512,7 @@ export class App {
     this.meter.reset();
     this.uiDirty = true;
     this.syncUrl();
+    this.schedulePublish();
     this.requestHover();
     this.schedule();
   }
@@ -496,6 +526,8 @@ export class App {
     if (after !== before) {
       this.canvasDirty = true;
       this.requestHover();
+      // The selection file carries the frame on screen; while paused, keep it current.
+      if (!this.clock.playing) this.schedulePublish();
     }
     this.syncUrl();
     if (sync) this.flushNow();
@@ -605,6 +637,7 @@ export class App {
       this.notice = `Hit test failed: ${errorText(err).message}`;
       this.uiDirty = true;
     }
+    this.selectionPoint = this.layerId !== null && p ? { x: Math.round(p.x), y: Math.round(p.y) } : null;
     this.flushNow();
   };
 
@@ -698,6 +731,7 @@ export class App {
   private userSetLayer(layerId: string | null, partId: string | null): void {
     this.layerId = layerId;
     this.partId = layerId !== null ? partId : null;
+    if (layerId === null) this.selectionPoint = null;
     this.selectionChanged();
   }
 
@@ -710,7 +744,124 @@ export class App {
     this.notice = null;
     this.uiDirty = true;
     this.syncUrl();
+    this.schedulePublish();
     this.schedule();
+  }
+
+  // ---- handoff to the agent ----
+
+  /** What a request is about: the layer (and part) and range picked, the whole range with no layer, or the whole scene with nothing picked. */
+  private requestSelection(): RequestSelection | null {
+    const scene = this.validScene();
+    if (!scene) return null;
+    const from = this.range?.from ?? 0;
+    const to = this.range?.to ?? this.total;
+    return {
+      sceneId: scene.id,
+      ...(this.layerId !== null ? { layerId: this.layerId } : {}),
+      ...(this.layerId !== null && this.partId !== null ? { partId: this.partId } : {}),
+      from,
+      to,
+    };
+  }
+
+  /** Writes .frame-studio/selection.json 300 ms after the selection stops changing (ADR 0003). */
+  private schedulePublish(): void {
+    if (!this.studio.available) return;
+    if (this.publishTimer) clearTimeout(this.publishTimer);
+    this.publishTimer = setTimeout(() => {
+      this.publishTimer = null;
+      const selection = this.requestSelection();
+      const picked = selection && (this.layerId !== null || this.range !== null);
+      const current: Omit<CurrentSelection, 'updatedAt'> | null = picked
+        ? { ...selection, frame: this.clock.frame, ...(this.selectionPoint && this.layerId !== null ? { point: this.selectionPoint } : {}) }
+        : null;
+      this.studio.setSelection(current).catch(() => {});
+    }, 300);
+  }
+
+  private startQueue(): void {
+    this.ui.studio.available = this.studio.available;
+    if (!this.studio.available) return;
+    const apply = (requests: StudioRequest[]) => {
+      for (const r of requests) {
+        const before = this.requests.find((p) => p.id === r.id);
+        if (before && before.status !== r.status && (r.status === 'done' || r.status === 'failed')) {
+          this.ui.toast = { id: r.id, status: r.status, text: r.summary ?? '' };
+        }
+      }
+      this.requests = requests;
+      this.ui.studio.requests = requests;
+    };
+    // A push is always newer than the first fetch, so once one arrives the fetch result is dropped.
+    let pushed = false;
+    this.studio.queue().then(
+      (requests) => {
+        if (!pushed) apply(requests);
+      },
+      (err) => (this.ui.studio.error = errorText(err).message),
+    );
+    this.studio.onQueue((requests) => {
+      pushed = true;
+      apply(requests);
+    });
+    // Stalled requests are judged against the clock, so let the panel re-check now and then.
+    setInterval(() => (this.ui.studio.now = Date.now()), 30_000);
+  }
+
+  private async sendRequest(prompt: string, files: File[]): Promise<{ ok: true; id: number; copied: boolean } | { ok: false; error: string }> {
+    const selection = this.requestSelection();
+    if (!selection) return { ok: false, error: 'Open a valid scene first.' };
+    if (!prompt.trim()) return { ok: false, error: 'Write what you want changed.' };
+    try {
+      const references: string[] = [];
+      for (const file of files) references.push(await this.studio.uploadReference(file));
+      const request = await this.studio.create({
+        selection,
+        frame: this.clock.frame,
+        ...(this.selectionPoint && this.layerId !== null ? { point: this.selectionPoint } : {}),
+        prompt,
+        references,
+      });
+      let copied = false;
+      try {
+        await navigator.clipboard.writeText(clipboardLine(request));
+        copied = true;
+      } catch {
+        // The clipboard can refuse, e.g. without focus. The request is queued either way.
+      }
+      return { ok: true, id: request.id, copied };
+    } catch (err) {
+      return { ok: false, error: errorText(err).message };
+    }
+  }
+
+  /** Brings back a request's scene, layer, part, range and frame. With play, loops its range, for View. */
+  private restoreRequest(id: number, play: boolean): void {
+    const request = this.requests.find((r) => r.id === id);
+    if (!request) return;
+    const sel = request.selection;
+    const entry = findEntry(this.library, sel.sceneId);
+    if (!entry) {
+      this.notice = `Scene "${sel.sceneId}" is no longer in scenes/.`;
+      this.uiDirty = true;
+      this.schedule();
+      return;
+    }
+    if (entry !== this.entry) this.userSelect(entry);
+    const parts = sel.layerId !== undefined ? this.shape?.layers.get(sel.layerId) : undefined;
+    const missing = sel.layerId !== undefined && parts === undefined;
+    this.layerId = missing ? null : (sel.layerId ?? null);
+    this.partId = this.layerId !== null && sel.partId !== undefined && parts?.includes(sel.partId) ? sel.partId : null;
+    this.selectionPoint = null;
+    this.range = rangeError(sel.from, sel.to, this.total) === null ? { from: sel.from, to: sel.to } : null;
+    this.clock.seek(play && this.range ? this.range.from : request.frame);
+    this.selectionChanged();
+    if (missing) this.notice = `Layer "${sel.layerId}" is no longer in the scene.`;
+    this.canvasDirty = true;
+    this.requestHover();
+    if (play) this.playInternal();
+    this.flushNow();
   }
 
   // ---- rendering ----
@@ -796,29 +947,31 @@ export class App {
   private syncUi(now: number): void {
     this.uiDirty = false;
     const scene = this.clock.timeline ? (this.entry?.scene ?? null) : null;
-    this.controls.setPlaying(this.clock.playing, scene !== null);
-    this.controls.setRange(scene ? this.range : null, this.total);
-    this.bar.set({
+    const ui = this.ui;
+    ui.playing = this.clock.playing;
+    ui.canPlay = scene !== null;
+    ui.band = scene && this.range ? { range: this.range, frameCount: this.total } : null;
+    ui.selection = {
       sceneId: scene?.id ?? null,
       layer: layerLabel(this.layerId, this.partId),
       range: scene ? this.range : null,
       rangeText: scene ? describeRange(this.range, scene.fps, this.total) : null,
       frameCount: this.total,
       notice: this.notice,
-    });
+    };
     if (!scene) {
-      this.controls.setTimeline(null);
-      this.controls.setFps(null, null);
+      ui.timeline = null;
+      ui.fps = null;
       return;
     }
     const frame = this.clock.frame;
-    this.controls.setTimeline({
+    ui.timeline = {
       frame,
       frameCount: this.total,
       timecode: formatTimecode(frame, scene.fps),
       endTimecode: formatTimecode(this.total, scene.fps),
-    });
-    this.controls.setFps(scene.fps, this.clock.playing ? this.meter.fps(now) : null);
+    };
+    ui.fps = { scene: scene.fps, measured: this.clock.playing ? this.meter.fps(now) : null };
   }
 
   /** The frame the URL should carry. While a scene is invalid the clock keeps its frame, so the URL keeps it too. */

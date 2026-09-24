@@ -10,11 +10,11 @@ The canvas is the selection surface. You click a layer or part, pick a frame ran
 
 - **Files are the source of truth.** Everything lives in `.frame-studio/`, which is gitignored. The viewer writes through its studio server (ADR 0001) and the MCP server writes directly. Neither keeps state in memory that the other needs.
 - **The current selection:** `.frame-studio/selection.json` holds `{ sceneId, layerId?, partId?, from, to, frame, point? }`. The viewer rewrites it 300 ms after the selection stops changing and clears it on deselect. Without a `layerId` it means the whole frame range.
-- **The request queue:** each ask is its own file, `.frame-studio/requests/NNNN.json`, with ids counting up from 1. It holds the selection, the frame on screen, the click point, the prompt, and reference image paths. It holds no image; the agent calls `render_frame` and `hit_test` to see. A request moves from pending to in progress, then done or failed, and the viewer shows it as stalled after 10 minutes in progress. The MCP server claims a request by renaming its file, which is atomic, so two agent sessions never take the same one.
+- **The request queue:** each ask is its own file, `.frame-studio/requests/NNNN.json`, with ids counting up from 1. It holds the selection, the frame on screen, the click point, the prompt, and reference image paths. It holds no image; the agent calls `render_frame` and `hit_test` to see. A request moves from pending to in progress, then done or failed, and the viewer shows it as stalled after 10 minutes in progress. The MCP server claims a request by creating `NNNN.claim` exclusively, which only one process can win, so two agent sessions never take the same one. A request is created by hard-linking a finished temp file to `NNNN.json`, so ids never collide and readers never see half a file.
 - **Reference images** are copied into `references/` under readable unique names: PNG, JPEG or WebP, up to 20 MB each. Requests list their repo-relative paths. They stay agent input only (`CLAUDE.md`).
 - **Getting it to the agent.** It works with any MCP client:
   - The viewer's "Send to agent" writes the request and copies a one-line summary to paste into any agent.
-  - MCP tools: `next_request` (claims the oldest pending request), `get_request(id)`, `complete_request(id, status, summary)` and `get_selection`. Every request tells the agent to call `complete_request` when it finishes.
+  - MCP tools: `next_request` (claims the oldest pending request), `get_request(id)`, `complete_request(id, status, summary)` and `get_selection`. Every request tells the agent to call `complete_request` when it finishes. `get_request` claims a request that is still pending: the pasted line leads there, and without a claim there would be no checkpoint to revert to.
 - **Claude Code extras:**
   - a `/frame-studio:next` slash command, served as an MCP prompt, that hands the agent the next request
   - `@frame-studio:selection://current`, a resource for the selection
@@ -23,8 +23,9 @@ The canvas is the selection surface. You click a layer or part, pick a frame ran
   - When the agent claims a request, the MCP server copies the scene file to `.frame-studio/requests/NNNN.before.json`. Since the copy is taken at claim time, it also covers edits the agent makes to scene files directly.
   - **Revert** restores the copy.
   - **Try again** reverts, then queues the same selection, prompt and references as attempt N of the same request. You can edit the prompt first.
-  - Both are offered only on the newest request for each scene, so reverting never throws away a later edit. Rig code is left to git.
-- **The viewer's queue list** shows each request's prompt, range, status and summary. Clicking a request restores its selection. You can cancel a pending request and requeue a stalled one. When one finishes, a notice offers **View**, which jumps to its range and loops it. Done requests stay until you clear them.
+  - Both are offered only when no other request on the scene is in progress, or was claimed or finished after the checkpoint was taken. That goes by time, not id, since two agent sessions can overlap and a requeued request keeps its first checkpoint. So a revert never throws away anyone else's work, and undo can still step back one request at a time. Rig code is left to git.
+- **The viewer's queue list** shows each request's prompt, range, status and summary. Clicking a request restores its selection. You can cancel a pending request and requeue a stalled one. When one finishes, a notice offers **View**, which jumps to its range and loops it. Done requests stay until you clear them. Clearing moves them into `requests/archive/`, and their ids are never handed out again, so an old pasted line can't reach a different request.
+- **Security.** The studio server takes requests only from the viewer's own page. It checks `Sec-Fetch-Site`, or `Origin`, and takes JSON bodies only. Without that, any website open in the browser could POST to localhost and queue instructions for the agent. It also checks every request's fields, and reference paths must be images directly in `references/`.
 
 ## Consequences
 

@@ -22,6 +22,7 @@
     "tests"
   ],
   "exclude": [
-    "tests/browser"
+    "tests/browser",
+    "tests/node"
   ]
 }

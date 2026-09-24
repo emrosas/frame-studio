@@ -32,7 +32,7 @@ const globbed = import.meta.glob(
 ) as Record<string, string>;
 // All other app code, to check that only src/export reaches for the export libraries.
 const appSources = import.meta.glob(
-  ['/src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}', '!/src/export/**', '!**/*.test.*', '!**/*.d.{ts,mts,cts}'],
+  ['/src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs,svelte}', '!/src/export/**', '!**/*.test.*', '!**/*.d.{ts,mts,cts}'],
   { query: '?raw', import: 'default', eager: true },
 ) as Record<string, string>;
 const isRuntimeSource = (f: string) => !/\.test\.[^/]+$/.test(f) && !/\.d\.[mc]?ts$/.test(f);

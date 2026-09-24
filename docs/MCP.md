@@ -40,8 +40,20 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. |
 | `apply_to_selection(selection, patch)` | A scoped edit. Over `[from, to)` of one layer, it swaps to a rig variant and/or holds params, written as overrides. |
 | `export(sceneId, target, from?, to?)` | `mp4`, `gif` or `html`. Returns the file path under `out/`. |
+| `next_request()` | Claims the oldest pending request from the viewer's queue and returns it, with instructions. |
+| `get_request(id)` | A request by id, as in a pasted line. A request that is still pending gets claimed, so its checkpoint is taken. |
+| `complete_request(id, status, summary)` | Marks a request `done` or `failed`, with a one-line summary the viewer shows. |
+| `get_selection()` | What is selected in the viewer right now: scene, layer, part, range, frame, and click point. |
+
+In Claude Code the server also offers the `/frame-studio:next` command, which takes the next request and hands it to the agent, and the resource `@frame-studio:selection://current`, the viewer's current selection.
 
 A selection is `{ sceneId, layerId?, partId?, from, to }`. `layerId` comes from `hit_test`, and `"background"` means the background. Leaving out `layerId` selects the whole frame range, and then params go to every layer whose rig takes all of them. A rig swap always needs a layer. A patch is `{ rig?, params? }`. An override the range only partly covers is split, so it keeps applying outside the range and the patch lands on top of it inside. A `partId` is accepted, but params apply to the whole layer. A part-level change needs a rig variant.
+
+## Requests from the viewer
+
+The viewer's Requests panel sends asks to the agent through files in `.frame-studio/` (`docs/adr/0003-selection-handoff-file-queue.md`). You select something on the canvas, write what should change, attach reference images if you like, and press **Send to agent**. The request lands in the queue, and a line to paste into any agent goes to the clipboard: `Frame Studio request #7: "..." ... get_request (id 7) ...`. In Claude Code, `/frame-studio:next` does the same without pasting.
+
+When an agent claims a request, the scene file is saved first. When it calls `complete_request`, the viewer shows the summary with **View**, which loops the request's range. **Revert** restores the saved scene. **Try again** reverts and queues the same ask as the next attempt, with the prompt editable. Both are offered only when no other request on that scene was active after the save, so they can never throw away someone else's work.
 
 ## A typical loop
 
@@ -58,3 +70,5 @@ A selection is `{ sceneId, layerId?, partId?, from, to }`. `layerId` comes from 
 - Writes go through the scene validator first, and scene files are written in the studio's format: two-space indents, with short objects and arrays on one line.
 - The server watches `src/` and `scenes/`. Edits the agent makes to those files directly, without the tools, show up in the next render.
 - Renders and exports go to `out/`, which git ignores.
+- The viewer's studio server (`/__studio/` on the dev server) takes requests only from the viewer's own page. It refuses other sites, takes JSON only, and checks every request. Reference paths must be images directly in `references/`.
+- `FRAME_STUDIO_DIR` moves the handoff folder. The tests use it, so they never touch a real queue.

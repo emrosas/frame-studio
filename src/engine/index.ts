@@ -11,7 +11,7 @@ export { createRng } from './rng';
 export { evaluateTrack, evaluateTracks } from './tracks';
 export { activeOverride } from './overrides';
 export { createRegistry, defaultParams, baseRigId, variantsOf, rigIdsUsed } from './registry';
-export { clampFrame, PlaybackClock, playbackFrame, wrapFrame, type PlaybackAnchor, type Timeline } from './playback';
+export { clampFrame, PlaybackClock, playbackFrame, wrapFrame, type LoopRange, type PlaybackAnchor, type Timeline } from './playback';
 export { sceneLayers, resolveLayer, type ResolvedLayer } from './resolve';
 export { render, drawLayer, assertFrame, resetContextState } from './render';
 export { PASS_THROUGH, onlyParts } from './kit';

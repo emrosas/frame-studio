@@ -1,8 +1,11 @@
 /// <reference types="vitest/config" />
 import { resolve } from 'node:path';
+import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig } from 'vite';
+import { studioServer } from './tools/studio/plugin.ts';
 
 export default defineConfig({
+  plugins: [svelte(), studioServer()],
   build: {
     rollupOptions: {
       // The viewer, and render mode for the headless tools (render.html).

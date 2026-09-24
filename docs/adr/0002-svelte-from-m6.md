@@ -18,3 +18,5 @@ Svelte 5 compiles to plain JavaScript, and `@sveltejs/vite-plugin-svelte` 7 supp
 
 - `src/engine`, `src/rigs` and `src/audio` never import Svelte. The single-file embed ships none of it, and the runtime budget is unchanged.
 - UI work before M6 should keep logic in plain modules with unit tests, as `selection.ts`, `url.ts` and `mask.ts` do, so the port only rewrites the DOM code.
+- Done in M6, on 2026-09-24. The App class keeps its logic and writes a reactive `ViewerUi` state (`src/viewer/ui.svelte.ts`) that the components read. Browser tests written against the old viewer, finding elements by accessible name, passed unchanged after the port.
+- svelte-check, the type checker for `.svelte` files, needs TypeScript's JavaScript API, and TypeScript 7 has none, so the repo moved from TypeScript 7 to 6.0. The whole codebase typechecked on 6 unchanged.

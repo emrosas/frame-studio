@@ -6,7 +6,7 @@
 // has changed since it last loaded, so edits an agent makes to files directly
 // show up too.
 
-import { readFile, rm } from 'node:fs/promises';
+import { readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import type { ViteDevServer } from 'vite';
@@ -16,6 +16,9 @@ import type { ContactSheetResult, RenderExportResult, RenderHit } from '../../sr
 import { buildEmbed } from '../bundle/embed.ts';
 import { openStudio, startVite, writeViaSink, type Studio } from '../render/studio.ts';
 import { entryPath, loadModules, ROOT, SCENES_DIR, sceneLibrary, writeFileAtomic, type LoadedModules } from '../scene-files.ts';
+import { describeTarget, type StudioRequest } from '../../src/studio/protocol.ts';
+import { STUDIO_DIR } from '../studio/plugin.ts';
+import { StudioQueue } from '../studio/queue.ts';
 
 /** A frame number, or an MM:SS:FF timecode string. */
 export type FrameInput = number | string;
@@ -49,11 +52,18 @@ export class Workspace {
   /** Bumped on every change under src/ or scenes/; the studio reloads when it moves. */
   private generation = 0;
   private loadedGeneration = -1;
+  /** Each scene file's mtime and size when last seen, so an edit is caught even before the watcher reports it. */
+  private readonly stamps = new Map<string, string>();
 
   private readonly vite: ViteDevServer;
+  /** The viewer's request queue (ADR 0003). */
+  readonly queue: StudioQueue;
+  /** Names this agent session in claims. */
+  readonly session = `mcp-${process.pid}`;
 
   private constructor(vite: ViteDevServer) {
     this.vite = vite;
+    this.queue = new StudioQueue(STUDIO_DIR, async (sceneId) => entryPath((await this.entry(sceneId)).entry));
     vite.watcher.on('all', (_event, path) => {
       if (path.startsWith(join(ROOT, 'src')) || path.startsWith(SCENES_DIR)) this.generation++;
     });
@@ -94,7 +104,17 @@ export class Workspace {
   }
 
   /** The render page on `key`, freshly loaded if anything changed since it last loaded. */
-  private async page(key: string): Promise<Studio> {
+  /** The render page on `key`, whose file is `file`, freshly loaded if anything changed since it last loaded. */
+  private async page(key: string, file: string): Promise<Studio> {
+    const info = await stat(file);
+    const stamp = `${info.mtimeMs}:${info.size}`;
+    const seen = this.stamps.get(file);
+    this.stamps.set(file, stamp);
+    if (seen !== undefined && seen !== stamp) {
+      // Changed on disk, maybe by the viewer's Revert, and the watcher may not have said so yet.
+      this.vite.moduleGraph.invalidateAll();
+      this.generation++;
+    }
     const generation = this.generation;
     if (!this.studio) {
       this.studio = await openStudio(key, { server: this.vite });
@@ -186,8 +206,8 @@ export class Workspace {
 
   /** Renders a frame: the full-size PNG goes to out/, and a preview at most maxWidth wide comes back. */
   async renderFrame(key: string, frame: FrameInput, maxWidth: number): Promise<{ file: string; frame: number; png: Buffer; width: number; height: number }> {
-    await this.validScene(key);
-    const studio = await this.page(key);
+    const { file } = await this.validScene(key);
+    const studio = await this.page(key, file);
     const n = await this.resolveFrame(studio, frame);
     const { width, height } = studio.scene;
     const path = join(ROOT, `out/${studio.scene.id}/frame-${pad(n)}.png`);
@@ -208,8 +228,8 @@ export class Workspace {
     key: string,
     options: { from?: FrameInput; to?: FrameInput; every?: number; columns?: number },
   ): Promise<{ file: string; png: Buffer; sheet: ContactSheetResult }> {
-    await this.validScene(key);
-    const studio = await this.page(key);
+    const { file } = await this.validScene(key);
+    const studio = await this.page(key, file);
     const from = options.from === undefined ? undefined : await this.resolveFrame(studio, options.from);
     const to = options.to === undefined ? undefined : await this.resolveFrame(studio, options.to, true);
     const id = studio.scene.id;
@@ -219,8 +239,8 @@ export class Workspace {
   }
 
   async hitTest(key: string, frame: FrameInput, x: number, y: number): Promise<RenderHit & { frame: number }> {
-    await this.validScene(key);
-    const studio = await this.page(key);
+    const { file } = await this.validScene(key);
+    const studio = await this.page(key, file);
     const n = await this.resolveFrame(studio, frame);
     return { frame: n, ...(await studio.call('hitTest', n, x, y, { parts: true })) };
   }
@@ -270,7 +290,7 @@ export class Workspace {
   }
 
   async export(key: string, target: ExportTarget, range: { from?: FrameInput; to?: FrameInput } = {}): Promise<{ file: string } & Partial<RenderExportResult> & { bytes?: number; rigs?: string[] }> {
-    const { scene } = await this.validScene(key);
+    const { scene, file } = await this.validScene(key);
     if (target === 'html') {
       if (range.from !== undefined || range.to !== undefined) throw new Error('html exports the whole scene; leave out from and to');
       const embed = await buildEmbed(key, { server: this.vite });
@@ -278,12 +298,55 @@ export class Workspace {
       await writeFileAtomic(path, embed.html);
       return { file: show(path), bytes: embed.bytes.total, rigs: embed.rigs };
     }
-    const studio = await this.page(key);
+    const studio = await this.page(key, file);
     const from = range.from === undefined ? undefined : await this.resolveFrame(studio, range.from);
     const to = range.to === undefined ? undefined : await this.resolveFrame(studio, range.to, true);
     const suffix = from !== undefined || to !== undefined ? `-${pad(from ?? 0)}-${pad(to ?? studio.scene.frameCount)}` : '';
     const path = join(ROOT, `out/${scene.id}/${scene.id}${suffix}.${target}`);
     const result = await writeViaSink(studio, path, (sink) => studio.call('exportVideo', target, sink, { from, to }));
     return { file: show(path), ...result };
+  }
+
+  /** Claims the oldest pending request for this session; null when none is pending. */
+  nextRequest(): Promise<StudioRequest | null> {
+    return this.queue.claimNext(this.session);
+  }
+
+  /** A request by id, claimed for this session if it is still pending, so its checkpoint is taken. */
+  getRequest(id: number): Promise<StudioRequest> {
+    return this.queue.claim(id, this.session);
+  }
+
+  completeRequest(id: number, status: 'done' | 'failed', summary: string): Promise<StudioRequest> {
+    return this.queue.complete(id, status, summary);
+  }
+
+  /** A request described for the agent: what was asked, what is selected, and how to finish. */
+  async describeRequest(request: StudioRequest): Promise<string> {
+    const s = request.selection;
+    let file = '';
+    let range = `frames [${s.from}, ${s.to})`;
+    try {
+      const { modules, entry } = await this.entry(s.sceneId);
+      file = ` (${entry.file})`;
+      if (entry.scene) range += ` (${modules.engine.formatTimecode(s.from, entry.scene.fps)} to ${modules.engine.formatTimecode(s.to, entry.scene.fps)})`;
+    } catch {
+      // The scene may have been renamed; the id still says which one.
+    }
+    const target = `${describeTarget(s)}${s.layerId === undefined ? ' (a whole-frame-range selection)' : ''}`;
+    const attempt = request.attempt && request.attempt > 1 ? ` (attempt ${request.attempt} of #${request.retryOf}; the user reverted the earlier attempt and asked again)` : '';
+    const lines = [
+      `Frame Studio request #${request.id}${attempt}. Status: ${request.status.replace('_', ' ')}.`,
+      `Prompt: ${request.prompt}`,
+      `Scene: ${s.sceneId}${file}`,
+      `Selection: ${target}, ${range}`,
+      `Frame on screen when sent: ${request.frame}${request.point ? `; the user clicked scene pixel (${Math.round(request.point.x)}, ${Math.round(request.point.y)})` : ''}`,
+      ...(request.references.length > 0 ? [`Reference images (open them to see what the user means; never put them in a scene or export): ${request.references.join(', ')}`] : []),
+      ...(request.checkpoint ? ['The scene was saved before you start, so the user can revert your change.'] : []),
+      '',
+      'How to do it: look with render_frame, render_contact_sheet and hit_test. Change it with apply_to_selection (pass this selection), update_scene, or a new rig variant under src/rigs applied through an override. Render again to check.',
+      `When you finish, call complete_request with id ${request.id}, status "done" or "failed", and a one-line summary of what you changed or why it failed.`,
+    ];
+    return lines.join('\n');
   }
 }

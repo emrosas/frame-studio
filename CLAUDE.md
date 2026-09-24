@@ -64,6 +64,8 @@ src/
               Mediabunny, gifenc). Browser code; never imported by the runtime.
   embed/      The player inside the single-file HTML embed: canvas, playback
               loop, window.studio and postMessage API. Runtime rules apply.
+  studio/     The viewer-to-agent handoff protocol (ADR 0003): request and
+              selection shapes and shared rules. Import-free, so Node uses it too.
 scenes/       Scene files (JSON). The primary thing the agent edits.
 references/   Reference images supplied by the user (agent input only, gitignored).
 tools/
@@ -72,6 +74,8 @@ tools/
   bundle/     Single-file HTML builder: validates the scene, bundles only the rigs
               it uses with the player, inlines all. npm run export -- --target html.
   mcp/        MCP server exposing the studio to the agent (docs/MCP.md).
+  studio/     The request queue on disk, and the studio server (a Vite plugin
+              serving /__studio/ to the viewer).
 out/          Renders and exports (gitignored).
 ```
 
@@ -170,10 +174,12 @@ Users can attach reference images to a prompt. References are **input to the age
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
 - `apply_to_selection(selection, patch)`: writes a scoped override for the selection
 - `export(sceneId, target)`: `mp4` | `gif` | `html`, returns an output path
+- `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request queue and current selection (ADR 0003), plus the `/frame-studio:next` prompt and the `selection://current` resource
 
 ## Conventions
 
-- TypeScript, strict mode. Vite for the viewer. Vitest for tests.
+- TypeScript 6, strict mode. Vite for the viewer, with Svelte 5 for its UI (ADR 0002). Vitest for tests. `npm run typecheck` runs tsc for app and Node code and svelte-check for components. TypeScript 7 has no JavaScript API, which svelte-check needs, so the repo stays on 6.
+- `npm test` is the unit suite. `npm run test:browser` runs Playwright against the viewer, the render page, the embed, the handoff and the MCP server.
 - After changing drawing code, verify visually with `render_frame` or a contact sheet rather than assuming it looks right.
 - Maintain `docs/PROGRESS.md`: done, next, open questions, known issues. Read it at the start of each session and update it at the end.
 - The roadmap is `docs/ROADMAP.md`. Work milestone by milestone; don't start the next until the current one's acceptance criteria pass.
