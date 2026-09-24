@@ -7,8 +7,11 @@ export { clampFrame, PlaybackClock, playbackFrame, wrapFrame, type PlaybackAncho
 /** Measures how many distinct frames per second actually reached the screen. */
 export class FpsMeter {
   private times: number[] = [];
+  private readonly windowMs: number;
 
-  constructor(private readonly windowMs = 1000) {}
+  constructor(windowMs = 1000) {
+    this.windowMs = windowMs;
+  }
 
   record(nowMs: number): void {
     this.times.push(nowMs);

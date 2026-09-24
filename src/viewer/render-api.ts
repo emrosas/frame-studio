@@ -23,6 +23,13 @@ export interface RenderExportResult {
   colours?: number;
 }
 
+export interface RenderHit {
+  layerId: string | null;
+  partId?: string;
+  /** Layers with paint at the pixel, top first, with their share of it. */
+  candidates: { layerId: string; alpha: number; share: number }[];
+}
+
 export interface ContactSheetResult {
   frames: number[];
   width: number;
@@ -60,8 +67,13 @@ export interface RenderStudioApi {
   renderFrame(frame: number): number;
   /** SHA-256, as hex, of the canvas RGBA bytes after drawing frame n. */
   pixelHash(frame: number): Promise<string>;
-  /** Draws frame n and writes it as PNG to the sink. Returns the byte count. */
-  writePng(frame: number, sinkId: string): Promise<number>;
+  /**
+   * Draws frame n and writes it as PNG to the sink. With maxWidth, a frame
+   * wider than that is scaled down to fit, for previews. Returns the byte count.
+   */
+  writePng(frame: number, sinkId: string, options?: { maxWidth?: number }): Promise<number>;
+  /** The layer, and with parts the part, at scene pixel (x, y) on frame n. */
+  hitTest(frame: number, x: number, y: number, options?: { parts?: boolean }): RenderHit;
   /** Encodes frames [from, to) and streams the file to the sink. Defaults to the whole scene. */
   exportVideo(target: ExportTarget, sinkId: string, range?: { from?: number; to?: number }): Promise<RenderExportResult>;
   /** Draws every Nth frame of [from, to) into one grid and writes it as PNG to the sink. */

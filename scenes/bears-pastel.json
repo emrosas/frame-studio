@@ -2,18 +2,11 @@
   "id": "bears-pastel",
   "fps": 1,
   "duration": 1,
-  "size": [
-    1080,
-    1920
-  ],
+  "size": [1080, 1920],
   "seed": 11,
   "background": {
     "rig": "pastel-ground",
-    "params": {
-      "color": "#ffa200",
-      "texture": 1,
-      "mottle": 0.5
-    }
+    "params": { "color": "#ffa200", "texture": 1, "mottle": 0.5 }
   },
   "layers": [
     {

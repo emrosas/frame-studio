@@ -16,12 +16,14 @@
     "contact-sheet": "node tools/render/cli.ts contact-sheet"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.30.1",
     "@napi-rs/canvas": "^1.0.9",
     "@types/node": "^26.6.2",
     "playwright": "1.63.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",
-    "vitest": "^5.0.1"
+    "vitest": "^5.0.1",
+    "zod": "4.6.5"
   },
   "dependencies": {
     "gifenc": "1.0.3",

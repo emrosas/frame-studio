@@ -3,13 +3,14 @@
 // the CLI and the browser tests. Node only; runs as TypeScript through Node's
 // type stripping, so relative imports carry their .ts extension.
 
-import { mkdir, open, type FileHandle } from 'node:fs/promises';
+import { mkdir, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
 import { createServer, type ViteDevServer } from 'vite';
 import type { RenderSceneInfo, RenderStudioApi } from '../../src/viewer/render-api.ts';
+import { ROOT } from '../scene-files.ts';
 
-export const ROOT = resolve(import.meta.dirname, '../..');
+export { ROOT };
 
 /**
  * Ticket 03: keep 2D canvas raster on the CPU and Skia's runtime-chosen code
@@ -31,6 +32,8 @@ export interface Studio {
   call<K extends keyof Methods>(name: K, ...args: Parameters<Methods[K]>): Promise<Awaited<ReturnType<Methods[K]>>>;
   /** A sink id whose bytes land in `path`. Parent folders are created. */
   fileSink(path: string): Promise<string>;
+  /** Closes a sink's file if the page has not already. Safe to call twice. */
+  closeSink(sinkId: string): Promise<void>;
   /** Opens another scene in the same browser and server. */
   load(sceneKey: string): Promise<RenderSceneInfo>;
   close(): Promise<void>;
@@ -41,6 +44,30 @@ export interface OpenOptions {
   onProgress?(stage: string, done: number, total: number): void;
   /** Reuse a browser instead of launching one (the caller closes it). */
   browser?: Browser;
+  /** Reuse a listening Vite server from startVite instead of starting one (the caller closes it). */
+  server?: ViteDevServer;
+}
+
+/**
+ * Starts Vite for render.html on a free port. With watch, file edits
+ * invalidate Vite's module cache, so a reloaded page sees them; the render
+ * CLI runs once and leaves it off.
+ */
+export async function startVite(options: { watch?: boolean } = {}): Promise<ViteDevServer> {
+  // Port 0: the OS picks a free port as Vite binds it, so parallel runs cannot collide.
+  const server = await createServer({
+    root: ROOT,
+    configFile: resolve(ROOT, 'vite.config.ts'),
+    logLevel: 'error',
+    server: { host: '127.0.0.1', port: 0, strictPort: true, hmr: false, ...(options.watch ? {} : { watch: null }) },
+  });
+  try {
+    await server.listen();
+  } catch (err) {
+    await server.close();
+    throw err;
+  }
+  return server;
 }
 
 /** Strips Playwright's "page.evaluate: " wrapper so messages read as the page wrote them. */
@@ -54,18 +81,12 @@ export async function launchBrowser(): Promise<Browser> {
 }
 
 export async function openStudio(sceneKey: string, options: OpenOptions = {}): Promise<Studio> {
-  // Port 0: the OS picks a free port as Vite binds it, so parallel runs cannot collide.
-  const server: ViteDevServer = await createServer({
-    root: ROOT,
-    configFile: resolve(ROOT, 'vite.config.ts'),
-    logLevel: 'error',
-    server: { host: '127.0.0.1', port: 0, strictPort: true, hmr: false, watch: null },
-  });
+  const ownsServer = !options.server;
+  const server = options.server ?? (await startVite());
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
   const ownsBrowser = !options.browser;
   try {
-    await server.listen();
     const base = server.resolvedUrls?.local[0];
     if (!base) throw new Error('Vite started without a local URL.');
     browser = options.browser ?? (await launchBrowser());
@@ -130,6 +151,10 @@ export async function openStudio(sceneKey: string, options: OpenOptions = {}): P
         sinks.set(id, await open(path, 'w'));
         return id;
       },
+      async closeSink(sinkId) {
+        await sinks.get(sinkId)?.close().catch(() => {});
+        sinks.delete(sinkId);
+      },
       async load(key) {
         scene = await load(key);
         return scene;
@@ -138,13 +163,31 @@ export async function openStudio(sceneKey: string, options: OpenOptions = {}): P
         for (const handle of sinks.values()) await handle.close().catch(() => {});
         await openContext.close().catch(() => {});
         if (ownsBrowser) await browser?.close().catch(() => {});
-        await server.close();
+        if (ownsServer) await server.close();
       },
     };
   } catch (err) {
     await context?.close().catch(() => {});
     if (ownsBrowser) await browser?.close().catch(() => {});
-    await server.close();
+    if (ownsServer) await server.close();
     throw err;
+  }
+}
+
+/**
+ * Writes through a sink into `path`.partial and renames it to `path` only once
+ * `produce` succeeds, so a failed export never leaves a file that looks whole.
+ */
+export async function writeViaSink<T>(studio: Studio, path: string, produce: (sinkId: string) => Promise<T>): Promise<T> {
+  const partial = `${path}.partial`;
+  const sink = await studio.fileSink(partial);
+  try {
+    const result = await produce(sink);
+    await studio.closeSink(sink);
+    await rename(partial, path);
+    return result;
+  } finally {
+    await studio.closeSink(sink);
+    await rm(partial, { force: true });
   }
 }

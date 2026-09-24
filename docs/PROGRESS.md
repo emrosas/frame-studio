@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-23, after the M4 review.
+Last updated 2026-09-24, after the M5 review.
 
 ## Done
 
@@ -229,9 +229,48 @@ A `/code-review` at high effort found ten issues, and all ten are fixed. The sui
 - The wall-clock exemption covered all of `src/embed`. It now covers `player.ts` only.
 - A host that started listening after the load message had no documented way to catch up. The `state` command is now documented.
 
+### M5: MCP server
+
+M5 is done and its two acceptance criteria pass. `node tools/mcp/server.ts` is Frame Studio's MCP server over stdio. The repo's `.mcp.json` registers it for Claude Code, where `claude mcp get frame-studio` shows it waiting for approval. `docs/MCP.md` has setup for any agent and the tool reference.
+
+What M5 delivered:
+
+- The nine tools `CLAUDE.md` names: `list_scenes`, `get_scene`, `update_scene`, `list_rigs`, `render_frame`, `render_contact_sheet`, `hit_test`, `apply_to_selection` and `export`. Frames take numbers or timecodes. Render tools return PNGs the agent can see, and write full-size copies to `out/`. `render_frame` previews up to 1280 px wide by default.
+- `tools/mcp/workspace.ts`, the logic behind the tools. One watching Vite server serves both sides: the engine, rigs and viewer library code in Node, and `render.html` for Playwright. The studio starts on the first tool that needs pixels, and reloads whenever a file under `src/` or `scenes/` has changed. Tools run one at a time.
+- Scene editing in the engine, `src/engine/scene-edit.ts`, with tests. `mergePatch` is RFC 7386, tested against the RFC's own examples. `applyToSelection` splits any override the range partly covers, so an edit inside `bruno`'s plaster range keeps the plaster around it. `formatSceneJson` writes two-space JSON with short objects and arrays on one line. Every scene file was reformatted with it once, with the data checked identical, so later MCP edits make small diffs.
+- `update_scene` and `apply_to_selection` validate before saving and write through a `.partial` file. An invalid patch saves nothing and returns the validator's messages. A scene's id can't change, since its file is named after it.
+- A selection without a `layerId` covers the whole frame range, as `CLAUDE.md` describes. Its params go to every layer whose rig takes them all. A `partId` is accepted, but params apply to the whole layer.
+- Shared Node helpers in `tools/scene-files.ts` (scene loading, `writeFileAtomic`). `buildEmbed` can reuse a running Vite server. `tsconfig.node.json` sets `erasableSyntaxOnly`, so the typecheck catches TypeScript that Node's type stripping rejects.
+- The MCP SDK 1.30.1 and zod 4 are pinned dev dependencies. They are tooling and never reach the runtime. zod only describes tool inputs; scenes are checked by the engine's own validator, which stays the one source of truth.
+
+### How each M5 acceptance criterion was verified
+
+`tests/browser/mcp.test.ts` connects a real MCP client over stdio to `node tools/mcp/server.ts`, as an agent does. It works on a copy of `bear-test` at `scenes/mcp-test-<pid>.json`, which is gitignored and removed afterwards. It has 10 tests.
+
+1. From a fresh agent session: list scenes, render a frame, hit-test the character, apply a scoped change over a frame range, re-render, and see the change only inside that range. `list_scenes` shows the copy with 96 frames and the layers `background`, `bruno` and `pip`. `hit_test` at `00:02:06` (760, 900) returns `bruno` and his `body` part. `apply_to_selection` sets `body` to `#3355ff` over frames 12 to `00:02:00`. Re-rendering gives new pixels on frames 12 and 23, and pixels identical to before on frames 11 and 24.
+2. All three targets export through MCP. The MP4 has 96 packets and lasts 8 s. The GIF range has 12 frames. The HTML file bundles `bear`, `bear.bandaged` and `paper` and has no URLs. The html export goes first, into an `out/` folder that doesn't exist yet.
+
+The same file also checks the plaster split, a whole-range edit, parallel renders, a rejected invalid patch that leaves the file byte for byte unchanged, readable errors for an unknown scene or an out-of-range frame, and the contact sheet.
+
+### M5 review
+
+A `/code-review` at high effort found ten issues, and all ten are fixed. The suite is at 920 unit tests and 42 browser tests.
+
+- The html export failed when `out/<scene>` didn't exist yet. The shared `writeFileAtomic` creates folders, and the test now starts from a missing folder.
+- The SDK runs requests concurrently, but the tools share one page and read, patch and write scene files. Parallel calls could render the wrong scene, start two browsers or drop an edit. Tools now run one at a time, and a test fires four calls at once.
+- A failed page load left the workspace thinking the old scene was still loaded. It now forgets until a load succeeds.
+- One failed startup was cached, and broke every later call. A failed start is now forgotten.
+- A failed export left its file handle open for the rest of the session. `writeViaSink` now closes it either way.
+- `apply_to_selection` required a `layerId`, although `CLAUDE.md` says a selection without one means the whole frame range. It now handles that case.
+- Frame parsing in `apply_to_selection` was a second copy. It now uses the viewer's `parseFrameText` and `rangeError`.
+- `render_frame` rendered twice even when no scaling was needed. It now renders once in that case.
+- The html export started its own Vite server. It now reuses the workspace's.
+- The write-then-rename pattern and `ROOT` were defined several times. Each now lives in one place.
+
 ## Next
 
-1. M5, ticket 09: the MCP server. `tools/render/studio.ts` already does what `render_frame`, `render_contact_sheet` and `export` need. Keep one studio warm, since starting Vite and Chromium takes most of a 3.7 s render. `buildEmbed` covers `export(html)`. `update_scene` and `apply_to_selection` need JSON merge patches, validated with readable errors.
+1. Ticket 10, `.scratch/frame-studio/issues/10-selection-handoff.md`, is a grilling session with the user on how a viewer selection reaches the agent: the clipboard, a file the MCP server reads, or an MCP resource. M6 waits on it. M5 answers part of it: the MCP server and the viewer run as separate processes, and the server sees scene edits through its file watcher.
+2. M6, ticket 11: selection-to-prompt in the viewer. It starts by moving the viewer's UI to Svelte (ADR 0002).
 
 ## Open questions
 

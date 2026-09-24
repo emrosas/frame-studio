@@ -51,11 +51,10 @@ export class PlaybackClock {
   private anchor: PlaybackAnchor = { anchorFrame: 0, anchorMs: 0 };
   private tl: Timeline | null = null;
   private readonly loop: boolean;
+  private readonly now: () => number;
 
-  constructor(
-    private readonly now: () => number,
-    options: { loop?: boolean } = {},
-  ) {
+  constructor(now: () => number, options: { loop?: boolean } = {}) {
+    this.now = now;
     this.loop = options.loop ?? true;
   }
 

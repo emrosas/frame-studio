@@ -17,3 +17,4 @@ export { render, drawLayer, assertFrame, resetContextState } from './render';
 export { PASS_THROUGH, onlyParts } from './kit';
 export { hitTest, type HitCandidate, type HitResult, type HitTestOptions } from './hit-test';
 export { validateScene, type ValidationResult } from './validate';
+export { applyToSelection, formatSceneJson, mergePatch, type EditSelection, type SelectionPatch } from './scene-edit';

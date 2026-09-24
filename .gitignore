@@ -4,3 +4,6 @@ out
 references
 .DS_Store
 *.log
+
+# Temporary scenes the MCP browser tests write and remove
+scenes/mcp-test-*.json

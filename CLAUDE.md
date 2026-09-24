@@ -71,7 +71,7 @@ tools/
               contact sheets. npm run render / export / contact-sheet.
   bundle/     Single-file HTML builder: validates the scene, bundles only the rigs
               it uses with the player, inlines all. npm run export -- --target html.
-  mcp/        MCP server exposing the studio to the agent.
+  mcp/        MCP server exposing the studio to the agent (docs/MCP.md).
 out/          Renders and exports (gitignored).
 ```
 
@@ -160,7 +160,7 @@ Users can attach reference images to a prompt. References are **input to the age
 
 ## MCP server (the agent's API)
 
-Keep inputs and outputs simple JSON. Tools:
+`tools/mcp/server.ts`, over stdio. The repo's `.mcp.json` registers it for Claude Code. Setup and the full tool reference are in `docs/MCP.md`. Keep inputs and outputs simple JSON. Tools:
 - `list_scenes()`, `get_scene(id)`, `update_scene(id, patch)`: JSON merge patch, validated before saving
 - `list_rigs()`: each rig's param schema, parts, and variants
 - `render_frame(sceneId, frame | timecode)`: returns a PNG so the agent can see its work

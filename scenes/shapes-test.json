@@ -44,15 +44,16 @@
     {
       "id": "star",
       "rig": "star",
-      "params": { "x": 960, "y": 640, "points": 5, "outerRadius": 110, "innerRadius": 48, "wobble": 3 },
+      "params": {
+        "x": 960,
+        "y": 640,
+        "points": 5,
+        "outerRadius": 110,
+        "innerRadius": 48,
+        "wobble": 3
+      },
       "tracks": [
-        {
-          "param": "rotation",
-          "keys": [
-            { "t": 0, "v": 0 },
-            { "t": 6, "v": 144 }
-          ]
-        },
+        { "param": "rotation", "keys": [{ "t": 0, "v": 0 }, { "t": 6, "v": 144 }] },
         {
           "param": "scale",
           "keys": [

@@ -2,20 +2,11 @@
   "id": "bear-test",
   "fps": 12,
   "duration": 8,
-  "size": [
-    1920,
-    1080
-  ],
+  "size": [1920, 1080],
   "seed": 5,
   "background": {
     "rig": "paper",
-    "params": {
-      "tone": "#ffa200",
-      "grain": 0,
-      "fibres": 0,
-      "mottle": 0.15,
-      "vignette": 0
-    }
+    "params": { "tone": "#ffa200", "grain": 0, "fibres": 0, "mottle": 0.15, "vignette": 0 }
   },
   "layers": [
     {
@@ -80,70 +71,27 @@
         "bodyLength": 2
       },
       "tracks": [
-        {
-          "param": "x",
-          "keys": [
-            {
-              "t": 0,
-              "v": -150
-            },
-            {
-              "t": 2,
-              "v": 760,
-              "ease": "outQuad"
-            }
-          ]
-        },
+        { "param": "x", "keys": [{ "t": 0, "v": -150 }, { "t": 2, "v": 760, "ease": "outQuad" }] },
         {
           "param": "pose",
           "keys": [
-            {
-              "t": 0,
-              "v": "idle"
-            },
-            {
-              "t": 2,
-              "v": "wave"
-            },
-            {
-              "t": 5,
-              "v": "cheer"
-            },
-            {
-              "t": 7,
-              "v": "idle"
-            }
+            { "t": 0, "v": "idle" },
+            { "t": 2, "v": "wave" },
+            { "t": 5, "v": "cheer" },
+            { "t": 7, "v": "idle" }
           ]
         },
         {
           "param": "expression",
           "keys": [
-            {
-              "t": 0,
-              "v": "neutral"
-            },
-            {
-              "t": 2,
-              "v": "happy"
-            },
-            {
-              "t": 5,
-              "v": "surprised"
-            },
-            {
-              "t": 7,
-              "v": "neutral"
-            }
+            { "t": 0, "v": "neutral" },
+            { "t": 2, "v": "happy" },
+            { "t": 5, "v": "surprised" },
+            { "t": 7, "v": "neutral" }
           ]
         }
       ],
-      "overrides": [
-        {
-          "from": 48,
-          "to": 72,
-          "rig": "bear.bandaged"
-        }
-      ]
+      "overrides": [{ "from": 48, "to": 72, "rig": "bear.bandaged" }]
     },
     {
       "id": "pip",
@@ -212,32 +160,8 @@
         "blinkRate": 16
       },
       "tracks": [
-        {
-          "param": "pose",
-          "keys": [
-            {
-              "t": 0,
-              "v": "shy"
-            },
-            {
-              "t": 4,
-              "v": "wave"
-            }
-          ]
-        },
-        {
-          "param": "expression",
-          "keys": [
-            {
-              "t": 0,
-              "v": "sad"
-            },
-            {
-              "t": 4,
-              "v": "happy"
-            }
-          ]
-        }
+        { "param": "pose", "keys": [{ "t": 0, "v": "shy" }, { "t": 4, "v": "wave" }] },
+        { "param": "expression", "keys": [{ "t": 0, "v": "sad" }, { "t": 4, "v": "happy" }] }
       ]
     }
   ]

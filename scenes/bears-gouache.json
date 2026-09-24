@@ -2,17 +2,9 @@
   "id": "bears-gouache",
   "fps": 1,
   "duration": 1,
-  "size": [
-    1080,
-    1920
-  ],
+  "size": [1080, 1920],
   "seed": 11,
-  "background": {
-    "rig": "gouache-ground",
-    "params": {
-      "color": "#ffa200"
-    }
-  },
+  "background": { "rig": "gouache-ground", "params": { "color": "#ffa200" } },
   "layers": [
     {
       "id": "white",
@@ -82,7 +74,7 @@
         "eyeY": 0.204,
         "eyeSpacing": 0.184,
         "eyeSize": 0.022,
-        "eyeWhite": 2.0,
+        "eyeWhite": 2,
         "lookX": 0.6,
         "lookY": -0.2,
         "browLift": 0.053,
@@ -131,7 +123,7 @@
         "eyeY": 0.229,
         "eyeSpacing": 0.214,
         "eyeSize": 0.025,
-        "eyeWhite": 2.0,
+        "eyeWhite": 2,
         "lookX": 0.6,
         "browLift": 0.09,
         "browLength": 0.11,
@@ -180,7 +172,7 @@
         "eyeY": 0.243,
         "eyeSpacing": 0.221,
         "eyeSize": 0.024,
-        "eyeWhite": 2.0,
+        "eyeWhite": 2,
         "lookX": 0.5,
         "browLift": 0.09,
         "browLength": 0.095,

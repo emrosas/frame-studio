@@ -32,16 +32,14 @@ Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance crite
 - [Which colour tags make an exported MP4 decode to the scene's exact colours everywhere?](issues/15-mp4-colour-tags.md) BT.709 primaries, the sRGB transfer and the BT.709 matrix at full range, in both the VUI and `colr`. WebCodecs only writes them for I420 frames that carry the colour space, so exports convert frames themselves.
 - [M3: Headless render, MP4, and GIF](issues/07-m3-headless-render-mp4-gif.md) M3 is done. `npm run render`, `export` and `contact-sheet` drive `render.html` in Playwright 1.63. Exports encode in the page, and `npm run test:browser` checks determinism, frame counts, durations and colours.
 - [M4: Single-file HTML embed](issues/08-m4-single-file-html-embed.md) M4 is done. `--target html` bundles the player, the scene's own rigs and the scene into one file with no requests, about 54 KB for `bear-test`. It matches the headless renders byte for byte, ships no validator, and takes `window.studio` or `postMessage` commands.
+- [M5: MCP server](issues/09-m5-mcp-server.md) M5 is done. `node tools/mcp/server.ts` serves the nine tools over stdio, and `.mcp.json` registers it for Claude Code. One watching Vite server feeds Node and a lazily started Playwright page, and tools run one at a time. Edits validate before saving and split overlapping overrides.
 
 ## Not yet specified
 
-- How the MCP server renders frames. M3's `npm run render` takes about 3.7 s for one frame, and most of that is starting Vite and Chromium, so M5 should keep one studio (`tools/render/studio.ts`) warm and call it per request.
-- One source of truth for scene validation. The engine needs a zero-dependency validator, and the MCP server has to validate JSON merge patches with readable errors. Whether MCP reuses the engine validator or wraps it stays open until M5. The embed no longer needs the validator, since it validates at export (M4).
-- How an open viewer picks up edits the agent makes through MCP. Vite's file watcher may cover it, or the server may need to push.
+- How an open viewer picks up edits the agent makes through MCP. MCP writes scene files, and M1 showed the viewer swaps in file edits live, so it should need nothing more. No one has watched it happen in a browser yet.
 - Text. The first scene that needs words will choose between vector paths in code and generic system fonts. System fonts render differently per machine, which may break the embed's pixel match.
 - Where shared rig parts live. M2 produces one character. The second character will show which parts are actually shared.
 - Frame-range picking moved into M2 at the user's request. M6 still owns the handoff to the agent.
-
 - Where the Electron build keeps scenes. Local files come first (ADR 0001), but `import.meta.glob` and hot reload only work in dev. The web app's backend comes after the local path works.
 - How the web app reaches an MCP agent on the user's machine. Electron can connect directly, and the web app needs a bridge or the hosted service.
 

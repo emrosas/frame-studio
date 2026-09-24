@@ -8,13 +8,13 @@
 // (buildLibrary and findEntry). Node only; runs as TypeScript through Node's
 // type stripping.
 
-import { readdir, readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { readdir } from 'node:fs/promises';
+import { join } from 'node:path';
 import { build, createServer, parseAst, type Plugin, type Rollup, type ViteDevServer } from 'vite';
-import type { Rig, RigRegistry, Scene } from '../../src/engine/types.ts';
-import type * as Library from '../../src/viewer/library.ts';
+import type { Rig, Scene } from '../../src/engine/types.ts';
+import { loadModules, ROOT, sceneLibrary } from '../scene-files.ts';
 
-export const ROOT = resolve(import.meta.dirname, '../..');
+export { ROOT };
 
 export interface EmbedBuild {
   html: string;
@@ -39,9 +39,10 @@ export interface EmbedBuildOptions {
   scenesDir?: string;
   /** Also bundle the engine and player alone to report bytes.runtime. */
   measureRuntime?: boolean;
+  /** A Vite server to load modules through, such as the MCP workspace's; the caller closes it. Otherwise one is started and closed. */
+  server?: ViteDevServer;
 }
 
-type EngineModule = typeof import('../../src/engine/index.ts');
 
 const ENTRY = 'virtual:frame-studio-embed';
 
@@ -82,14 +83,6 @@ async function rigModules(server: ViteDevServer): Promise<Map<string, { file: st
   return new Map([...found].map(([id, { file, name }]) => [id, { file, name }]));
 }
 
-/** Scene files keyed like import.meta.glob keys them in the viewer: "/scenes/<file>.json". */
-async function readSceneFiles(dir: string): Promise<Record<string, string>> {
-  const files: Record<string, string> = {};
-  for (const f of (await readdir(dir)).filter((name) => name.endsWith('.json')).sort()) {
-    files[`/scenes/${f}`] = await readFile(join(dir, f), 'utf8');
-  }
-  return files;
-}
 
 function entryPlugin(code: string): Plugin {
   return {
@@ -229,31 +222,32 @@ html, body { margin: 0; height: 100%; background: transparent; }
 }
 
 export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions = {}): Promise<EmbedBuild> {
-  const server = await createServer({
-    configFile: false,
-    root: ROOT,
-    logLevel: 'error',
-    appType: 'custom',
-    server: { middlewareMode: true, hmr: false, watch: null },
-    optimizeDeps: { noDiscovery: true, include: [] },
-  });
+  const server =
+    options.server ??
+    (await createServer({
+      configFile: false,
+      root: ROOT,
+      logLevel: 'error',
+      appType: 'custom',
+      server: { middlewareMode: true, hmr: false, watch: null },
+      optimizeDeps: { noDiscovery: true, include: [] },
+    }));
   try {
-    const engine = (await server.ssrLoadModule(join(ROOT, 'src/engine/index.ts'))) as unknown as EngineModule;
-    const rigsIndex = (await server.ssrLoadModule(join(ROOT, 'src/rigs/index.ts'))) as { createDefaultRegistry(): RigRegistry };
-    const library = (await server.ssrLoadModule(join(ROOT, 'src/viewer/library.ts'))) as unknown as typeof Library;
-    const lib = library.buildLibrary(await readSceneFiles(options.scenesDir ?? join(ROOT, 'scenes')), engine.validateScene, rigsIndex.createDefaultRegistry);
-    const entry = library.findEntry(lib, sceneKey);
+    const modules = await loadModules(server);
+    const { engine } = modules;
+    const lib = await sceneLibrary(modules, options.scenesDir);
+    const entry = modules.library.findEntry(lib, sceneKey);
     if (!entry) throw new Error(`No scene "${sceneKey}" in scenes/. Scenes: ${lib.entries.map((e) => e.key).join(', ')}`);
     const problems = [...lib.errors, ...entry.errors];
     if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors, so it cannot be exported:\n${problems.join('\n')}`);
     const scene = entry.scene;
     const ids = engine.rigIdsUsed(scene);
-    const modules = await rigModules(server);
-    const missing = ids.filter((id) => !modules.has(id));
+    const rigFiles = await rigModules(server);
+    const missing = ids.filter((id) => !rigFiles.has(id));
     if (missing.length > 0) throw new Error(`No module under src/rigs exports rig ${missing.map((m) => `"${m}"`).join(', ')} by name.`);
 
     const player = join(ROOT, 'src/embed/player.ts');
-    const imports = ids.map((id, i) => `import { ${modules.get(id)!.name} as rig${i} } from ${importPath(modules.get(id)!.file)};`);
+    const imports = ids.map((id, i) => `import { ${rigFiles.get(id)!.name} as rig${i} } from ${importPath(rigFiles.get(id)!.file)};`);
     const code = [
       `import { mountEmbed, optionsFromQuery } from ${importPath(player)};`,
       ...imports,
@@ -267,6 +261,6 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions = 
     const runtime = options.measureRuntime ? Buffer.byteLength(await bundle(runtimeOnly)) : undefined;
     return { html, scene, rigs: ids, bytes: { total: Buffer.byteLength(html), script: Buffer.byteLength(script), runtime } };
   } finally {
-    await server.close();
+    if (!options.server) await server.close();
   }
 }

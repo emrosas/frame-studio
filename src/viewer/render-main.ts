@@ -3,7 +3,7 @@
 // raster ({ willReadFrequently: true }), sRGB, no devicePixelRatio transform.
 // Exports encode here, in the page that draws the frames (ticket 14).
 
-import { formatTimecode, frameCount, render, type Ctx2D, type RigRegistry, type Scene } from '../engine';
+import { formatTimecode, frameCount, hitTest, render, type Ctx2D, type RigRegistry, type Scene } from '../engine';
 import { contactSheetFrames, contactSheetLayout, exportGif, exportMp4, type ByteSink, type ExportProgress, type FrameSource } from '../export';
 import { findEntry } from './library';
 import type { ContactSheetResult, ExportTarget, RenderExportResult, RenderHostBindings, RenderStudioApi } from './render-api';
@@ -73,6 +73,7 @@ function boot(): RenderStudioApi {
   document.body.append(canvas);
   const ctx = context2d(canvas);
 
+  let probe: OffscreenCanvasRenderingContext2D | null = null;
   const need = (): { scene: Scene; registry: RigRegistry } => {
     if (!scene || !registry || errors.length > 0) throw new Error(`Cannot render.\n${errors.join('\n')}`);
     return { scene, registry };
@@ -118,13 +119,31 @@ function boot(): RenderStudioApi {
       draw(frame);
       return hex(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
     },
-    async writePng(frame, sinkId) {
+    async writePng(frame, sinkId, options = {}) {
       draw(frame);
-      const bytes = await blobBytes(canvas);
+      let source = canvas;
+      if (options.maxWidth !== undefined && options.maxWidth < canvas.width) {
+        const scale = options.maxWidth / canvas.width;
+        source = document.createElement('canvas');
+        source.width = Math.round(canvas.width * scale);
+        source.height = Math.round(canvas.height * scale);
+        const small = context2d(source);
+        small.imageSmoothingQuality = 'high';
+        small.drawImage(canvas, 0, 0, source.width, source.height);
+      }
+      const bytes = await blobBytes(source);
       const sink = hostSink(sinkId);
       await sink.write(bytes, 0);
       await sink.close?.();
       return bytes.length;
+    },
+    hitTest(frame, x, y, options = {}) {
+      const ready = need();
+      checkFrame(frame);
+      probe ??= new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
+      if (!probe) throw new Error('This browser did not provide an offscreen 2D context for hit testing.');
+      const result = hitTest(probe as unknown as Ctx2D, ready.scene, frame, x, y, ready.registry, { parts: options.parts });
+      return { layerId: result.layerId, ...(result.partId !== undefined ? { partId: result.partId } : {}), candidates: result.candidates };
     },
     async exportVideo(target: ExportTarget, sinkId, options = {}): Promise<RenderExportResult> {
       const { scene: s } = need();

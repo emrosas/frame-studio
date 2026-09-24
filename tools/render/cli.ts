@@ -9,11 +9,11 @@
 // to out/<scene>/ unless --out says otherwise. The written path is printed on
 // stdout; progress goes to stderr.
 
-import { mkdir, rename, rm, writeFile as writeBytes } from 'node:fs/promises';
-import { dirname, relative, resolve } from 'node:path';
+import { relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { buildEmbed } from '../bundle/embed.ts';
-import { openStudio, ROOT, type Studio } from './studio.ts';
+import { writeFileAtomic } from '../scene-files.ts';
+import { openStudio, ROOT, writeViaSink, type Studio } from './studio.ts';
 
 const USAGE = `Usage:
   node tools/render/cli.ts frame --scene <id> --frame <n|MM:SS:FF> [--out file.png]
@@ -78,21 +78,6 @@ function progress(stage: string, done: number, total: number): void {
   else if (done === total || done % Math.max(1, Math.round(total / 10)) === 0) process.stderr.write(`${line}\n`);
 }
 
-/**
- * Writes through a sink into `path`.partial and renames it to `path` only once
- * `produce` succeeds, so a failed export never leaves a file that looks whole.
- */
-async function writeFile<T>(studio: Studio, path: string, produce: (sinkId: string) => Promise<T>): Promise<T> {
-  const partial = `${path}.partial`;
-  try {
-    const result = await produce(await studio.fileSink(partial));
-    await rename(partial, path);
-    return result;
-  } finally {
-    await rm(partial, { force: true });
-  }
-}
-
 async function range(studio: Studio): Promise<{ from?: number; to?: number }> {
   return {
     from: values.from === undefined ? undefined : await studio.call('resolveFrame', values.from),
@@ -105,7 +90,7 @@ async function run(studio: Studio): Promise<void> {
   if (command === 'frame') {
     const frame = await studio.call('resolveFrame', values.frame ?? '');
     const path = outPath(`out/${id}/frame-${pad(frame)}.png`);
-    const bytes = await writeFile(studio, path, (sink) => studio.call('writePng', frame, sink));
+    const bytes = await writeViaSink(studio, path, (sink) => studio.call('writePng', frame, sink));
     process.stderr.write(`${id} frame ${frame}: ${studio.scene.width}x${studio.scene.height}, ${bytes} bytes\n`);
     process.stdout.write(`${shown(path)}\n`);
     return;
@@ -114,7 +99,7 @@ async function run(studio: Studio): Promise<void> {
     const r = await range(studio);
     const suffix = r.from !== undefined || r.to !== undefined ? `-${pad(r.from ?? 0)}-${pad(r.to ?? studio.scene.frameCount)}` : '';
     const path = outPath(`out/${id}/${id}${suffix}.${target}`);
-    const result = await writeFile(studio, path, (sink) => studio.call('exportVideo', target, sink, r));
+    const result = await writeViaSink(studio, path, (sink) => studio.call('exportVideo', target, sink, r));
     const detail = result.codec ?? `${result.colours} colours`;
     process.stderr.write(
       `${id} ${target}: frames [${result.from}, ${result.to}), ${result.frames} frames, ${result.seconds} s at ${studio.scene.fps} fps, ${detail}, ${(result.ms / 1000).toFixed(1)} s to export\n`,
@@ -126,7 +111,7 @@ async function run(studio: Studio): Promise<void> {
     const r = await range(studio);
     const suffix = r.from !== undefined || r.to !== undefined || every !== undefined ? `-${pad(r.from ?? 0)}-${pad(r.to ?? studio.scene.frameCount)}${every ? `-every${every}` : ''}` : '';
     const path = outPath(`out/${id}/contact-sheet${suffix}.png`);
-    const sheet = await writeFile(studio, path, (sink) => studio.call('contactSheet', sink, { ...r, every, columns }));
+    const sheet = await writeViaSink(studio, path, (sink) => studio.call('contactSheet', sink, { ...r, every, columns }));
     process.stderr.write(`${id} contact sheet: ${sheet.frames.length} frames (${sheet.frames[0]} to ${sheet.frames.at(-1)}), ${sheet.width}x${sheet.height}\n`);
     process.stdout.write(`${shown(path)}\n`);
     return;
@@ -137,14 +122,7 @@ async function run(studio: Studio): Promise<void> {
 async function exportHtml(sceneKey: string): Promise<void> {
   const embed = await buildEmbed(sceneKey);
   const path = outPath(`out/${embed.scene.id}/${embed.scene.id}.html`);
-  const partial = `${path}.partial`;
-  await mkdir(dirname(path), { recursive: true });
-  try {
-    await writeBytes(partial, embed.html);
-    await rename(partial, path);
-  } finally {
-    await rm(partial, { force: true });
-  }
+  await writeFileAtomic(path, embed.html);
   process.stderr.write(`${embed.scene.id} html: ${(embed.bytes.total / 1024).toFixed(1)} KB with rigs ${embed.rigs.join(', ')}\n`);
   process.stdout.write(`${shown(path)}\n`);
 }
