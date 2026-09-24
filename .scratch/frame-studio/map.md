@@ -4,7 +4,7 @@ Type: map
 
 ## Destination
 
-Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance criteria, and `docs/PROGRESS.md` records it.
+Every milestone in `docs/ROADMAP.md`, M1 through M8, passes its acceptance criteria, and `docs/PROGRESS.md` records it.
 
 ## Notes
 
@@ -33,6 +33,7 @@ Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance crite
 - [M3: Headless render, MP4, and GIF](issues/07-m3-headless-render-mp4-gif.md) M3 is done. `npm run render`, `export` and `contact-sheet` drive `render.html` in Playwright 1.63. Exports encode in the page, and `npm run test:browser` checks determinism, frame counts, durations and colours.
 - [M4: Single-file HTML embed](issues/08-m4-single-file-html-embed.md) M4 is done. `--target html` bundles the player, the scene's own rigs and the scene into one file with no requests, about 54 KB for `bear-test`. It matches the headless renders byte for byte, ships no validator, and takes `window.studio` or `postMessage` commands.
 - [M5: MCP server](issues/09-m5-mcp-server.md) M5 is done. `node tools/mcp/server.ts` serves the nine tools over stdio, and `.mcp.json` registers it for Claude Code. One watching Vite server feeds Node and a lazily started Playwright page, and tools run one at a time. Edits validate before saving and split overlapping overrides.
+- [How does a selection reach the agent?](issues/10-selection-handoff.md) Through files in `.frame-studio/`: a current selection, and a queue of request files the agent claims atomically through MCP tools, plus a Claude Code slash command and resource. Scene checkpoints on claim allow Revert and Try again. The viewer uses one studio server protocol, T3 Code-style (ADR 0003, ADR 0001 amended), and an integrated AI becomes M8 (ADR 0004).
 
 ## Not yet specified
 
@@ -41,8 +42,8 @@ Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance crite
 - Where shared rig parts live. M2 produces one character. The second character will show which parts are actually shared.
 - Frame-range picking moved into M2 at the user's request. M6 still owns the handoff to the agent.
 - Where the Electron build keeps scenes. Local files come first (ADR 0001), but `import.meta.glob` and hot reload only work in dev. The web app's backend comes after the local path works.
-- How the web app reaches an MCP agent on the user's machine. Electron can connect directly, and the web app needs a bridge or the hosted service.
+- How the web app reaches an agent. It can't reach a local MCP agent. Its route is the integrated AI in M8 (ADR 0004), or the hosted service.
 
 ## Out of scope
 
-- The roadmap's "Later" list: an Electron shell, a timeline editor and rig-controls panel, a camera layer with transitions and multi-shot files, and a hosted service. The destination stops at M7.
+- The roadmap's "Later" list: an Electron shell, a timeline editor and rig-controls panel, a camera layer with transitions and multi-shot files, and a hosted service. The destination stops at M8, the integrated AI, which the user added on 2026-09-24.

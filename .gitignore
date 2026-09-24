@@ -7,3 +7,6 @@ references
 
 # Temporary scenes the MCP browser tests write and remove
 scenes/mcp-test-*.json
+
+# Viewer-to-agent handoff state: current selection, request queue, checkpoints (ADR 0003)
+.frame-studio/

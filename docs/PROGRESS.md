@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-24, after the M5 review.
+Last updated 2026-09-24, after ticket 10 (selection handoff).
 
 ## Done
 
@@ -269,8 +269,14 @@ A `/code-review` at high effort found ten issues, and all ten are fixed. The sui
 
 ## Next
 
-1. Ticket 10, `.scratch/frame-studio/issues/10-selection-handoff.md`, is a grilling session with the user on how a viewer selection reaches the agent: the clipboard, a file the MCP server reads, or an MCP resource. M6 waits on it. M5 answers part of it: the MCP server and the viewer run as separate processes, and the server sees scene edits through its file watcher.
-2. M6, ticket 11: selection-to-prompt in the viewer. It starts by moving the viewer's UI to Svelte (ADR 0002).
+1. M6, ticket 11: selection-to-prompt in the viewer. Ticket 10 settled the handoff, recorded in ADR 0003:
+   - a file queue in `.frame-studio/`
+   - MCP request tools, plus a Claude Code slash command and resource
+   - a queue panel
+   - checkpoints with Revert and Try again
+
+   The viewer talks to one studio server protocol, served by a Vite dev-server plugin (ADR 0001, amended after looking at T3 Code). M6 starts by moving the viewer's UI to Svelte (ADR 0002).
+2. After M7, M8 is the integrated AI (ADR 0004, ticket 16). The user added it on 2026-09-24 as the last milestone, treated as polish.
 
 ## Open questions
 

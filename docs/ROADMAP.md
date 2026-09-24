@@ -67,13 +67,20 @@ Acceptance:
 ## M6: Selection-to-prompt in the viewer
 
 - First, move the viewer's UI to Svelte 5 (ADR 0002). Plain TypeScript modules stay plain, and components wrap them.
-- Viewer selection bar: pick a layer by clicking, set a frame range (from the scrubber or by typing timecodes), optionally attach reference images.
-- Produce a selection payload (`{ sceneId, layerId, partId?, from, to }` plus prompt text and reference paths) that the user can hand to the agent, e.g. copy to clipboard or write to a file the MCP server can read.
+- The studio server protocol (ADR 0001): HTTP endpoints plus a WebSocket for pushed changes, served by a Vite dev-server plugin, with the types in one shared module.
+- The handoff from ADR 0003:
+  - The viewer keeps `.frame-studio/selection.json` current.
+  - A request panel takes prompt text and reference images, copied into `references/`.
+  - "Send to agent" writes `.frame-studio/requests/NNNN.json` and copies a one-line summary to paste into any agent.
+- MCP additions: `next_request`, `get_request`, `complete_request`, `get_selection`, the `/frame-studio:next` prompt, and the `selection://current` resource. Claims are atomic.
+- A queue panel: status (pending, in progress, stalled, done, failed), the agent's summary, cancel and requeue, and clicking a request to restore its selection. A notice with **View** appears when a request finishes.
+- Checkpoints: a scene snapshot when a request is claimed, with **Revert** and **Try again** on the newest request for each scene.
 - "Whole frame range" selection with no layer, for prompts like "redo frames 3 to 4".
 
 Acceptance:
 - Select the background for frames 1 to 14, prompt a change through the agent, and only those frames change.
 - Select the character, attach a reference image, prompt a redraw, and the agent produces a rig variant applied through an override. The reference image appears in no scene file or export.
+- Revert on a finished request restores the scene exactly as it was. Try again queues the same ask as attempt 2.
 
 ## M7: Procedural audio
 
@@ -85,6 +92,14 @@ Acceptance:
 - Exported MP4 audio aligns to within one frame of scene timings.
 - The same scene renders identical audio twice.
 - The HTML embed plays audio after a user gesture (browser autoplay rules) and stays in sync after seeking.
+
+## M8: Integrated AI (polish, last)
+
+- An AI inside the studio that connects to Claude, ChatGPT or other models, through the user's subscription or their own API key. The studio provides the interface, not the model (ADR 0004).
+- It reads the same request files as the external agent (ADR 0003), and its tool loop calls the operations the MCP server offers.
+- Reference: T3 Code (github.com/pingdotgg/t3code). It spawns the user's installed CLIs and SDKs and leaves sign-in to them.
+
+Acceptance: settled in ticket 16 before the milestone starts.
 
 ## Later
 

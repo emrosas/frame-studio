@@ -134,6 +134,8 @@ The product direction: **the canvas is the selection surface**. Users don't mana
 
 A **selection** is `{ sceneId, layerId, partId?, from, to }`. It's the unit passed to the agent alongside a prompt, and every edit tool accepts one. A selection with no `layerId` means "the whole frame range" (e.g. redo frames 3 to 4 entirely).
 
+Selections reach the agent through files (`docs/adr/0003-selection-handoff-file-queue.md`). `.frame-studio/selection.json` holds the current selection. Each ask is a request file in `.frame-studio/requests/` that the agent claims through MCP tools and completes with a summary. The MCP server snapshots the scene when it claims a request, so the viewer can offer Revert and Try again. The files are the source of truth; the viewer and the MCP server keep nothing the other needs in memory.
+
 Engine support required from the start:
 - `hitTest(probe, scene, frame, x, y, registry, options?)` returns the layer id (and, with `options.parts` where the rig declares parts, a part id) at that pixel. `probe` is a scratch 1x1 2D context.
 - It uses **per-layer alpha probes**, not a flat-colour ID pass. Canvas 2D antialiases every path, so an edge pixel blends two ID colours into a colour that belongs to no layer. Instead, each layer is drawn alone, top first, into the probe with the pixel translated to (0, 0), and only its alpha is read. The layer with the largest share of the visible pixel wins. Parts work the same way inside the winning layer, cut at each `kit.part` boundary. The probe runs the same `drawLayer` code as the visible render, so the two can never drift. Research: `.scratch/frame-studio/research/id-pass-antialiasing.md`.
@@ -182,6 +184,7 @@ Users can attach reference images to a prompt. References are **input to the age
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
 - Camera layer (pan, zoom, shake), scene transitions, multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.
+- The integrated AI is roadmap M8, built last (ADR 0004). It connects to the user's own Claude, ChatGPT or other model by subscription or API key, and reads the same request files as the external agent.
 
 ## Agent skills
 
