@@ -1,0 +1,138 @@
+// Frame Studio render tools.
+//
+//   npm run render -- --scene bear-test --frame 47
+//   npm run export -- --scene bear-test --target mp4
+//   npm run contact-sheet -- --scene bear-test --every 6
+//
+// Frames and range ends take a frame number or an MM:SS:FF timecode. Files go
+// to out/<scene>/ unless --out says otherwise. The written path is printed on
+// stdout; progress goes to stderr.
+
+import { rename, rm } from 'node:fs/promises';
+import { relative, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
+import { openStudio, ROOT, type Studio } from './studio.ts';
+
+const USAGE = `Usage:
+  node tools/render/cli.ts frame --scene <id> --frame <n|MM:SS:FF> [--out file.png]
+  node tools/render/cli.ts export --scene <id> --target mp4|gif [--from <n|tc>] [--to <n|tc>] [--out file]
+  node tools/render/cli.ts contact-sheet --scene <id> [--from <n|tc>] [--to <n|tc>] [--every <n>] [--columns <n>] [--out file.png]`;
+
+const [command, ...rest] = process.argv.slice(2);
+const { values } = parseArgs({
+  args: rest,
+  options: {
+    scene: { type: 'string' },
+    frame: { type: 'string' },
+    target: { type: 'string' },
+    from: { type: 'string' },
+    to: { type: 'string' },
+    every: { type: 'string' },
+    columns: { type: 'string' },
+    out: { type: 'string' },
+    help: { type: 'boolean', short: 'h' },
+  },
+});
+
+function fail(message: string): never {
+  process.stderr.write(`${message}\n`);
+  process.exit(1);
+}
+
+function positiveInt(name: string, text: string | undefined): number | undefined {
+  if (text === undefined) return undefined;
+  const n = Number(text);
+  if (!Number.isInteger(n) || n < 1) fail(`--${name} must be a whole number, 1 or more; got ${JSON.stringify(text)}`);
+  return n;
+}
+
+// Flags are checked here, before Vite and Chromium start. Checks that need the
+// scene (frame ranges, timecodes) happen in the page and throw.
+if (values.help || !command) {
+  process.stdout.write(`${USAGE}\n`);
+  process.exit(0);
+}
+if (!['frame', 'export', 'contact-sheet'].includes(command)) fail(`Unknown command ${JSON.stringify(command)}.\n${USAGE}`);
+if (!values.scene) fail(`${command} needs --scene <id>\n${USAGE}`);
+if (command === 'frame' && values.frame === undefined) fail('frame needs --frame <n|MM:SS:FF>');
+const target = values.target;
+if (command === 'export' && target !== 'mp4' && target !== 'gif') fail('export needs --target mp4 or --target gif');
+const every = positiveInt('every', values.every);
+const columns = positiveInt('columns', values.columns);
+
+const pad = (n: number) => String(n).padStart(5, '0');
+const outPath = (fallback: string) => resolve(ROOT, values.out ?? fallback);
+const shown = (path: string) => relative(process.cwd(), path) || path;
+
+/** One progress line on stderr, redrawn in place on a terminal. */
+function progress(stage: string, done: number, total: number): void {
+  const line = `${stage} ${done}/${total}`;
+  if (process.stderr.isTTY) process.stderr.write(`\r${line}\x1b[K${done === total ? '\n' : ''}`);
+  else if (done === total || done % Math.max(1, Math.round(total / 10)) === 0) process.stderr.write(`${line}\n`);
+}
+
+/**
+ * Writes through a sink into `path`.partial and renames it to `path` only once
+ * `produce` succeeds, so a failed export never leaves a file that looks whole.
+ */
+async function writeFile<T>(studio: Studio, path: string, produce: (sinkId: string) => Promise<T>): Promise<T> {
+  const partial = `${path}.partial`;
+  try {
+    const result = await produce(await studio.fileSink(partial));
+    await rename(partial, path);
+    return result;
+  } finally {
+    await rm(partial, { force: true });
+  }
+}
+
+async function range(studio: Studio): Promise<{ from?: number; to?: number }> {
+  return {
+    from: values.from === undefined ? undefined : await studio.call('resolveFrame', values.from),
+    to: values.to === undefined ? undefined : await studio.call('resolveFrame', values.to, true),
+  };
+}
+
+async function run(studio: Studio): Promise<void> {
+  const id = studio.scene.id;
+  if (command === 'frame') {
+    const frame = await studio.call('resolveFrame', values.frame ?? '');
+    const path = outPath(`out/${id}/frame-${pad(frame)}.png`);
+    const bytes = await writeFile(studio, path, (sink) => studio.call('writePng', frame, sink));
+    process.stderr.write(`${id} frame ${frame}: ${studio.scene.width}x${studio.scene.height}, ${bytes} bytes\n`);
+    process.stdout.write(`${shown(path)}\n`);
+    return;
+  }
+  if (command === 'export' && (target === 'mp4' || target === 'gif')) {
+    const r = await range(studio);
+    const suffix = r.from !== undefined || r.to !== undefined ? `-${pad(r.from ?? 0)}-${pad(r.to ?? studio.scene.frameCount)}` : '';
+    const path = outPath(`out/${id}/${id}${suffix}.${target}`);
+    const result = await writeFile(studio, path, (sink) => studio.call('exportVideo', target, sink, r));
+    const detail = result.codec ?? `${result.colours} colours`;
+    process.stderr.write(
+      `${id} ${target}: frames [${result.from}, ${result.to}), ${result.frames} frames, ${result.seconds} s at ${studio.scene.fps} fps, ${detail}, ${(result.ms / 1000).toFixed(1)} s to export\n`,
+    );
+    process.stdout.write(`${shown(path)}\n`);
+    return;
+  }
+  if (command === 'contact-sheet') {
+    const r = await range(studio);
+    const suffix = r.from !== undefined || r.to !== undefined || every !== undefined ? `-${pad(r.from ?? 0)}-${pad(r.to ?? studio.scene.frameCount)}${every ? `-every${every}` : ''}` : '';
+    const path = outPath(`out/${id}/contact-sheet${suffix}.png`);
+    const sheet = await writeFile(studio, path, (sink) => studio.call('contactSheet', sink, { ...r, every, columns }));
+    process.stderr.write(`${id} contact sheet: ${sheet.frames.length} frames (${sheet.frames[0]} to ${sheet.frames.at(-1)}), ${sheet.width}x${sheet.height}\n`);
+    process.stdout.write(`${shown(path)}\n`);
+    return;
+  }
+}
+
+let studio: Studio | undefined;
+try {
+  studio = await openStudio(values.scene ?? '', { onProgress: progress });
+  await run(studio);
+} catch (err) {
+  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+  process.exitCode = 1;
+} finally {
+  await studio?.close();
+}

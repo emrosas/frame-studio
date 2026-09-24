@@ -1,7 +1,7 @@
 # M3: Headless render, MP4, and GIF
 
 Type: task
-Status: open
+Status: resolved
 Blocked by: 03, 06, 14
 
 ## Work
@@ -17,3 +17,12 @@ Ticket 14 settled the encoder. The render page encodes with WebCodecs `VideoEnco
 - ffmpeg is no longer part of export. It stays a dev-only tool for checking files, and `CLAUDE.md` now says so.
 
 M3 closes only after ticket 15 settles the MP4 colour tags.
+
+## Answer
+
+M3 is done and its three acceptance criteria pass. `docs/PROGRESS.md` records how each was checked.
+
+- `npm run render -- --scene bear-test --frame 47` writes a PNG. `npm run export -- --scene bear-test --target mp4` and `--target gif` write 96 frames lasting exactly 8 s at 12 fps. `npm run contact-sheet` writes a grid of every Nth frame.
+- Exports encode in the page (`src/export/`), using WebCodecs H.264 with Mediabunny, and gifenc with our own palette code. The MP4s carry ticket 15's colour tags, and QuickTime, Chromium and ffmpeg decode them to the scene's colours.
+- `npm run test:browser` covers the determinism test on every scene, ticket 03's checks on Chrome Headless Shell 153, and the exports' frame counts, durations and colours.
+- A `/code-review` at high effort found ten issues, and all ten are fixed.

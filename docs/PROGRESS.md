@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-23, after ticket 14 (export encoding).
+Last updated 2026-09-23, after the M3 review.
 
 ## Done
 
@@ -139,10 +139,55 @@ A `/code-review` at high effort over the M2 engine, rig and viewer files found t
 - `CLAUDE.md` still described the ID pass. Fixed in the docs, as above.
 - Not fixed. Every hover probe draws every layer in full, with no bounds cull. It measured 5 to 11 ms a probe on `bear-test`, at most once per animation frame and only while paused. A cull needs rigs to declare their bounds, which changes the rig contract, so it is listed under known issues.
 
+### M3: Headless render, MP4 and GIF
+
+M3 is done and its three acceptance criteria pass. Ticket 15 settled the MP4 colour tags, and M3 now writes them.
+
+What M3 delivered:
+
+- Render mode, `render.html?scene=<id>` in `src/viewer/render-main.ts`. It draws at scene size on a canvas made with `{ willReadFrequently: true, colorSpace: 'srgb' }`, and its `window.studio` has `resolveFrame`, `renderFrame`, `pixelHash`, `writePng`, `exportVideo` and `contactSheet`. The types live in `src/viewer/render-api.ts`, so the Node tools can import them.
+- `src/export/`, the export code that runs in the page (ticket 14). MP4 is H.264 through WebCodecs, muxed by Mediabunny with `fastStart: 'reserve'`, so the index sits at the front while bytes still stream out. Each frame goes to the encoder as I420, converted with the BT.709 matrix at full range and carrying its colour space, so the file is tagged BT.709 primaries, sRGB transfer and BT.709 matrix at full range in both the VUI and `colr` (ticket 15). GIF uses gifenc's writer with our own palette: the most frequent exact colours plus the quantizer for the rest, a 16 MB lookup table for colour mapping, and unchanged pixels marked transparent. Exporters draw through a `FrameSource` and write to a `ByteSink`, so they never import the engine, and each shell brings its own sink.
+- `tools/render/`, run by Node's own TypeScript support. `npm run render`, `npm run export` and `npm run contact-sheet` start Vite on a free port and Playwright's headless Chromium with ticket 03's flags. The page streams bytes back through an exposed function, and each file lands under a `.partial` name that is renamed only on success.
+- Mediabunny 1.59.1 and gifenc 1.0.3 are the app's first runtime dependencies, and both are pinned. `tests/runtime-budget.test.ts` now allows exactly those two and checks that only `src/export` imports them. The engine, rigs and audio still import nothing third-party.
+- Playwright 1.63.0 is pinned as a dev dependency, which brings Chrome Headless Shell 153 with an OpenH264 encoder. Tool code gets Node types from its own `tsconfig.node.json`, so code under `src` can't reach `process` or `Buffer`.
+- `npm run test:browser` runs `tests/browser/render.test.ts`, 18 tests in about 58 s.
+
+On `bear-test`, an MP4 takes 6.9 s to export and a GIF 10.9 s, for 96 frames at 1920x1080. The I420 conversion accounts for 1.5 s of the MP4 time.
+
+### How each M3 acceptance criterion was verified
+
+1. `npm run render -- --scene bear-test --frame 47` writes `out/bear-test/frame-00047.png`, and `--frame 00:03:11` resolves to the same frame. I looked at the PNG. `bruno` waves one frame before his plaster override, and `pip` is shy.
+2. `npm run export -- --scene bear-test --target mp4` and `--target gif` write files at 12 fps with the correct duration. ffprobe counted 96 frames in each and read 8.000000 s for both, with `r_frame_rate` 12/1 for the MP4. The browser tests read the MP4 back with Mediabunny: 96 packets, `avc`, 8 s. A range export `[12, 36)` gave 24 packets starting at 0 s and lasting 2 s. ffmpeg decoded frames 0, 47, 60 and 95 above 35 dB PSNR against the rendered PNGs. That check is dev only and skips when ffmpeg is missing. The GIF has 96 frames, loops, and its delays add up to 800 cs. On colour, ffprobe reads the VUI as `pc, bt709, iec61966-2-1, bt709`, and ffmpeg's trace shows `colr` as `nclx: pri 1 trc 13 matrix 1 full 1`. Mediabunny reads the same colour space back. The `#ffa200` ground decodes as 255,162,0 in ffmpeg and in AVFoundation, which is QuickTime's decoder. AVFoundation read the red bear as 242,73,34 and ffmpeg as 243,73,34.
+3. The determinism test passes. For every scene in `scenes/`, it hashes every frame's RGBA in order from frame 0, then again in a fresh page, backwards and every seventh frame. The hashes match. A rig that kept a call counter between frames made it fail on 41 of `shapes-test`'s frames. I removed that mutant.
+
+Ticket 03's checks on the new build also pass. The 2D canvas reports `disabled_software`, so it rasterizes on the CPU. PNGs decode to exactly the canvas bytes. A second browser launch draws identical pixels.
+
+The contact sheet for `bear-test` at `--every 6` shows the scene as scripted: `bruno` walks in, the plaster shows on frames 48 to 66 and is gone at 72.
+
+### Deliberate deviations from `CLAUDE.md` and the roadmap
+
+- Exports encode in the page with WebCodecs, Mediabunny and gifenc, not ffmpeg (ticket 14). ffmpeg only checks files in dev.
+- The acceptance commands use `bear-test`, since the bear replaced the fly in M2.
+- The visible viewer canvas keeps its GPU raster. Render mode alone uses the CPU canvas from ticket 03, because a GPU canvas draws the painted bear about twice as fast in preview. M4's embed-versus-headless comparison runs both in the same headless setup, so that comparison is unaffected.
+
+### M3 review
+
+A `/code-review` at high effort found ten issues, and all ten are fixed. After the colour work, the suite is at 884 unit tests and 18 browser tests.
+
+- A failed export could leave a truncated file at the real path. Output now goes to `<path>.partial` and is renamed only on success. A bad range now leaves nothing.
+- Node types were global, so engine code could use `process` or `Buffer` and still typecheck. The tools and browser tests now have `tsconfig.node.json`. A probe file using `process` under `src/engine` fails to typecheck.
+- A contact sheet over the canvas size limit failed with an unclear PNG error. `contactSheetLayout` now refuses anything over 16384 px a side, and the message says to raise `--every` or use fewer `--columns`.
+- When a shared browser was passed in, a failed first load leaked the page's browser context. It is now closed.
+- The CLI checked flags only after starting Vite and Chromium, and its `process.exit` skipped cleanup. Flags are now checked first, in 0.5 s, and errors in a run throw.
+- The render page repeated `rangeError` from `selection.ts`, and now uses it.
+- The colour mapper's `Map` cache could grow without bound. It is now a 16 MB `Uint8Array`, and GIF export went from 13.1 s to 10.9 s with byte-identical output.
+- GIF export allocated a frame-sized buffer and copied each frame's bytes. It now reuses one buffer and passes a view, and `ByteSink` says the exporter may reuse `data` once a write settles.
+- The contact sheet labels named specific fonts. They now use `monospace` only.
+- Picking a free port and then binding it left a race. Vite now binds port 0 itself.
+
 ## Next
 
-1. M3, ticket 07. Headless render, MP4 and GIF. Ticket 14 settled the encoder, and `.scratch/frame-studio/research/export-encoding.md` ends with a numbered recommendation for M3. The render page encodes H.264 with WebCodecs and muxes with Mediabunny, and writes GIFs with gifenc plus our own palette code. The CLI, Electron and the web app share that code and differ only in where the bytes go. Use Playwright 1.57 or later, and re-run ticket 03's pixel checks on it. Capture as ticket 03 found, and use `bear-test` where the roadmap says `fly-test`. The render path should also replace the throwaway CDP scripts M1 and M2 used for visual checks.
-2. Ticket 15, `.scratch/frame-studio/issues/15-mp4-colour-tags.md`, is research on MP4 colour tags. QuickTime shifts the `bear-test` orange in most WebCodecs files. M3 can start without it but closes only once it is settled.
+1. M4, ticket 08: the single-file HTML embed. It must play from disk with the network off, make no requests, and match the headless PNGs pixel for pixel. Ticket 03 says to run the embed in the same Playwright launch as the reference render and compare decoded RGBA. `tools/render/studio.ts` can host that comparison. M4 also decides whether the embed ships the validator.
 
 ## Open questions
 
@@ -156,6 +201,6 @@ A `/code-review` at high effort over the M2 engine, rig and viewer files found t
 - Pausing freezes on the last frame drawn. That frame can be one behind the wall clock if the next animation frame had not fired yet, as in the 23 versus 24 frames seen after 2.0 s.
 - `paper` paints black when `tone` is `none`. The validator accepts `none` for every colour param, but a background has no sensible "no paint".
 - A rig that calls `save()` without a matching `restore()` leaks state on a real canvas, and `render` cannot detect it. The smoke tests catch this for the shipped rigs. New rigs need the same check, which they get by being added to `allRigs`.
-- The session's visual check used throwaway CDP scripts because the preview tools were unavailable. M3's Playwright render path should replace this with a repeatable check.
 - The selection outline traces every gap where the ground shows through a layer, such as the small triangle between `bruno`'s left ear and his head. It follows the pixels correctly but reads as a stray mark.
 - A hover probe draws every layer in full, 5 to 11 ms on `bear-test`. Scenes with many layers or heavier rigs will feel it. A bounds cull would need rigs to declare bounds.
+- Browser tests need the headless shell downloaded once (`npx playwright install chromium-headless-shell`). Installing a newer Playwright deletes cached browsers that no installed Playwright uses. On 2026-09-23 that removed the Chromium 140 build ticket 03 used, which had to be reinstalled through Playwright 1.55 in `/tmp`.

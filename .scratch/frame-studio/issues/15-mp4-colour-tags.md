@@ -1,7 +1,7 @@
 # Which colour tags make an exported MP4 decode to the scene's exact colours everywhere?
 
 Type: research
-Status: open
+Status: resolved
 Blocked by: 14
 
 ## Question
@@ -13,3 +13,11 @@ Which tags should every export carry so that ffmpeg, Chromium, AVFoundation, Win
 M3's MP4 export is not done until this has an answer and a test that checks a known colour after decoding.
 
 ## Answer
+
+Tag every MP4 with BT.709 primaries, the sRGB transfer curve and the BT.709 matrix at full range. Those are H.273 code points 1, 13 and 1 with the full-range flag, and they go in both the SPS VUI and the `colr` box. AVFoundation reads primaries and transfer from `colr`. Chrome's on-screen video on macOS reads them from the VUI. Every decoder takes the range from the VUI. With these tags, nine test colours decoded within 1 level in ffmpeg and every Chromium path, and within 2 in AVFoundation. Transfer 1, 2 or no tags lifts mid-grey from 128 to 139 on macOS. Limited range trips a libyuv clamp in Chromium's CPU decode path.
+
+`VideoEncoderConfig` has no colour member, and a canvas `VideoFrame` ignores one. So M3 converts each frame to I420 with the BT.709 matrix at full range, passes the colour space on the `VideoFrame`, and writes the same colour space into Mediabunny's metadata. If the encoder reports other primaries, transfer or matrix, it fails loudly. This worked for OpenH264 and VideoToolbox in Chromium 140, 152 and 153. Chromium 153 changed its canvas tags in commit 22094ce89ddd, behind the feature `AccurateVideoFrameConverterColorSpace`.
+
+M3 now does this. Its `bear-test` export reads `pc, bt709, iec61966-2-1, bt709` in ffprobe and `nclx: pri 1 trc 13 matrix 1 full 1` in ffmpeg's trace. The ground decodes as 255,162,0 in both ffmpeg and AVFoundation. Windows, Firefox, real Safari and YouTube were not tested.
+
+Findings: [research/mp4-colour-tags.md](../research/mp4-colour-tags.md)

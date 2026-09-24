@@ -29,10 +29,12 @@ Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance crite
 - [What is the first character, and what does it need to do?](issues/05-first-character.md) The painted bear, with paws, four poses, four expressions, seeded blinks and a `bear.bandaged` variant. Every mark sits in a part with its own RNG fork.
 - [M2: First character rig and hit testing](issues/06-m2-character-rig-and-hit-testing.md) M2 is done. The bear and `bear.bandaged` are the character, and `hitTest` uses per-layer alpha probes, now written into `CLAUDE.md`. The viewer selects a layer, a part, or a frame range, and hides the highlight during playback.
 - [How should exports encode MP4 and GIF in the web app, in Electron and from the CLI?](issues/14-export-encoding.md) One path for all three: the render page encodes H.264 with WebCodecs and muxes with Mediabunny, and only where the bytes go differs. GIF uses gifenc with our own palette code. Audio is AAC with signalled priming, falling back to Opus. No shipped build bundles ffmpeg. The CLI needs Playwright 1.57 or later, and ticket 15 follows up on colour tags.
+- [Which colour tags make an exported MP4 decode to the scene's exact colours everywhere?](issues/15-mp4-colour-tags.md) BT.709 primaries, the sRGB transfer and the BT.709 matrix at full range, in both the VUI and `colr`. WebCodecs only writes them for I420 frames that carry the colour space, so exports convert frames themselves.
+- [M3: Headless render, MP4, and GIF](issues/07-m3-headless-render-mp4-gif.md) M3 is done. `npm run render`, `export` and `contact-sheet` drive `render.html` in Playwright 1.63. Exports encode in the page, and `npm run test:browser` checks determinism, frame counts, durations and colours.
 
 ## Not yet specified
 
-- How the MCP server renders frames. It could keep one warm Playwright browser or launch one per call. M3's render path shows which is cheap enough.
+- How the MCP server renders frames. M3's `npm run render` takes about 3.7 s for one frame, and most of that is starting Vite and Chromium, so M5 should keep one studio (`tools/render/studio.ts`) warm and call it per request.
 - One source of truth for scene validation. The engine needs a zero-dependency validator, and the MCP server has to validate JSON merge patches with readable errors. Whether MCP reuses the engine validator or wraps it stays open until M5.
 - How an open viewer picks up edits the agent makes through MCP. Vite's file watcher may cover it, or the server may need to push.
 - Text. The first scene that needs words will choose between vector paths in code and generic system fonts. System fonts render differently per machine, which may break the embed's pixel match.

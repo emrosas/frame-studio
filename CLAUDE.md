@@ -58,10 +58,14 @@ src/
   audio/      Procedural audio (Web Audio). Same determinism rule as visuals.
   viewer/     Vite app: canvas + HTML overlay (scrubber, play/pause, timecode,
               fps) + selection layer. UI never draws on the canvas.
+              render-main.ts is render mode (render.html) for the headless tools.
+  export/     MP4, GIF and contact sheets, encoded in the page (WebCodecs +
+              Mediabunny, gifenc). Browser code; never imported by the runtime.
 scenes/       Scene files (JSON). The primary thing the agent edits.
 references/   Reference images supplied by the user (agent input only, gitignored).
 tools/
-  render/     Headless rendering via Playwright: frame -> PNG, range -> MP4/GIF.
+  render/     CLI driving render.html in Playwright: frame -> PNG, range -> MP4/GIF,
+              contact sheets. npm run render / export / contact-sheet.
   bundle/     Single-file HTML builder (tree-shakes unused rigs, inlines all).
   mcp/        MCP server exposing the studio to the agent.
 out/          Renders and exports (gitignored).
@@ -144,10 +148,11 @@ Users can attach reference images to a prompt. References are **input to the age
 
 ## Headless rendering and export
 
-- The viewer has a render mode (no UI, fixed size) exposing `window.studio.renderFrame(n)`.
+- The viewer has a render mode, `render.html?scene=<id>` (no UI, scene size, CPU raster), exposing `window.studio.renderFrame(n)` and the export calls. Usage: `docs/SCENES.md`, "Rendering and exporting".
 - Playwright loads it, calls `renderFrame`, and captures the canvas as PNG. Use Playwright 1.57 or later: its Chrome for Testing build has an H.264 encoder, and the older open-source headless shell does not.
 - The page that draws the frames also encodes them. MP4 is H.264 through WebCodecs `VideoEncoder` at scene fps, muxed with Mediabunny. GIF is gifenc with our own palette code. The CLI, Electron and the web app run the same export code and differ only in where the bytes go (ticket 14, `.scratch/frame-studio/research/export-encoding.md`).
-- No shipped build bundles ffmpeg. It is a dev-only tool for checking exported files: frame count, duration, frame rate.
+- MP4s are tagged BT.709 primaries, sRGB transfer and BT.709 matrix at full range, in both the SPS VUI and `colr`. WebCodecs only writes that for I420 frames that carry the colour space, so the exporter converts each frame itself (ticket 15, `src/export/color.ts`).
+- No shipped build bundles ffmpeg. It is a dev-only tool for checking exported files: frame count, duration, frame rate, colour.
 
 ## MCP server (the agent's API)
 

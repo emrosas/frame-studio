@@ -1,0 +1,18 @@
+{
+  "//": "Node-side code: the render tools, the browser tests and the Vite configs. Node types stay out of src, so runtime code cannot reach for process or Buffer and still typecheck.",
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "types": [
+      "node"
+    ],
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "tools",
+    "tests/browser",
+    "vite.config.ts",
+    "vitest.browser.config.ts",
+    "src/export/gifenc.d.ts"
+  ],
+  "exclude": []
+}

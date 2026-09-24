@@ -10,11 +10,22 @@ import { describe, expect, it } from 'vitest';
 import pkg from '../package.json';
 
 const RUNTIME_ROOTS = ['/src/engine/', '/src/rigs/', '/src/audio/'] as const;
-const FORBIDDEN_TARGETS = ['/src/viewer/', '/tools/'] as const;
+const FORBIDDEN_TARGETS = ['/src/viewer/', '/src/export/', '/tools/'] as const;
+
+/**
+ * The only runtime dependencies: export encoders, used by browser code in
+ * src/export (ticket 14). The single-file embed never ships them.
+ */
+const EXPORT_DEPENDENCIES = ['gifenc', 'mediabunny'];
 
 // Every script extension Vite would bundle, so a .mts or .js file cannot slip past the scan.
 const globbed = import.meta.glob(
   ['/src/{engine,rigs,audio}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}', '!**/*.test.*', '!**/*.d.{ts,mts,cts}'],
+  { query: '?raw', import: 'default', eager: true },
+) as Record<string, string>;
+// All other app code, to check that only src/export reaches for the export libraries.
+const appSources = import.meta.glob(
+  ['/src/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}', '!/src/export/**', '!**/*.test.*', '!**/*.d.{ts,mts,cts}'],
   { query: '?raw', import: 'default', eager: true },
 ) as Record<string, string>;
 const isRuntimeSource = (f: string) => !/\.test\.[^/]+$/.test(f) && !/\.d\.[mc]?ts$/.test(f);
@@ -130,9 +141,19 @@ describe('runtime budget', () => {
     expect(problems, problems.join('\n')).toEqual([]);
   });
 
-  it('package.json declares no runtime dependencies', () => {
+  it('package.json declares only the export libraries as runtime dependencies', () => {
     const deps = (pkg as { dependencies?: Record<string, string> }).dependencies ?? {};
-    expect(Object.keys(deps)).toEqual([]);
+    expect(Object.keys(deps).sort()).toEqual(EXPORT_DEPENDENCIES);
+  });
+
+  it('only src/export imports the export libraries', () => {
+    expect(Object.keys(appSources)).toContain('/src/viewer/render-main.ts');
+    const problems = Object.entries(appSources).flatMap(([file, source]) =>
+      findSpecifiers(source)
+        .filter(({ spec }) => spec !== null && EXPORT_DEPENDENCIES.some((dep) => spec === dep || spec.startsWith(`${dep}/`)))
+        .map(({ spec, line }) => `${file}:${line}: imports "${spec}"; go through src/export instead`),
+    );
+    expect(problems, problems.join('\n')).toEqual([]);
   });
 });
 
@@ -196,6 +217,7 @@ describe('runtime budget scanner (self-test)', () => {
     [`const m = require('three');`, /not a relative path/],
     [`const m = await import(name);`, /non-literal/],
     [`import { ui } from '../viewer/ui';`, /src\/viewer/],
+    [`import { exportMp4 } from '../export';`, /src\/export/],
     [`import { x } from '../../tools/render/x';`, /tools/],
     [`import data from '../../scenes/a.json';`, /outside/],
     [`const r = Math.random();`, /Math\.random/],

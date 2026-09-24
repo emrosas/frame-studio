@@ -6,15 +6,25 @@
   "description": "Agent-authored procedural animation: every frame drawn in code on an HTML canvas.",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "typecheck": "tsc --noEmit",
+    "build": "npm run typecheck && vite build",
+    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.node.json",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "render": "node tools/render/cli.ts frame",
+    "export": "node tools/render/cli.ts export",
+    "contact-sheet": "node tools/render/cli.ts contact-sheet"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^1.0.9",
+    "@types/node": "^26.6.2",
+    "playwright": "1.63.0",
     "typescript": "^7.0.2",
     "vite": "^8.3.0",
     "vitest": "^5.0.1"
+  },
+  "dependencies": {
+    "gifenc": "1.0.3",
+    "mediabunny": "1.59.1"
   }
 }

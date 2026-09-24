@@ -342,6 +342,23 @@ If a scene has mistakes, the viewer lists every error with its path, such as `la
 
 Scripts and agents can drive the page through `window.studio`. `studio.renderFrame(n)` pauses and draws frame `n` straight away, and `studio.canvas` is the canvas to capture. `seek(n)`, `play()`, `pause()` and `selectScene(id)` move around, and `scene`, `frame`, `frameCount`, `scenes` and `errors` report state. `studio.errors` holds the same list as the error panel and updates about 200 ms after a file save, so it is the quickest check after an edit. `studio.hitTest(x, y, { parts })` returns the layer, and optionally the part, at a scene pixel on the frame on screen without changing the selection. `select(layerId, partId?)`, `setRange(from, to)` and `clearRange()` set the selection, and `selection` and `range` read it back.
 
+## Rendering and exporting
+
+Three commands render a scene without the viewer. Each starts its own Vite server and Playwright's headless Chromium, prints the file it wrote on stdout, and puts progress on stderr. Frames and range ends take a frame number or a timecode.
+
+```sh
+npm run render -- --scene bear-test --frame 47            # out/bear-test/frame-00047.png
+npm run export -- --scene bear-test --target mp4          # out/bear-test/bear-test.mp4
+npm run export -- --scene bear-test --target gif --from 00:02:00 --to 00:04:00
+npm run contact-sheet -- --scene bear-test --every 6      # out/bear-test/contact-sheet-...png
+```
+
+`--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
+
+MP4 is H.264 at the scene's fps, with no audio until M7. It is tagged sRGB, so QuickTime, browsers and ffmpeg all show the scene's colours. A range export starts at 0 s. GIF loops, keeps a 255-colour palette that holds the scene's most common colours exactly, and refuses scenes above 50 fps, which GIF can't play. H.264 needs an even width and height.
+
+The browser needs downloading once, with `npx playwright install chromium-headless-shell`. The page behind the commands is `render.html?scene=<id>`. It draws at scene size on a CPU-rastered canvas, and its `window.studio` has `renderFrame`, `pixelHash`, `writePng`, `exportVideo` and `contactSheet`. `npm run test:browser` checks that every frame of every scene draws the same pixels whether played or seeked, and that exports have the exact frame count and duration.
+
 ## The test scenes
 
 `shapes-test` runs at 12 fps for 6 seconds and loops.
