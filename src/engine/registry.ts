@@ -1,4 +1,4 @@
-import type { Params, Rig, RigRegistry } from './types';
+import type { Params, Rig, RigRegistry, Scene } from './types';
 
 /**
  * Build a registry from a list of rigs. Throws on a duplicate id, and on a
@@ -64,4 +64,23 @@ export function baseRigId(id: string): string {
 /** Every registered variant of a base rig ("base.x"), in registry order. */
 export function variantsOf(registry: RigRegistry, baseId: string): Rig[] {
   return [...registry.values()].filter((rig) => rig.id !== baseId && baseRigId(rig.id) === baseId);
+}
+
+/**
+ * Every rig id a scene draws with: the background, each layer, each override,
+ * and the base of every variant among them, since the registry needs a
+ * variant's base. Sorted, each once. The single-file embed bundles exactly these.
+ */
+export function rigIdsUsed(scene: Scene): string[] {
+  const ids = new Set<string>();
+  const add = (id: string) => {
+    ids.add(id);
+    ids.add(baseRigId(id));
+  };
+  if (scene.background) add(scene.background.rig);
+  for (const layer of scene.layers) {
+    add(layer.rig);
+    for (const o of layer.overrides ?? []) if (o.rig !== undefined) add(o.rig);
+  }
+  return [...ids].sort();
 }

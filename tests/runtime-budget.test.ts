@@ -1,7 +1,7 @@
 /**
- * Runtime budget: src/engine, src/rigs, and src/audio ship in the single-file
- * embed, so they may import only each other (by relative path) and must stay
- * deterministic. See CLAUDE.md, "Runtime budget" and "Core principle".
+ * Runtime budget: src/engine, src/rigs, src/audio and the embed player in
+ * src/embed ship in the single-file embed, so they may import only each other
+ * (by relative path) and must stay deterministic. See CLAUDE.md, "Runtime budget" and "Core principle".
  *
  * Sources are read with Vite's import.meta.glob (?raw), so this test needs no
  * Node typings and picks up new files automatically.
@@ -9,7 +9,14 @@
 import { describe, expect, it } from 'vitest';
 import pkg from '../package.json';
 
-const RUNTIME_ROOTS = ['/src/engine/', '/src/rigs/', '/src/audio/'] as const;
+const RUNTIME_ROOTS = ['/src/engine/', '/src/rigs/', '/src/audio/', '/src/embed/'] as const;
+
+/**
+ * The embed player is the one runtime file that reads the wall clock: it picks
+ * which frame to show during playback, the way the viewer does. render() still
+ * never sees time.
+ */
+const PLAYBACK_CLOCK_ALLOWED = ['requestAnimationFrame', 'performance.now or another performance timer'];
 const FORBIDDEN_TARGETS = ['/src/viewer/', '/src/export/', '/tools/'] as const;
 
 /**
@@ -20,7 +27,7 @@ const EXPORT_DEPENDENCIES = ['gifenc', 'mediabunny'];
 
 // Every script extension Vite would bundle, so a .mts or .js file cannot slip past the scan.
 const globbed = import.meta.glob(
-  ['/src/{engine,rigs,audio}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}', '!**/*.test.*', '!**/*.d.{ts,mts,cts}'],
+  ['/src/{engine,rigs,audio,embed}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}', '!**/*.test.*', '!**/*.d.{ts,mts,cts}'],
   { query: '?raw', import: 'default', eager: true },
 ) as Record<string, string>;
 // All other app code, to check that only src/export reaches for the export libraries.
@@ -112,13 +119,17 @@ export function findViolations(file: string, source: string): string[] {
     if (forbidden) {
       problems.push(`${where}: imports "${spec}", which resolves into ${forbidden}; runtime code must not depend on UI or tooling`);
     } else if (!RUNTIME_ROOTS.some(inside)) {
-      problems.push(`${where}: imports "${spec}" (${target}), outside src/engine, src/rigs, src/audio`);
+      problems.push(`${where}: imports "${spec}" (${target}), outside src/engine, src/rigs, src/audio, src/embed`);
     } else if (file.startsWith('/src/engine/') && inside('/src/rigs/')) {
       problems.push(`${where}: the engine imports a rig ("${spec}"); rigs reach the engine through the registry`);
+    } else if (!file.startsWith('/src/embed/') && inside('/src/embed/')) {
+      problems.push(`${where}: imports the embed player ("${spec}"); only the generated embed entry does that`);
     }
   }
+  const player = file === '/src/embed/player.ts';
   source.split('\n').forEach((text, i) => {
     for (const { name, re, fix = CLOCK_FIX } of BANNED) {
+      if (player && PLAYBACK_CLOCK_ALLOWED.includes(name)) continue;
       if (re.test(text)) problems.push(`${file}:${i + 1}: uses ${name}; ${fix}`);
     }
   });
@@ -160,6 +171,18 @@ describe('runtime budget', () => {
 describe('runtime budget scanner (self-test)', () => {
   const file = '/src/rigs/fly.ts';
   const check = (source: string, f = file) => findViolations(f, source);
+
+  it('lets only the embed player read the playback clock, and keeps everything else out of it', () => {
+    const player = '/src/embed/player.ts';
+    expect(check(`requestAnimationFrame(tick); const t = performance.now();`, player)).toEqual([]);
+    expect(check(`import { render } from '../engine/render';`, player)).toEqual([]);
+    expect(check(`const r = Math.random();`, player).join('\n')).toMatch(/Math\.random/);
+    expect(check(`const t = Date.now();`, player).join('\n')).toMatch(/Date\.now/);
+    expect(check(`requestAnimationFrame(tick);`, '/src/engine/render.ts').join('\n')).toMatch(/requestAnimationFrame/);
+    expect(check(`const t = performance.now();`, '/src/embed/helper.ts').join('\n')).toMatch(/performance/);
+    expect(check(`import { mountEmbed } from '../embed/player';`).join('\n')).toMatch(/embed player/);
+    expect(check(`import { exportMp4 } from '../export';`, player).join('\n')).toMatch(/src\/export/);
+  });
 
   it('accepts relative imports inside the runtime roots', () => {
     expect(

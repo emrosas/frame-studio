@@ -2,20 +2,23 @@
 //
 //   npm run render -- --scene bear-test --frame 47
 //   npm run export -- --scene bear-test --target mp4
+//   npm run export -- --scene bear-test --target html
 //   npm run contact-sheet -- --scene bear-test --every 6
 //
 // Frames and range ends take a frame number or an MM:SS:FF timecode. Files go
 // to out/<scene>/ unless --out says otherwise. The written path is printed on
 // stdout; progress goes to stderr.
 
-import { rename, rm } from 'node:fs/promises';
-import { relative, resolve } from 'node:path';
+import { mkdir, rename, rm, writeFile as writeBytes } from 'node:fs/promises';
+import { dirname, relative, resolve } from 'node:path';
 import { parseArgs } from 'node:util';
+import { buildEmbed } from '../bundle/embed.ts';
 import { openStudio, ROOT, type Studio } from './studio.ts';
 
 const USAGE = `Usage:
   node tools/render/cli.ts frame --scene <id> --frame <n|MM:SS:FF> [--out file.png]
   node tools/render/cli.ts export --scene <id> --target mp4|gif [--from <n|tc>] [--to <n|tc>] [--out file]
+  node tools/render/cli.ts export --scene <id> --target html [--out file.html]
   node tools/render/cli.ts contact-sheet --scene <id> [--from <n|tc>] [--to <n|tc>] [--every <n>] [--columns <n>] [--out file.png]`;
 
 const [command, ...rest] = process.argv.slice(2);
@@ -56,7 +59,11 @@ if (!['frame', 'export', 'contact-sheet'].includes(command)) fail(`Unknown comma
 if (!values.scene) fail(`${command} needs --scene <id>\n${USAGE}`);
 if (command === 'frame' && values.frame === undefined) fail('frame needs --frame <n|MM:SS:FF>');
 const target = values.target;
-if (command === 'export' && target !== 'mp4' && target !== 'gif') fail('export needs --target mp4 or --target gif');
+if (command === 'export' && target !== 'mp4' && target !== 'gif' && target !== 'html') fail('export needs --target mp4, gif or html');
+if (command === 'export' && target === 'html') {
+  const extra = ['from', 'to', 'every', 'columns'].filter((name) => values[name as keyof typeof values] !== undefined);
+  if (extra.length > 0) fail(`--target html exports the whole scene; drop ${extra.map((name) => `--${name}`).join(', ')}`);
+}
 const every = positiveInt('every', values.every);
 const columns = positiveInt('columns', values.columns);
 
@@ -126,13 +133,39 @@ async function run(studio: Studio): Promise<void> {
   }
 }
 
-let studio: Studio | undefined;
-try {
-  studio = await openStudio(values.scene ?? '', { onProgress: progress });
-  await run(studio);
-} catch (err) {
-  process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
-  process.exitCode = 1;
-} finally {
-  await studio?.close();
+/** The HTML embed is bundled in Node; it needs no browser. */
+async function exportHtml(sceneKey: string): Promise<void> {
+  const embed = await buildEmbed(sceneKey);
+  const path = outPath(`out/${embed.scene.id}/${embed.scene.id}.html`);
+  const partial = `${path}.partial`;
+  await mkdir(dirname(path), { recursive: true });
+  try {
+    await writeBytes(partial, embed.html);
+    await rename(partial, path);
+  } finally {
+    await rm(partial, { force: true });
+  }
+  process.stderr.write(`${embed.scene.id} html: ${(embed.bytes.total / 1024).toFixed(1)} KB with rigs ${embed.rigs.join(', ')}\n`);
+  process.stdout.write(`${shown(path)}\n`);
+}
+
+// Errors set the exit code and let the process end on its own, so stdout is flushed first.
+if (command === 'export' && target === 'html') {
+  try {
+    await exportHtml(values.scene ?? '');
+  } catch (err) {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.exitCode = 1;
+  }
+} else {
+  let studio: Studio | undefined;
+  try {
+    studio = await openStudio(values.scene ?? '', { onProgress: progress });
+    await run(studio);
+  } catch (err) {
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    process.exitCode = 1;
+  } finally {
+    await studio?.close();
+  }
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { baseRigId, createRegistry, defaultParams, variantsOf } from './registry';
-import type { Rig } from './types';
+import { baseRigId, createRegistry, defaultParams, rigIdsUsed, variantsOf } from './registry';
+import type { Rig, Scene } from './types';
 
 const noop = () => {};
 
@@ -139,3 +139,29 @@ describe('baseRigId and variantsOf', () => {
     expect(variantsOf(reg, 'ghost')).toEqual([]);
   });
 });
+
+describe('rigIdsUsed', () => {
+  const scene: Scene = {
+    id: 's',
+    fps: 12,
+    duration: 1,
+    size: [100, 100],
+    seed: 1,
+    background: { rig: 'paper' },
+    layers: [
+      { id: 'a', rig: 'bear', overrides: [{ from: 0, to: 4, rig: 'bear.bandaged' }] },
+      { id: 'b', rig: 'bear' },
+      { id: 'c', rig: 'fly.wingTorn' },
+      { id: 'd', rig: 'circle', overrides: [{ from: 2, to: 3, params: { radius: 4 } }] },
+    ],
+  };
+
+  it('lists the background, layer and override rigs, plus the base of every variant, sorted and once each', () => {
+    expect(rigIdsUsed(scene)).toEqual(['bear', 'bear.bandaged', 'circle', 'fly', 'fly.wingTorn', 'paper']);
+  });
+
+  it('handles a scene with no background and no overrides', () => {
+    expect(rigIdsUsed({ ...scene, background: undefined, layers: [{ id: 'x', rig: 'star' }] })).toEqual(['star']);
+  });
+});
+

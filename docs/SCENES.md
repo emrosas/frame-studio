@@ -344,20 +344,37 @@ Scripts and agents can drive the page through `window.studio`. `studio.renderFra
 
 ## Rendering and exporting
 
-Three commands render a scene without the viewer. Each starts its own Vite server and Playwright's headless Chromium, prints the file it wrote on stdout, and puts progress on stderr. Frames and range ends take a frame number or a timecode.
+Three commands render a scene without the viewer. Each starts its own Vite server and Playwright's headless Chromium (except the HTML export, which needs no browser), prints the file it wrote on stdout, and puts progress on stderr. Frames and range ends take a frame number or a timecode.
 
 ```sh
 npm run render -- --scene bear-test --frame 47            # out/bear-test/frame-00047.png
 npm run export -- --scene bear-test --target mp4          # out/bear-test/bear-test.mp4
 npm run export -- --scene bear-test --target gif --from 00:02:00 --to 00:04:00
 npm run contact-sheet -- --scene bear-test --every 6      # out/bear-test/contact-sheet-...png
+npm run export -- --scene bear-test --target html         # out/bear-test/bear-test.html
 ```
 
 `--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
 
 MP4 is H.264 at the scene's fps, with no audio until M7. It is tagged sRGB, so QuickTime, browsers and ffmpeg all show the scene's colours. A range export starts at 0 s. GIF loops, keeps a 255-colour palette that holds the scene's most common colours exactly, and refuses scenes above 50 fps, which GIF can't play. H.264 needs an even width and height.
 
-The browser needs downloading once, with `npx playwright install chromium-headless-shell`. The page behind the commands is `render.html?scene=<id>`. It draws at scene size on a CPU-rastered canvas, and its `window.studio` has `renderFrame`, `pixelHash`, `writePng`, `exportVideo` and `contactSheet`. `npm run test:browser` checks that every frame of every scene draws the same pixels whether played or seeked, and that exports have the exact frame count and duration.
+### The HTML embed
+
+`npm run export -- --scene bear-test --target html` writes `out/bear-test/bear-test.html`, a single file that draws the scene live. It holds the engine, a small player, only the rigs the scene uses and the scene itself. It makes no network requests, so it works opened from disk, dropped into a website or loaded in an iframe. The scene is validated when you export, so the file doesn't carry the validator, and rig and param descriptions are stripped since the player never reads them. `bear-test` comes to about 54 KB and `shapes-test` to 19 KB. The engine and player are about 8.5 KB of that. This export needs no browser and takes under a second.
+
+The embed plays on load and loops. Add `?autoplay=0`, `?loop=0` or `?frame=47` to its URL to change that. It draws at scene size and CSS scales it to fit its box, letterboxed, so its frames match the PNG renders pixel for pixel.
+
+A page on the same origin can call `window.studio.play()`, `pause()` and `seek(frame)` in the embed's document, and read `frame`, `playing`, `frameCount` and `fps`. A host page on another origin, such as one showing the file in an iframe, sends messages instead:
+
+```js
+iframe.contentWindow.postMessage({ type: 'frame-studio', command: 'seek', frame: 30 }, '*');
+```
+
+The commands are `play`, `pause`, `seek` (with a numeric `frame`) and `state`. The embed answers each one with `{ type: 'frame-studio:state', frame, playing, frameCount, fps }`, plus an `error` field when it could not do what was asked. It also posts that state to its parent once on load. A host that starts listening later can send `state` to ask.
+
+### The render page and tests
+
+The browser needs downloading once, with `npx playwright install chromium-headless-shell`. The page behind the commands is `render.html?scene=<id>`. It draws at scene size on a CPU-rastered canvas, and its `window.studio` has `renderFrame`, `pixelHash`, `writePng`, `exportVideo` and `contactSheet`. `npm run test:browser` checks that every frame of every scene draws the same pixels whether played or seeked, that exports have the exact frame count and duration, and that the HTML embed matches the render page pixel for pixel with the network off.
 
 ## The test scenes
 

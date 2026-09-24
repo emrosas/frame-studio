@@ -35,7 +35,8 @@ The whole system rests on one rule: **the image at frame N is a pure function of
 
 ## Runtime budget (protects the single-file embed)
 
-- `src/engine`, `src/rigs`, and `src/audio` have **zero third-party runtime dependencies**. Validation libraries (zod or similar), Playwright, ffmpeg, and the MCP SDK are tooling only and must never be imported from the runtime path.
+- `src/engine`, `src/rigs`, `src/audio` and `src/embed` have **zero third-party runtime dependencies**. Validation libraries (zod or similar), Playwright, ffmpeg, and the MCP SDK are tooling only and must never be imported from the runtime path.
+- The embed player (`src/embed/player.ts`) is the one runtime file allowed to read the wall clock, to pick the frame to show during playback. render() never sees time.
 - No fonts, images, or base64 blobs. Text is drawn as vector paths in code or uses generic system font families.
 - Target: engine under ~50 KB minified. Drawing code is expected to be the bulk of a file's size, and that's fine.
 
@@ -61,12 +62,15 @@ src/
               render-main.ts is render mode (render.html) for the headless tools.
   export/     MP4, GIF and contact sheets, encoded in the page (WebCodecs +
               Mediabunny, gifenc). Browser code; never imported by the runtime.
+  embed/      The player inside the single-file HTML embed: canvas, playback
+              loop, window.studio and postMessage API. Runtime rules apply.
 scenes/       Scene files (JSON). The primary thing the agent edits.
 references/   Reference images supplied by the user (agent input only, gitignored).
 tools/
   render/     CLI driving render.html in Playwright: frame -> PNG, range -> MP4/GIF,
               contact sheets. npm run render / export / contact-sheet.
-  bundle/     Single-file HTML builder (tree-shakes unused rigs, inlines all).
+  bundle/     Single-file HTML builder: validates the scene, bundles only the rigs
+              it uses with the player, inlines all. npm run export -- --target html.
   mcp/        MCP server exposing the studio to the agent.
 out/          Renders and exports (gitignored).
 ```

@@ -31,11 +31,12 @@ Every milestone in `docs/ROADMAP.md`, M1 through M7, passes its acceptance crite
 - [How should exports encode MP4 and GIF in the web app, in Electron and from the CLI?](issues/14-export-encoding.md) One path for all three: the render page encodes H.264 with WebCodecs and muxes with Mediabunny, and only where the bytes go differs. GIF uses gifenc with our own palette code. Audio is AAC with signalled priming, falling back to Opus. No shipped build bundles ffmpeg. The CLI needs Playwright 1.57 or later, and ticket 15 follows up on colour tags.
 - [Which colour tags make an exported MP4 decode to the scene's exact colours everywhere?](issues/15-mp4-colour-tags.md) BT.709 primaries, the sRGB transfer and the BT.709 matrix at full range, in both the VUI and `colr`. WebCodecs only writes them for I420 frames that carry the colour space, so exports convert frames themselves.
 - [M3: Headless render, MP4, and GIF](issues/07-m3-headless-render-mp4-gif.md) M3 is done. `npm run render`, `export` and `contact-sheet` drive `render.html` in Playwright 1.63. Exports encode in the page, and `npm run test:browser` checks determinism, frame counts, durations and colours.
+- [M4: Single-file HTML embed](issues/08-m4-single-file-html-embed.md) M4 is done. `--target html` bundles the player, the scene's own rigs and the scene into one file with no requests, about 54 KB for `bear-test`. It matches the headless renders byte for byte, ships no validator, and takes `window.studio` or `postMessage` commands.
 
 ## Not yet specified
 
 - How the MCP server renders frames. M3's `npm run render` takes about 3.7 s for one frame, and most of that is starting Vite and Chromium, so M5 should keep one studio (`tools/render/studio.ts`) warm and call it per request.
-- One source of truth for scene validation. The engine needs a zero-dependency validator, and the MCP server has to validate JSON merge patches with readable errors. Whether MCP reuses the engine validator or wraps it stays open until M5.
+- One source of truth for scene validation. The engine needs a zero-dependency validator, and the MCP server has to validate JSON merge patches with readable errors. Whether MCP reuses the engine validator or wraps it stays open until M5. The embed no longer needs the validator, since it validates at export (M4).
 - How an open viewer picks up edits the agent makes through MCP. Vite's file watcher may cover it, or the server may need to push.
 - Text. The first scene that needs words will choose between vector paths in code and generic system fonts. System fonts render differently per machine, which may break the embed's pixel match.
 - Where shared rig parts live. M2 produces one character. The second character will show which parts are actually shared.

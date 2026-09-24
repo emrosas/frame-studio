@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-23, after the M3 review.
+Last updated 2026-09-23, after the M4 review.
 
 ## Done
 
@@ -185,14 +185,59 @@ A `/code-review` at high effort found ten issues, and all ten are fixed. After t
 - The contact sheet labels named specific fonts. They now use `monospace` only.
 - Picking a free port and then binding it left a race. Vite now binds port 0 itself.
 
+### M4: Single-file HTML embed
+
+M4 is done and its four acceptance criteria pass. `npm run export -- --scene bear-test --target html` writes one HTML file that draws the scene live. The bundling happens in Node and takes about half a second, with no browser.
+
+What M4 delivered:
+
+- The embed player, `src/embed/player.ts`. It draws on a canvas at scene size, with the same context attributes as the headless renderer, and CSS letterboxes it to fit. It plays on load and loops. `?autoplay=0`, `?loop=0` and `?frame=n` change that. Same-origin pages call `window.studio`, which has `play`, `pause` and `seek`. Pages on other origins send `postMessage` commands, and the embed answers every one with its state, or with an error when it could not do what was asked. When a frame fails to draw, it shows why and refuses to play on.
+- The playback clock moved from `src/viewer/clock.ts` into `src/engine/playback.ts`, so the viewer and the embed share it, and it gained a play-once mode. `rigIdsUsed(scene)` in the engine lists the rigs a scene draws with, including each variant's base.
+- The bundler, `tools/bundle/embed.ts`. It resolves scene keys with the viewer's own `buildLibrary` and `findEntry`, and validates at export time, so the embed ships no validator. It finds the module that exports each rig the scene uses, and bundles just those with the player into one minified inline script. A plugin strips rig and param description text from the rig modules first, working on the syntax tree Vite's `parseAst` gives, since the player never reads it.
+- `src/embed` joins the runtime roots in `tests/runtime-budget.test.ts`. It may import only the engine, rigs and audio. `player.ts` alone may use `requestAnimationFrame` and `performance.now`.
+
+Sizes: `bear-test` is 54.2 KB, `shapes-test` 19.4 KB. The engine and player alone are about 8.5 KB minified. Stripping the descriptions saved 7.5 KB on `bear-test`, 12%, and pixel parity still holds.
+
+### How each M4 acceptance criterion was verified
+
+`tests/browser/embed.test.ts` has 13 tests.
+
+1. The file works opened from disk with the network disabled. The test opens it through a `file://` URL in a context with `setOffline(true)`, and `navigator.onLine` reads false. It plays, pauses, seeks and loops there, and `?loop=0` stops on the last frame.
+2. No external requests. The page made exactly one request, for the file itself, and logged no errors. The file contains no URL at all.
+3. Its frames match the headless PNG renders pixel for pixel. In the same browser launch, the embed's canvas RGBA hashes equal `render.html`'s on 8 frames of `bear-test` and 9 of `shapes-test`. Those cover both sides of the plaster override and `shapes-test`'s held frames. `render.html`'s pixels in turn equal its PNGs, which M3 checked.
+4. The engine portion stays under about 50 KB minified. It measured about 8.5 KB, and the test holds it under 50 KB. Only the rigs a scene uses are bundled: the `bear-test` file has none of the shape rigs and no validator text, and `shapes-test` has no bear.
+
+A host page on another origin, with the embed in an iframe, drove it with `seek`, `play` and `pause`, and got state back each time, plus an error for a `seek` without a number. I also took a screenshot at 720x540. Frame 60 showed letterboxed, with the plaster.
+
+### Deliberate deviations from `CLAUDE.md` and the roadmap
+
+- The embed ships no validator. It trusts the scene it was built from, which was validated at export.
+- The embed draws at scene size, so a high-DPI screen scales the bitmap up. That keeps pixel parity with the PNGs. A sharper option could come later.
+- The player reads the wall clock, as the viewer does, and the budget test allows it in that one file.
+
+### M4 review
+
+A `/code-review` at high effort found ten issues, and all ten are fixed. The suite is at 894 unit tests and 31 browser tests.
+
+- The bundler printed validation errors as "undefined: undefined", because a hand-written type had drifted from the engine's. It now takes the engine's own types, and a test checks the real message.
+- The bundler looked up scenes its own way, so the same `--scene` key could pick a different file for html than for mp4. It now uses `buildLibrary` and `findEntry`, and a test covers an id that doesn't match its file name.
+- Rewriting `<!--` everywhere could break a Unicode regex. Scene data now goes in as `JSON.parse` of a string with no `<` in it. `</script` becomes `<\/script`, and any `<!--` or `<script` left stops the build.
+- A broken embed still let `play()` start the loop, and a bad `seek` got no reply. Both are fixed and tested.
+- The CLI exited before stdout flushed, so a script capturing the output path could get nothing. It now lets the process end on its own.
+- Measuring the engine-and-player size cost a second build on every export. It is now opt-in, and the test asks for it.
+- The `--from`/`--to` check fired for any command given `--target html`, and `--every` was silently ignored. Both are fixed.
+- The wall-clock exemption covered all of `src/embed`. It now covers `player.ts` only.
+- A host that started listening after the load message had no documented way to catch up. The `state` command is now documented.
+
 ## Next
 
-1. M4, ticket 08: the single-file HTML embed. It must play from disk with the network off, make no requests, and match the headless PNGs pixel for pixel. Ticket 03 says to run the embed in the same Playwright launch as the reference render and compare decoded RGBA. `tools/render/studio.ts` can host that comparison. M4 also decides whether the embed ships the validator.
+1. M5, ticket 09: the MCP server. `tools/render/studio.ts` already does what `render_frame`, `render_contact_sheet` and `export` need. Keep one studio warm, since starting Vite and Chromium takes most of a 3.7 s render. `buildEmbed` covers `export(html)`. `update_scene` and `apply_to_selection` need JSON merge patches, validated with readable errors.
 
 ## Open questions
 
 - The repo has two test-only fake contexts. `src/engine/testing/recording-context.ts` tracks full canvas state and serves the engine tests, `tests/scenes.test.ts` and the rig smoke tests. `src/rigs/testing/recording-context.ts` logs plain strings, throws on `ctx.canvas`, and serves the older rig tests. Should they merge? The engine one could take an option to throw on `ctx.canvas`.
-- The validator is part of the engine bundle. M4 should decide whether the single-file embed ships it or trusts pre-validated scene data.
+- The HTML export builds with Vite and Rolldown in Node. Electron's main process is Node, so it can run the same build if it ships Vite, Rolldown's native binary and the rig sources. A browser tab can't run Vite, but the planned backend can, and Rolldown has a WebAssembly build. Which each shell uses is a packaging choice for the shell work (ADR 0001).
+- Should the embed offer a sharper high-DPI mode? It would trade pixel parity with the PNGs for crispness on retina screens.
 - Only a test enforces the rule that a scene file is named after its id. The viewer now opens a scene by file name too, and gives a shared id to the file named after it, but it does not flag a mismatch. Should the viewer or validator flag one? MCP `get_scene(id)` in M5 will need to map an id to a file.
 
 ## Known issues
