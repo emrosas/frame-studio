@@ -1,6 +1,7 @@
 <!--
-  The control bar under the stage: play/pause, the scrubber with the frame
-  range band, timecode, frame and fps readouts, scene picker and shortcut hint.
+  The control bar under the stage: play/pause, sound on/off for scenes with
+  audio, the scrubber with the frame range band, timecode, frame and fps
+  readouts, scene picker and shortcut hint.
 -->
 <script lang="ts">
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
@@ -20,6 +21,14 @@
     return `--in: ${start}; --out: ${stop}`;
   });
   const playLabel = $derived(ui.playing ? 'Pause' : 'Play');
+  const soundLabel = $derived(ui.sound?.muted ? 'Unmute' : 'Mute');
+  const soundTitle = $derived.by(() => {
+    const status = ui.sound?.status;
+    if (status === 'rendering') return 'Sound is rendering';
+    if (status === 'failed') return 'Sound failed to render (see the error panel)';
+    if (status === 'locked') return 'Sound starts once you click or press a key';
+    return `${soundLabel} (M)`;
+  });
 
   function endScrub(): void {
     if (!scrubbing) return;
@@ -54,6 +63,27 @@
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z" /></svg>
     {/if}
   </button>
+  {#if ui.sound}
+    <button
+      type="button"
+      class="play-button sound-button"
+      class:is-waiting={ui.sound.status !== 'ready'}
+      aria-keyshortcuts="M"
+      aria-label={soundLabel}
+      aria-pressed={ui.sound.muted}
+      title={soundTitle}
+      onclick={() => actions.toggleMute()}
+    >
+      <svg viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M2 6h2.5L8 3v10L4.5 10H2z" />
+        {#if ui.sound.muted}
+          <path d="M10.2 5.6l1 -1 1.8 1.8 1.8 -1.8 1 1 -1.8 1.8 1.8 1.8 -1 1 -1.8 -1.8 -1.8 1.8 -1 -1 1.8 -1.8z" />
+        {:else}
+          <path d="M10 5.2a3.5 3.5 0 0 1 0 5.6l-.8 -1a2.2 2.2 0 0 0 0 -3.6zM11.8 3a6.3 6.3 0 0 1 0 10l-.8 -1a5 5 0 0 0 0 -8z" />
+        {/if}
+      </svg>
+    </button>
+  {/if}
   <output class="timecode" aria-label="Timecode">
     {ui.timeline ? `${ui.timeline.timecode} / ${ui.timeline.endTimecode}` : '--:--:-- / --:--:--'}
   </output>
@@ -107,5 +137,6 @@
   <div class="hint">
     <kbd>Space</kbd> play/pause <span class="sep">·</span> <kbd>←</kbd><kbd>→</kbd> frame <span class="sep">·</span>
     <kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> 1 s <span class="sep">·</span> <kbd>Home</kbd><kbd>End</kbd>
+    {#if ui.sound}<span class="sep">·</span> <kbd>M</kbd> sound{/if}
   </div>
 </div>

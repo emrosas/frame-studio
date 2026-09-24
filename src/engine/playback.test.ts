@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { clampFrame, PlaybackClock, playbackFrame, wrapFrame } from './playback';
+import { clampFrame, PlaybackClock, playbackFrame, playbackPosition, wrapFrame } from './playback';
 
 // Deterministic jitter for simulated requestAnimationFrame timestamps.
 function lcg(seed: number): () => number {
@@ -305,3 +305,97 @@ describe('a loop range across timeline changes', () => {
     expect(clock.loopRange).toEqual({ from: 20, to: 60 });
   });
 });
+
+describe('playbackPosition (the playhead with a fraction, for sound)', () => {
+  it('floors to playbackFrame, looping or not, with and without a range', () => {
+    const next = lcg(9);
+    for (let i = 0; i < 2000; i++) {
+      const frameCount = 1 + Math.floor(next() * 200);
+      const anchor = { anchorFrame: Math.floor(next() * frameCount), anchorMs: next() * 1000 };
+      const now = anchor.anchorMs + (next() - 0.1) * 60_000;
+      const fps = [12, 24, 25, 30, 60][Math.floor(next() * 5)];
+      const from = Math.floor(next() * frameCount);
+      const range = next() < 0.5 ? { from, to: from + 1 + Math.floor(next() * (frameCount - from)) } : null;
+      for (const loop of [true, false]) {
+        const position = playbackPosition(anchor, now, fps, frameCount, loop, range);
+        expect(Math.floor(position), JSON.stringify({ anchor, now, fps, frameCount, loop, range })).toBe(
+          playbackFrame(anchor, now, fps, frameCount, loop, range),
+        );
+      }
+    }
+  });
+
+  it('moves smoothly between frames', () => {
+    const anchor = { anchorFrame: 10, anchorMs: 0 };
+    expect(playbackPosition(anchor, 125, 12, 96)).toBeCloseTo(11.5, 9);
+  });
+
+  it('wraps inside the range playback started in', () => {
+    const anchor = { anchorFrame: 12, anchorMs: 0 };
+    // 5.5 frames after frame 12, in [10, 14): 12 + 5.5 = 17.5, which wraps to 13.5.
+    expect(playbackPosition(anchor, (5.5 * 1000) / 12, 12, 96, true, { from: 10, to: 14 })).toBeCloseTo(13.5, 9);
+  });
+});
+
+describe('PlaybackClock.position and activeLoop', () => {
+  it('reports the playhead with a fraction while playing, and the frame while paused', () => {
+    const time = { now: 0 };
+    const clock = new PlaybackClock(() => time.now);
+    clock.setTimeline({ fps: 12, frameCount: 96 });
+    clock.seek(4);
+    expect(clock.position(1000)).toBe(4);
+    clock.play();
+    expect(clock.position(125)).toBeCloseTo(5.5, 9);
+  });
+
+  it('loops through the range only when playback started inside it', () => {
+    const time = { now: 0 };
+    const clock = new PlaybackClock(() => time.now);
+    clock.setTimeline({ fps: 12, frameCount: 96 });
+    expect(clock.activeLoop).toEqual({ from: 0, to: 96 });
+    clock.seek(50);
+    clock.play();
+    clock.setLoopRange({ from: 10, to: 14 });
+    expect(clock.activeLoop).toEqual({ from: 0, to: 96 }); // still playing outside it
+    clock.pause();
+    clock.play(); // starts again from the range
+    expect(clock.activeLoop).toEqual({ from: 10, to: 14 });
+  });
+});
+
+describe('changes that do not move the playhead keep its fraction', () => {
+  function playingAt(ms: number) {
+    const time = { now: 0 };
+    const clock = new PlaybackClock(() => time.now);
+    clock.setTimeline({ fps: 12, frameCount: 96 });
+    clock.seek(10);
+    clock.play();
+    time.now = ms;
+    clock.tick(time.now);
+    return { clock, time };
+  }
+
+  it('keeps the time spent on the frame when the loop range changes', () => {
+    const { clock, time } = playingAt(125); // 11.5
+    clock.setLoopRange({ from: 0, to: 48 });
+    expect(clock.position(time.now)).toBeCloseTo(11.5, 9);
+    time.now += 1000 / 24 + 0.01; // just over half a frame later: the next frame, on time
+    expect(clock.tick(time.now)).toBe(true);
+    expect(clock.frame).toBe(12);
+  });
+
+  it('keeps it across a hot edit at the same fps, and drops it when the fps changes', () => {
+    const { clock, time } = playingAt(125);
+    clock.setTimeline({ fps: 12, frameCount: 120 });
+    expect(clock.position(time.now)).toBeCloseTo(11.5, 9);
+    clock.setTimeline({ fps: 24, frameCount: 240 });
+    expect(clock.position(time.now)).toBe(11);
+  });
+
+  it('still starts a seek on the frame boundary', () => {
+    const { clock, time } = playingAt(125);
+    clock.seek(40);
+    expect(clock.position(time.now)).toBe(40);
+  });
+});
+

@@ -174,3 +174,40 @@ describe('the viewer', () => {
     await page.close();
   });
 });
+
+describe('sound (M7)', () => {
+  type Sound = { status: string; muted: boolean; unlocked: boolean; heard: number | null };
+  const sound = (page: Page) => page.evaluate(() => (window as unknown as { studio: { sound: Sound } }).studio.sound);
+  /** How far the sound reaching the speakers is from the playhead, in seconds. */
+  const offBy = (page: Page) =>
+    page.evaluate(() => {
+      const studio = (window as unknown as { studio: { sound: Sound; frame: number; scene: { fps: number } } }).studio;
+      return studio.sound.heard === null ? null : Math.abs(studio.sound.heard - studio.frame / studio.scene.fps);
+    });
+
+  it('has no sound button for a silent scene', async () => {
+    const page = await open('?scene=shapes-test');
+    await expect.poll(() => readout(page)).toBe('frame 0 of 72');
+    expect(await page.getByRole('button', { name: /mute/i }).count()).toBe(0);
+    expect((await sound(page)).status).toBe('none');
+    await page.close();
+  });
+
+  it('plays the scene audio in step with the picture, after a seek too, and mutes with M', async () => {
+    const page = await open('?scene=audio-test&frame=0');
+    await expect.poll(async () => (await sound(page)).status).toBe('ready');
+    await expect.poll(() => page.getByRole('button', { name: 'Mute' }).isVisible()).toBe(true);
+    await page.getByRole('button', { name: 'Play' }).click(); // a gesture, so the browser lets sound start
+    await expect.poll(async () => (await sound(page)).heard, { timeout: 3000 }).not.toBeNull();
+    // Within two frames (the frame on screen is floored) plus the resync tolerance.
+    const step = 2 / 30 + 0.04;
+    await expect.poll(() => offBy(page)).toBeLessThan(step);
+    await page.evaluate(() => (window as unknown as { studio: { seek(f: number): number } }).studio.seek(90));
+    await expect.poll(() => offBy(page)).toBeLessThan(step);
+    await page.keyboard.press('m');
+    await expect.poll(async () => (await sound(page)).heard).toBeNull();
+    await expect.poll(() => page.getByRole('button', { name: 'Unmute' }).isVisible()).toBe(true);
+    await page.keyboard.press('Space');
+    await page.close();
+  });
+});

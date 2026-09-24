@@ -1,6 +1,6 @@
 /**
- * Every file in scenes/ must parse, validate against the shipped rigs with zero
- * errors, and render every frame. Rendering goes through the engine's recording
+ * Every file in scenes/ must parse, validate against the shipped rigs and audio
+ * generators with zero errors, and render every frame. Rendering goes through the engine's recording
  * context, so no browser is needed; a paint call's log entry carries the state
  * that decides its pixels, so equal logs mean equal images.
  *
@@ -10,14 +10,16 @@
 import { describe, expect, it } from 'vitest';
 import { BACKGROUND_ID, frameCount, render, resolveLayer, sceneLayers, timeToFrame, validateScene, type Layer, type Scene } from '../src/engine';
 import { createRecordingContext, splitLayerLogs, type LogEntry } from '../src/engine/testing/recording-context';
+import { createDefaultGenerators } from '../src/audio';
 import { createDefaultRegistry } from '../src/rigs';
 
 const files = import.meta.glob<string>('/scenes/*.json', { eager: true, query: '?raw', import: 'default' });
 const registry = createDefaultRegistry();
+const generators = createDefaultGenerators();
 const paths = Object.keys(files).sort();
 
 function loadScene(path: string): Scene {
-  const result = validateScene(JSON.parse(files[path]), registry);
+  const result = validateScene(JSON.parse(files[path]), registry, generators);
   if (!result.ok) throw new Error(`${path.slice(1)} is invalid:\n${result.errors.join('\n')}`);
   return result.scene;
 }
@@ -119,9 +121,9 @@ describe('scenes/*.json', () => {
     expect(paths).toEqual(expect.arrayContaining(['/scenes/shapes-test.json', '/scenes/hello.json']));
   });
 
-  it.each(paths)('%s validates against createDefaultRegistry() with zero errors', (path) => {
+  it.each(paths)('%s validates against the shipped rigs and generators with zero errors', (path) => {
     const json: unknown = JSON.parse(files[path]);
-    const result = validateScene(json, registry);
+    const result = validateScene(json, registry, generators);
     expect(result.ok ? [] : result.errors).toEqual([]);
   });
 

@@ -1,7 +1,7 @@
 // Builds the single-file HTML embed for a scene (M4): the engine, the embed
-// player, only the rigs the scene draws with, and the scene data, bundled and
-// minified into one inline script. The file makes no requests and needs no
-// runtime library.
+// player, only the rigs the scene draws with, the scene data and, for a scene
+// with audio, only the generators it uses (M7), bundled and minified into one
+// inline script. The file makes no requests and needs no runtime library.
 //
 // Scenes are validated here, at export time, so the embed ships without the
 // validator. Scene keys resolve exactly as in the viewer and render page
@@ -11,6 +11,7 @@
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { build, createServer, parseAst, type Plugin, type Rollup, type ViteDevServer } from 'vite';
+import type { AudioGenerator } from '../../src/audio/types.ts';
 import type { Rig, Scene } from '../../src/engine/types.ts';
 import { loadModules, ROOT, sceneLibrary } from '../scene-files.ts';
 
@@ -21,6 +22,8 @@ export interface EmbedBuild {
   scene: Scene;
   /** Rig ids bundled, sorted. */
   rigs: string[];
+  /** Audio generator ids bundled, sorted. Empty for a silent scene or a silent export. */
+  generators: string[];
   bytes: {
     /** The whole HTML file. */
     total: number;
@@ -41,6 +44,8 @@ export interface EmbedBuildOptions {
   measureRuntime?: boolean;
   /** A Vite server to load modules through, such as the MCP workspace's; the caller closes it. Otherwise one is started and closed. */
   server?: ViteDevServer;
+  /** Leave the scene's audio out. */
+  silent?: boolean;
 }
 
 
@@ -64,18 +69,27 @@ async function sourceFiles(dir: string): Promise<string[]> {
   return out.sort();
 }
 
+function isGenerator(value: unknown): value is AudioGenerator {
+  const v = value as Partial<AudioGenerator> | null;
+  return typeof v === 'object' && v !== null && typeof v.id === 'string' && typeof v.schedule === 'function' && typeof v.params === 'object';
+}
+
 /**
- * Where each rig is defined: rig id to the module and export name, found by
- * loading every module under src/rigs. A module that only re-exports rigs
- * (an index) loses to the one that defines them.
+ * Where each rig or generator is defined: its id to the module and export
+ * name, found by loading every module under `dir`. A module that only
+ * re-exports them (an index) loses to the one that defines them.
  */
-async function rigModules(server: ViteDevServer): Promise<Map<string, { file: string; name: string }>> {
+async function definitions(
+  server: ViteDevServer,
+  dir: string,
+  matches: (value: unknown) => value is { id: string },
+): Promise<Map<string, { file: string; name: string }>> {
   const found = new Map<string, { file: string; name: string; index: boolean }>();
-  for (const file of await sourceFiles(join(ROOT, 'src/rigs'))) {
+  for (const file of await sourceFiles(join(ROOT, dir))) {
     const mod = (await server.ssrLoadModule(file)) as Record<string, unknown>;
     const index = file.endsWith('/index.ts');
     for (const [name, value] of Object.entries(mod)) {
-      if (!isRig(value)) continue;
+      if (!matches(value)) continue;
       const prev = found.get(value.id);
       if (!prev || (prev.index && !index)) found.set(value.id, { file, name, index });
     }
@@ -117,11 +131,11 @@ function walk(node: unknown, visit: (n: Node) => void): void {
 }
 
 /**
- * Empties the description text in rig modules: every string-valued
- * `description` property, and the description argument of the schema
- * helpers. Descriptions document params for people and agents (list_rigs,
- * docs); the player never reads them. About 13% of the bear-test embed.
- * Exported for tests.
+ * Empties the description text in rig and generator modules: every
+ * string-valued `description` property, and the description argument of the
+ * schema helpers. Descriptions document params for people and agents
+ * (list_rigs, docs); the player never reads them. About 13% of the bear-test
+ * embed. Exported for tests.
  */
 export function stripDescriptions(code: string): string {
   const cuts: [number, number][] = [];
@@ -147,7 +161,8 @@ function stripDescriptionsPlugin(): Plugin {
     name: 'frame-studio-strip-descriptions',
     // After the TypeScript transform, so the parser sees plain JavaScript.
     enforce: 'post',
-    transform: (code, id) => (id.startsWith(join(ROOT, 'src/rigs/')) ? { code: stripDescriptions(code), map: null } : null),
+    transform: (code, id) =>
+      id.startsWith(join(ROOT, 'src/rigs/')) || id.startsWith(join(ROOT, 'src/audio/')) ? { code: stripDescriptions(code), map: null } : null,
   };
 }
 
@@ -240,26 +255,44 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions = 
     if (!entry) throw new Error(`No scene "${sceneKey}" in scenes/. Scenes: ${lib.entries.map((e) => e.key).join(', ')}`);
     const problems = [...lib.errors, ...entry.errors];
     if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors, so it cannot be exported:\n${problems.join('\n')}`);
-    const scene = entry.scene;
+    // A silent export drops the cues, so the embed carries no audio code at all.
+    const scene: Scene = options.silent ? { ...entry.scene, audio: undefined } : entry.scene;
     const ids = engine.rigIdsUsed(scene);
-    const rigFiles = await rigModules(server);
+    const rigFiles = await definitions(server, 'src/rigs', isRig);
     const missing = ids.filter((id) => !rigFiles.has(id));
     if (missing.length > 0) throw new Error(`No module under src/rigs exports rig ${missing.map((m) => `"${m}"`).join(', ')} by name.`);
+    const generatorIds = [...new Set((scene.audio ?? []).map((cue) => cue.generator))].sort();
+    const generatorFiles = generatorIds.length > 0 ? await definitions(server, 'src/audio', isGenerator) : new Map();
+    const missingGenerators = generatorIds.filter((id) => !generatorFiles.has(id));
+    if (missingGenerators.length > 0) {
+      throw new Error(`No module under src/audio exports generator ${missingGenerators.map((m) => `"${m}"`).join(', ')} by name.`);
+    }
 
     const player = join(ROOT, 'src/embed/player.ts');
-    const imports = ids.map((id, i) => `import { ${rigFiles.get(id)!.name} as rig${i} } from ${importPath(rigFiles.get(id)!.file)};`);
+    const imports = [
+      ...ids.map((id, i) => `import { ${rigFiles.get(id)!.name} as rig${i} } from ${importPath(rigFiles.get(id)!.file)};`),
+      ...generatorIds.map((id, i) => `import { ${generatorFiles.get(id)!.name} as gen${i} } from ${importPath(generatorFiles.get(id)!.file)};`),
+    ];
+    const sound = generatorIds.length > 0 ? `embedSound([${generatorIds.map((_, i) => `gen${i}`).join(', ')}])` : 'undefined';
     const code = [
       `import { mountEmbed, optionsFromQuery } from ${importPath(player)};`,
+      ...(generatorIds.length > 0 ? [`import { embedSound } from ${importPath(join(ROOT, 'src/embed/sound.ts'))};`] : []),
       ...imports,
       `const scene = ${sceneLiteral(scene)};`,
-      `window.studio = mountEmbed(document.getElementById('frame-studio'), scene, [${ids.map((_, i) => `rig${i}`).join(', ')}], optionsFromQuery(location.search));`,
+      `window.studio = mountEmbed(document.getElementById('frame-studio'), scene, [${ids.map((_, i) => `rig${i}`).join(', ')}], optionsFromQuery(location.search), ${sound});`,
     ].join('\n');
     const runtimeOnly = `import { mountEmbed, optionsFromQuery } from ${importPath(player)};\nwindow.studio = [mountEmbed, optionsFromQuery];`;
 
     const script = inlineSafe(await bundle(code));
     const html = page(scene, script);
     const runtime = options.measureRuntime ? Buffer.byteLength(await bundle(runtimeOnly)) : undefined;
-    return { html, scene, rigs: ids, bytes: { total: Buffer.byteLength(html), script: Buffer.byteLength(script), runtime } };
+    return {
+      html,
+      scene,
+      rigs: ids,
+      generators: generatorIds,
+      bytes: { total: Buffer.byteLength(html), script: Buffer.byteLength(script), runtime },
+    };
   } finally {
     if (!options.server) await server.close();
   }

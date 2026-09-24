@@ -15,7 +15,7 @@ The image at any frame depends only on the scene file and the frame number. Noth
 | `seed` | integer | Seeds every random choice. Change it to get new grain and wobble with the same motion. |
 | `background` | layer without `id` | Optional. Drawn first, behind every layer. Its id is always `background`, so leave `id` out. |
 | `layers` | array of layers | Drawn in array order, so index 0 is at the back. |
-| `audio` | array | Reserved for procedural audio in a later milestone. Leave it out for now. |
+| `audio` | array of audio cues | Optional. The scene's sound; see [Sound](#sound). |
 
 Any field not listed here is an error. The same goes for layers, tracks, keys and overrides, so a typo such as `stepfps` or `easing` fails validation with a hint instead of being ignored.
 
@@ -332,6 +332,65 @@ A variant of `bear` with a sticking plaster on its head: two crossed painted str
 | `plasterColor` | colour | `#efcb98` | | Colour of the plaster strips. |
 | `plasterPad` | colour | `#fbf7ee` | | Colour of the gauze pad where the strips cross. |
 
+## Sound
+
+A scene's sound is a list of audio cues. Each cue names a generator, which is code that makes the sound, the way a rig is code that draws. Like the picture, the sound depends only on the scene file: the same scene gives the same samples every time.
+
+```json
+"audio": [
+  { "id": "beats", "generator": "blip", "start": 0.5, "end": 1.9, "params": { "pitch": 1000, "every": 0.5 } },
+  { "id": "bed", "generator": "pad", "start": 2, "end": 4, "params": { "note": 110, "chord": "minor" } }
+]
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `id` | string | Unique among the cues. It also seeds the cue's randomness, with the scene seed. |
+| `generator` | string | One of the generators below. |
+| `start`, `end` | seconds | The cue plays over `[start, end)`, from 0 up to the scene duration. Both snap to the frame they fall in, so a sound starts exactly when its frame appears. |
+| `params` | object | The generator's params. Missing ones take their defaults. |
+
+Sound renders at 48 kHz, so a scene with audio needs an fps that divides 48000: 12, 24, 25, 30, 48 or 60 all do. The validator says so if not. Cues mix together; there is no volume field beyond each generator's `gain`.
+
+### pad
+
+An ambient chord that fades in and out, good under a whole scene. Two slightly detuned saw waves per note, through a soft lowpass.
+
+| Param | Type | Default | Range | Meaning |
+| --- | --- | --- | --- | --- |
+| `note` | number | 220 | 30 to 2000 | Root pitch in Hz. |
+| `chord` | enum | `fifth` | `fifth`, `major`, `minor`, `unison` | Intervals stacked on the root. |
+| `gain` | number | 0.2 | 0 to 1 | Loudness at full volume. |
+| `attack` | number | 1 | 0 to 20 | Fade-in in seconds. |
+| `release` | number | 1.5 | 0 to 20 | Fade-out in seconds, ending at the cue end. |
+| `brightness` | number | 0.4 | 0 to 1 | How open the filter is. 0 is muffled, 1 is buzzy. |
+
+When `attack` and `release` add up to more than the cue, both shrink in proportion.
+
+### buzz
+
+An insect buzz: a saw tone plus band-passed noise, pulsing at the wingbeat. Its pitch wanders along a seeded path, so two cues with different ids buzz differently.
+
+| Param | Type | Default | Range | Meaning |
+| --- | --- | --- | --- | --- |
+| `pitch` | number | 220 | 50 to 1000 | Base pitch of the buzz in Hz. |
+| `wander` | number | 0.5 | 0 to 1 | How far the pitch drifts, up to half an octave either way. |
+| `flutter` | number | 28 | 0 to 60 | Wingbeat rate in Hz: how fast the loudness pulses. |
+| `gain` | number | 0.25 | 0 to 1 | Loudness. |
+| `fade` | number | 0.05 | 0 to 2 | Fade in and out, in seconds. |
+
+### blip
+
+A short beep for UI moments and hits. Each blip starts exactly on a frame.
+
+| Param | Type | Default | Range | Meaning |
+| --- | --- | --- | --- | --- |
+| `pitch` | number | 880 | 50 to 8000 | Pitch in Hz. |
+| `wave` | enum | `sine` | `sine`, `triangle`, `square`, `sawtooth` | Tone colour. |
+| `length` | number | 0.08 | 0.005 to 2 | How long each blip rings, in seconds. |
+| `every` | number | 0 | 0 to 60 | Seconds between blips. 0 plays one blip at the cue start. Repeats snap to frames and are at least a frame apart. |
+| `gain` | number | 0.3 | 0 to 1 | Loudness. |
+
 ## Opening a scene in the viewer
 
 Run `npm run dev` and open the URL it prints. Add `?scene=<id>&frame=<n>` to land on a scene and frame, for example `http://localhost:5173/?scene=shapes-test&frame=36`. `frame` also takes a timecode such as `00:03:00`, and `scene` also takes the file name without `.json`. If `scene` matches nothing, the viewer shows the first scene with an error and opens the requested one as soon as its file exists. The URL follows along as you scrub, so a reload returns to the same place. Space plays and pauses, the arrow keys step one frame, Shift with an arrow steps one second, and Home and End jump to the ends.
@@ -339,6 +398,8 @@ Run `npm run dev` and open the URL it prints. Add `?scene=<id>&frame=<n>` to lan
 Click the canvas to select the layer under the pointer. The viewer outlines it and shows its id in a tag above it. Clicking the same spot again steps down through the layers painted there and wraps back to the top. Alt with a click picks the part of the layer, such as `bruno › nose`. While paused, hovering shows a fainter outline on the layer the pointer is over. The selection is hidden during playback, since redrawing it costs several times the render, and it comes back on pause. I marks the frame on screen as the start of the frame range and O marks it as the last frame. You can also type a frame number or a timecode into the from and to fields. Ranges are `[from, to)`, so O on frame 30 stores `to: 31`. Escape clears the hover, then the layer, then the range. The URL carries the selection as `layer`, `part`, `from` and `to`.
 
 While a frame range is set, playback loops inside it, the way in and out points work in an editor. Clear the range to play the whole scene.
+
+A scene with audio gets a speaker button next to play. The viewer renders the scene's sound once when it opens the scene, and again when an edit changes the cues, then plays it in step with the picture, looping with the range and following seeks. Browsers only allow sound after a click or key press on the page, so the button stays grey until then. M or the button mutes, and the setting sticks across reloads.
 
 The Requests panel on the right sends asks to your coding agent (`docs/MCP.md`, "Requests from the viewer"). It applies to whatever is selected: a layer or part and a range, a range alone, or with nothing selected the whole scene. Write what should change, attach, paste or drop reference images, and press **Send to agent**, or Cmd/Ctrl+Enter. The queue below shows each request's status and the agent's summary. Click one to bring its selection back, and use **View**, **Revert** or **Try again** on finished ones. The viewer also keeps `.frame-studio/selection.json` up to date, so the agent can ask what you mean by "this".
 
@@ -360,11 +421,15 @@ npm run export -- --scene bear-test --target html         # out/bear-test/bear-t
 
 `--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
 
-MP4 is H.264 at the scene's fps, with no audio until M7. It is tagged sRGB, so QuickTime, browsers and ffmpeg all show the scene's colours. A range export starts at 0 s. GIF loops, keeps a 255-colour palette that holds the scene's most common colours exactly, and refuses scenes above 50 fps, which GIF can't play. H.264 needs an even width and height.
+MP4 is H.264 at the scene's fps. It is tagged sRGB, so QuickTime, browsers and ffmpeg all show the scene's colours. A range export starts at 0 s. GIF loops, keeps a 255-colour palette that holds the scene's most common colours exactly, and refuses scenes above 50 fps, which GIF can't play. H.264 needs an even width and height.
+
+A scene with audio exports its sound into the MP4: AAC at 128 kb/s where the browser has an AAC encoder (macOS and Windows), and Opus where it doesn't (Linux). A range export takes the sound for just its frames. AAC lines up with the frames to within a sample in QuickTime and ffmpeg, and both codecs last exactly as long as the video. Opus plays 6.5 ms late in QuickTime, which ignores the start delay Opus carries. `--silent` leaves the sound out. GIFs are always silent.
 
 ### The HTML embed
 
 `npm run export -- --scene bear-test --target html` writes `out/bear-test/bear-test.html`, a single file that draws the scene live. It holds the engine, a small player, only the rigs the scene uses and the scene itself. It makes no network requests, so it works opened from disk, dropped into a website or loaded in an iframe. The scene is validated when you export, so the file doesn't carry the validator, and rig and param descriptions are stripped since the player never reads them. `bear-test` comes to about 54 KB and `shapes-test` to 19 KB. The engine and player are about 8.5 KB of that. This export needs no browser and takes under a second.
+
+A scene with audio also bundles the generators its cues use, about 7 KB more for `audio-test`. The embed renders the sound when it loads, but starts muted, because browsers only allow sound after a click in the page. A speaker button in the corner turns it on and off, and the sound follows play, pause and seeks. `--silent` exports the embed without sound, and then it carries no audio code at all.
 
 The embed plays on load and loops. Add `?autoplay=0`, `?loop=0` or `?frame=47` to its URL to change that. It draws at scene size and CSS scales it to fit its box, letterboxed, so its frames match the PNG renders pixel for pixel.
 
@@ -374,11 +439,11 @@ A page on the same origin can call `window.studio.play()`, `pause()` and `seek(f
 iframe.contentWindow.postMessage({ type: 'frame-studio', command: 'seek', frame: 30 }, '*');
 ```
 
-The commands are `play`, `pause`, `seek` (with a numeric `frame`) and `state`. The embed answers each one with `{ type: 'frame-studio:state', frame, playing, frameCount, fps }`, plus an `error` field when it could not do what was asked. It also posts that state to its parent once on load. A host that starts listening later can send `state` to ask.
+The commands are `play`, `pause`, `seek` (with a numeric `frame`), `mute`, `unmute` and `state`. The embed answers each one with `{ type: 'frame-studio:state', frame, playing, frameCount, fps }`, plus `muted` when it has sound and an `error` field when it could not do what was asked. `muted` stays true until the browser lets the embed play sound, so `unmute` from another page only takes effect where the browser already allows the frame to play sound. Same-origin pages can use `studio.setMuted(false)` and read `studio.sound`. It also posts that state to its parent once on load. A host that starts listening later can send `state` to ask.
 
 ### The render page and tests
 
-The browser needs downloading once, with `npx playwright install chromium-headless-shell`. The page behind the commands is `render.html?scene=<id>`. It draws at scene size on a CPU-rastered canvas, and its `window.studio` has `renderFrame`, `pixelHash`, `writePng`, `exportVideo` and `contactSheet`. `npm run test:browser` checks that every frame of every scene draws the same pixels whether played or seeked, that exports have the exact frame count and duration, and that the HTML embed matches the render page pixel for pixel with the network off.
+The browser needs downloading once, with `npx playwright install chromium-headless-shell`. The page behind the commands is `render.html?scene=<id>`. It draws at scene size on a CPU-rastered canvas, and its `window.studio` has `renderFrame`, `pixelHash`, `audioHash`, `writePng`, `exportVideo` and `contactSheet`. `npm run test:browser` checks that every frame of every scene draws the same pixels whether played or seeked, that exports have the exact frame count and duration, and that the HTML embed matches the render page pixel for pixel with the network off. For sound, it checks that a scene renders the same samples in two browser launches, and that blips in the exported MP4 land within a frame of their frames when ffmpeg decodes it.
 
 ## The test scenes
 
@@ -391,6 +456,8 @@ The browser needs downloading once, with `npx playwright install chromium-headle
 `hello` runs at 24 fps for 3 seconds at 1280 by 720, with one ball bouncing on `inQuad` and `outQuad` keys.
 
 `bear-test` is the M2 character scene, 1920 by 1080 at 12 fps for 8 seconds on the orange of `bears`. `bruno`, a big white bear, eases in from the left over the first 2 seconds, then waves at 2 s, cheers at 5 s and rests at 7 s, going neutral, happy, surprised and neutral with it. An override swaps him to `bear.bandaged` over frames `[48, 72)`. `pip`, a smaller red bear in front of him with `stepFps: 6`, starts shy and sad and waves happily from 4 s. Both blink. The paper around them is left clear, so a click on empty paper has room to land.
+
+`audio-test` is the M7 sound scene: 640 by 360 at 30 fps for 4 seconds. A circle swells on the three blips at 0.5, 1 and 1.5 s, a star spins while a buzz plays from 2.2 s to 3.2 s, and a minor pad fades in under it from 2 s. The browser tests use the blips to check audio alignment.
 
 `bears` is a single 1080 by 1920 frame with four `bear` layers on a flat orange `paper` ground. It recreates a painted illustration, with the white bear at the back, then the red, blue and yellow ones.
 
@@ -432,3 +499,30 @@ Hit testing draws one layer at a time into a 1x1 canvas, translated so the click
 A rig with no `parts` only needs rule 1, and the tests check rules 2 to 4 on rigs that declare parts. `bear` and `bear.bandaged` follow all four.
 
 The viewer swaps an edited rig in without a reload and keeps the frame.
+
+## Writing a generator
+
+A generator is a TypeScript object in `src/audio`, typed as `AudioGenerator` in `src/audio/types.ts`:
+
+```ts
+interface AudioGenerator {
+  id: string;
+  description?: string;
+  params: ParamSchema;
+  schedule(ctx: BaseAudioContext, out: AudioNode, times: CueTimes, params: ParamReader, rng: Rng): void;
+}
+```
+
+`schedule` builds the cue's Web Audio graph into `out`. `times` holds the cue's span snapped to frames, as samples (`startSample`, `endSample`) and as context seconds (`start`, `end`), plus the scene `fps`. `params` is the same reader rigs use, with defaults and clamping. `rng` is seeded from the scene seed and the cue id. The same code runs in the viewer, the embed and the export, which all play one offline render of the whole scene, so what you hear while previewing is what the MP4 gets.
+
+1. Add the generator to `allGenerators` in `src/audio/index.ts`. The unit tests in `src/audio/audio.test.ts` then run on it with a fake audio graph.
+2. Give it a `description` and give every param one, with `min` and `max` on numbers, as for rigs. `list_generators` shows them to agents.
+3. Build the whole graph inside `schedule`. Start and stop every source inside `[times.start, times.end]`. Nothing may be scheduled later.
+4. Never connect more than two nodes into one input, a param or `out`. Chromium adds three or more in an order that changes from run to run, so the samples stop being identical. Sum with `mix(ctx, sources, dest)` from `src/audio/mix.ts`, which builds a tree of two-input gains.
+5. Take every random value from `rng`, forked per use, such as `rng.fork('noise')`. `noiseBuffer(ctx, rng)` makes a second of seeded white noise to loop.
+6. For automation that must land on a frame, use `paramTime(n)` for the time of sample `n`. It is half a sample early, because an exact time lands a sample late now and then. `sourceTime(n)` is for `start()` and `stop()`. `frameSample(t, fps)` gives the first sample of the frame that time `t` falls in.
+7. Play buffers at `playbackRate` 1 and put loop points on whole samples. Don't automate k-rate params such as `playbackRate` or `detune` on a buffer source where timing matters. Skip `AudioWorklet`.
+8. Add the generator and its params to the tables in this file.
+
+The viewer re-renders the sound when a generator file changes.
+

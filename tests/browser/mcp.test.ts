@@ -89,6 +89,7 @@ describe('an agent session', () => {
         'get_scene',
         'get_selection',
         'hit_test',
+        'list_generators',
         'list_rigs',
         'list_scenes',
         'next_request',
@@ -110,6 +111,9 @@ describe('an agent session', () => {
     expect(bear?.parts).toContain('muzzle');
     expect(bear?.params.body.description).toMatch(/colour/);
     expect(rigs.find((r) => r.id === 'bear.bandaged')?.base).toBe('bear');
+    const generators = json<{ id: string; params: Record<string, { type: string; description?: string }> }[]>(await call('list_generators'));
+    expect(generators.map((g) => g.id).sort()).toEqual(['blip', 'buzz', 'pad']);
+    expect(generators.find((g) => g.id === 'blip')?.params.every.description).toMatch(/Seconds between blips/);
   });
 
   it('renders a frame, hit-tests the character, edits a range and sees the change only inside it', async () => {

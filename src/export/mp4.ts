@@ -3,9 +3,20 @@
 // The same code runs under the CLI's headless browser, in Electron and in a
 // browser tab; only the sink differs. Frames go to the encoder as I420 that
 // carries the export colour space, so the file decodes to the scene's colours
-// in QuickTime, Chromium and ffmpeg alike (ticket 15, see color.ts).
+// in QuickTime, Chromium and ffmpeg alike (ticket 15, see color.ts). Audio,
+// when there is any, is AAC or Opus from audio.ts, interleaved with the video.
 
-import { EncodedPacket, EncodedVideoPacketSource, Mp4OutputFormat, Output, StreamTarget, type StreamTargetChunk } from 'mediabunny';
+import {
+  EncodedAudioPacketSource,
+  EncodedPacket,
+  EncodedVideoPacketSource,
+  Mp4OutputFormat,
+  Output,
+  StreamTarget,
+  type StreamTargetChunk,
+} from 'mediabunny';
+import { finishAudioTrack } from './audio-track';
+import { encodeAudio, type AudioCodecName, type AudioTrackSource } from './audio';
 import { EXPORT_COLOR_SPACE, checkEncoderColorSpace, rgbaToI420 } from './color';
 import { readPixels, type ExportOptions, type ExportRange, type FrameSource } from './frames';
 import type { ByteSink } from './sink';
@@ -16,11 +27,17 @@ export interface Mp4Result {
   /** Video duration in microseconds: exactly frames / fps, rounded to whole microseconds. */
   durationUs: number;
   codec: string;
+  /** The audio codec, when the export has sound. */
+  audio?: { codec: AudioCodecName; codecString: string };
 }
 
 export interface Mp4Options extends ExportOptions {
   /** Bits per second. Defaults to 8 Mb/s, plenty for 1080p line art and paint. */
   bitrate?: number;
+  /** The exported frames' audio. Leave out for a silent file. */
+  audio?: AudioTrackSource;
+  /** Force an audio codec. By default AAC, or Opus where the browser has no AAC encoder. */
+  audioCodec?: AudioCodecName;
 }
 
 /** Encoder queue depth to allow before waiting, so memory stays flat on long exports. */
@@ -48,16 +65,32 @@ export async function exportMp4(source: FrameSource, range: ExportRange, sink: B
     throw new Error(`This browser cannot encode H.264 ${codec} at ${width}x${height} and ${fps} fps (${navigator.userAgent}).`);
   }
 
+  if (options.audio) options.onProgress?.({ done: 0, total, stage: 'encoding audio' });
+  const audio = options.audio ? await encodeAudio(options.audio, options.audioCodec) : null;
+
+  let moov: { data: Uint8Array; position: number } | null = null;
   const writable = new WritableStream<StreamTargetChunk>({ write: (chunk) => sink.write(chunk.data, chunk.position) });
   const output = new Output({
     // 'reserve' puts the index at the front, so players can start before the whole file loads,
     // while still streaming to the sink. It needs the packet count up front, which we know.
-    format: new Mp4OutputFormat({ fastStart: 'reserve' }),
+    format: new Mp4OutputFormat({ fastStart: 'reserve', onMoov: (data, position) => void (moov = { data: data.slice(), position }) }),
     target: new StreamTarget(writable, { chunked: true, chunkSize: 4 << 20 }),
   });
   const track = new EncodedVideoPacketSource('avc');
   output.addVideoTrack(track, { frameRate: fps, maximumPacketCount: total });
+  const audioTrack = audio ? new EncodedAudioPacketSource(audio.codec) : null;
+  if (audio && audioTrack) output.addAudioTrack(audioTrack, { maximumPacketCount: audio.packets.length });
   await output.start();
+
+  // Audio packets go in just ahead of the video they play under, so the file interleaves.
+  let nextAudio = 0;
+  const addAudioUntil = async (seconds: number) => {
+    if (!audio || !audioTrack) return;
+    while (nextAudio < audio.packets.length && audio.packets[nextAudio].timestamp < seconds) {
+      const first = nextAudio === 0;
+      await audioTrack.add(audio.packets[nextAudio++], first ? { decoderConfig: audio.decoderConfig } : undefined);
+    }
+  };
 
   let failure: unknown = null;
   let rejectFailed: (err: unknown) => void = () => {};
@@ -83,7 +116,12 @@ export async function exportMp4(source: FrameSource, range: ExportRange, sink: B
         meta = { ...meta, decoderConfig: { ...meta.decoderConfig, colorSpace: EXPORT_COLOR_SPACE } };
       }
       const packet = EncodedPacket.fromEncodedChunk(chunk);
-      muxed = muxed.then(() => track.add(packet, meta)).catch(fail);
+      muxed = muxed
+        .then(async () => {
+          await addAudioUntil(packet.timestamp + packet.duration);
+          await track.add(packet, meta);
+        })
+        .catch(fail);
     },
     error: fail,
   });
@@ -116,7 +154,13 @@ export async function exportMp4(source: FrameSource, range: ExportRange, sink: B
     await Promise.race([encoder.flush(), failed]);
     await muxed;
     if (failure) throw failure;
+    await addAudioUntil(Infinity);
     await output.finalize();
+    if (audio) {
+      if (!moov) throw new Error('The muxer did not report its moov box, so the audio track cannot be finished.');
+      const { data, position } = moov as { data: Uint8Array; position: number };
+      await sink.write(finishAudioTrack(data, { frames: total, fps, roll: audio.codec === 'aac' }), position);
+    }
     await sink.close?.();
   } catch (err) {
     if (encoder.state !== 'closed') encoder.close();
@@ -124,5 +168,10 @@ export async function exportMp4(source: FrameSource, range: ExportRange, sink: B
     throw err instanceof Error ? err : new Error(String(err));
   }
   if (encoder.state !== 'closed') encoder.close();
-  return { frames: total, durationUs: frameTimestampUs(total, fps), codec };
+  return {
+    frames: total,
+    durationUs: frameTimestampUs(total, fps),
+    codec,
+    ...(audio ? { audio: { codec: audio.codec, codecString: audio.codecString } } : {}),
+  };
 }

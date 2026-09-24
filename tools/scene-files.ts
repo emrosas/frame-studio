@@ -5,6 +5,7 @@
 import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 import type { ViteDevServer } from 'vite';
+import type * as Audio from '../src/audio/index.ts';
 import type * as Engine from '../src/engine/index.ts';
 import type { RigRegistry } from '../src/engine/types.ts';
 import type * as Library from '../src/viewer/library.ts';
@@ -32,20 +33,32 @@ export interface LoadedModules {
   /** The viewer's frame-text and range rules, so every tool reads frames the same way. */
   selection: SelectionModule;
   createRegistry(): RigRegistry;
+  createGenerators(): Audio.GeneratorRegistry;
+  /** validateScene with the shipped audio generators, so cues are checked the way the viewer checks them. */
+  validate(input: unknown, registry?: RigRegistry): Engine.ValidationResult;
 }
 
-/** The engine, the viewer's library code and the rig registry, loaded through Vite so TypeScript and extensionless imports work. */
+/** The engine, the viewer's library code, the rigs and the audio generators, loaded through Vite so TypeScript and extensionless imports work. */
 export async function loadModules(server: ViteDevServer): Promise<LoadedModules> {
   const engine = (await server.ssrLoadModule(join(ROOT, 'src/engine/index.ts'))) as unknown as EngineModule;
   const library = (await server.ssrLoadModule(join(ROOT, 'src/viewer/library.ts'))) as unknown as LibraryModule;
   const selection = (await server.ssrLoadModule(join(ROOT, 'src/viewer/selection.ts'))) as unknown as SelectionModule;
   const rigs = (await server.ssrLoadModule(join(ROOT, 'src/rigs/index.ts'))) as { createDefaultRegistry(): RigRegistry };
-  return { engine, library, selection, createRegistry: rigs.createDefaultRegistry };
+  const audio = (await server.ssrLoadModule(join(ROOT, 'src/audio/index.ts'))) as unknown as typeof Audio;
+  const generators = audio.createDefaultGenerators();
+  return {
+    engine,
+    library,
+    selection,
+    createRegistry: rigs.createDefaultRegistry,
+    createGenerators: audio.createDefaultGenerators,
+    validate: (input, registry) => engine.validateScene(input, registry, generators),
+  };
 }
 
 /** The scene library as the viewer would build it from `dir` right now. */
 export async function sceneLibrary(modules: LoadedModules, dir = SCENES_DIR): Promise<Library.SceneLibrary> {
-  return modules.library.buildLibrary(await readSceneFiles(dir), modules.engine.validateScene, modules.createRegistry);
+  return modules.library.buildLibrary(await readSceneFiles(dir), modules.engine.validateScene, modules.createRegistry, modules.createGenerators);
 }
 
 /** The file on disk behind a library entry. */

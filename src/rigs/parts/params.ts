@@ -9,12 +9,12 @@ export const choice = (def: string, options: readonly string[], description: str
   ({ type: 'enum', default: def, options, description }) as const;
 
 /**
- * Typed access to a rig's resolved params.
+ * Typed access to the resolved params of a rig or an audio generator.
  *
  * A missing value, or one of the wrong type, falls back to the schema default.
  * Numbers are clamped to the schema's min/max, so eased overshoot (inBack,
  * outBack) can never push a radius negative or an opacity above 1.
- * Reading a key the schema does not declare throws: that is a bug in the rig.
+ * Reading a key the schema does not declare throws: that is a bug in the rig or generator.
  */
 export interface ParamReader {
   number(key: string): number;
@@ -28,9 +28,9 @@ export interface ParamReader {
 export function readParams(schema: ParamSchema, params: Params): ParamReader {
   function spec<T extends ParamSpec['type']>(key: string, ...types: T[]): Extract<ParamSpec, { type: T }> {
     const found = schema[key];
-    if (!found) throw new Error(`rig reads param "${key}", which its schema does not declare`);
+    if (!found) throw new Error(`code reads param "${key}", which its schema does not declare`);
     if (!types.includes(found.type as T)) {
-      throw new Error(`rig reads param "${key}" as ${types.join('/')}, but the schema declares it as ${found.type}`);
+      throw new Error(`code reads param "${key}" as ${types.join('/')}, but the schema declares it as ${found.type}`);
     }
     return found as Extract<ParamSpec, { type: T }>;
   }

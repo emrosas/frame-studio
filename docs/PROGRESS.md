@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-24, after the M6 review.
+Last updated 2026-09-24, after M7.
 
 ## Done
 
@@ -319,6 +319,50 @@ A `/code-review` at high effort found ten issues, and all ten are fixed.
 
 The MCP server now also checks a scene file's modification time and size before each render. That caught a real race, where a revert from the viewer landed before the watcher reported it.
 
+### M7: Procedural audio
+
+M7 is done and its acceptance criteria pass. It follows tickets 04 and 14, and ADR 0005 records the design: the whole scene's sound renders once, offline, and the viewer, the embed and exports all play or encode that one buffer.
+
+What M7 delivered:
+
+- **Generators**, `src/audio`: `pad` (an ambient chord), `buzz` (an insect buzz whose pitch wanders along a seeded path) and `blip` (a short beep that can repeat). A generator is code plus a param schema, like a rig. Shared pieces:
+  - frame-aligned timing: `cueTimes`, `paramTime` and `sourceTime`
+  - `mix()`, a tree of two-input gains
+  - an envelope, seeded noise and a seeded wander curve
+- **Scene audio.** Cues are `{ id, generator, start, end, params }`. The validator checks generator names and params against their schemas, keeps cues inside the scene, and requires an fps that divides 48000 when a scene has audio. `renderSceneAudio` renders the scene at 48 kHz stereo, exactly as long as its frames, seeding each cue from the scene seed and `audio:<cue id>`.
+- **Viewer preview.** A speaker button next to play, and M to mute, remembered across reloads. The sound renders when a scene opens or its cues change, and hot-swaps when a generator file changes. `LivePlayback` plays the buffer in step with the clock through `PlaybackClock.position()`, a new playhead with a fraction. It loops with the range and starts over on a seek, a loop change, or drift past 40 ms.
+- **MP4 audio.** AAC-LC at 128 kb/s through `AudioEncoder`, or Opus where there is no AAC encoder, interleaved with the video. AAC packets shift back by 2112 samples, so Mediabunny writes the edit list. `src/export/audio-track.ts` then adds the `roll` sample group and trims the audio to the video's length. Opus gets an edit list that trims it too. It does that inside the moov Mediabunny reports, growing into the free space fastStart `'reserve'` leaves, so `mdat` stays put and exports still stream. A range export takes its own slice of the sound. `--silent` leaves it out.
+- **Embed audio.** The bundler finds the generators a scene uses, as it does rigs, and bundles only those, with their descriptions stripped. It adds about 7 KB for `audio-test`. The embed renders its sound on load and starts muted, with a speaker button, because browsers allow sound only after a gesture. It takes `mute` and `unmute` messages. Silent scenes and `--silent` exports carry no audio code.
+- **MCP**: `list_generators`, and `silent` on `export`.
+- **`scenes/audio-test.json`**, 30 fps: blips at 0.5, 1 and 1.5 s that a circle pulses on, a buzz while a star spins, and a pad under the second half.
+
+### How each M7 acceptance criterion was verified
+
+1. Exported MP4 audio aligns within one frame of scene timings. `tests/browser/audio.test.ts` exports `audio-test`, decodes the audio with ffmpeg, and finds each blip's onset within a frame of its frame. The onsets land 5 to 7 samples after the frame boundary, which is the blip's 1 ms rise, for the whole scene, for a range from frame 30, and with Opus forced. ffprobe reads the audio and video at exactly 4.000000 s for both codecs. I also decoded the file with AVFoundation, which QuickTime uses: exactly 192000 samples, with the same onsets. Chrome isn't installed on this Mac, and the headless shell can't decode AAC, so Chromium playback rests on ticket 14's measurement of the same box layout.
+2. The same scene renders identical audio twice. The render page's `audioHash()` is the SHA-256 of the rendered float samples, and the test gets the same hash in a second browser launch. A wrapped `AudioNode.prototype.connect` confirms no input in the render gets more than two connections. The unit tests check the same with a fake audio graph for every generator and for a scene mix.
+3. The HTML embed plays audio after a user gesture and stays in sync after seeking. `tests/browser/embed.test.ts` opens the `audio-test` embed from disk with the network off. It starts muted with no sound playing. After a click on **Turn sound on**, the sound reaching the speakers is within two frames plus the 40 ms tolerance of the frame on screen, before and after `seek(90)` while playing, and it stops on pause. `tests/browser/viewer.test.ts` checks the same in the viewer, and that M mutes.
+
+The suites are at 1040 unit tests and 75 browser tests, all passing with the committed `bear-test.json`.
+
+### M7 review
+
+Two review agents read the M7 diff: one covered the render and the export, the other playback, the embed and the tooling. The render and export review found nothing serious beyond the Opus gap below. All of these are fixed:
+
+- **A generator that threw while scheduling** threw straight out of `renderSceneAudio` instead of rejecting its promise. That would have stopped the viewer booting, and left an embed blank with no message. The function is async now.
+- **Drawing time counted as drift.** The sound was checked against the animation frame's start time, after the draw. On a slow device a draw longer than 40 ms would have restarted the sound almost every frame. The viewer and the embed now read the clock when they update the sound.
+- **Every hot edit re-rendered the sound**, because the cache compared generator registries, and every reload builds a new one. It now compares the generator objects the cues use, so only an edit to one of those generators renders again. I checked in the dev server that a generator edit re-renders without a page reload and keeps the frame.
+- **Embeds with `loop=0` looped their sound** in a background tab, where animation frames stop. Played once, the sound source now stops by itself at the end.
+- **Unmuting from a script, with no click**, marked the embed's sound as on while the browser still held it back. The next click on the speaker then muted it. The embed now reports sound as on only once the browser allows it, and a click while it's held back asks for it again.
+- **Touch taps never unlocked sound in the viewer.** A `pointerdown` from touch doesn't count as a gesture. The viewer now also listens for `pointerup` and `click`.
+- **Opus files ran 20 ms longer than the video**, since only AAC was trimmed. The patch, now `finishAudioTrack` in `src/export/audio-track.ts`, adds a trimming edit list when Mediabunny wrote none. A browser test forces Opus and checks the length and the blip onsets with ffmpeg.
+- **Smaller ones:**
+  - Cue ids now reject `/`, as layer ids do, so two cues can't share random numbers.
+  - M does nothing on a silent scene or on key repeat.
+  - Changing the loop range while playing keeps the time already spent on the frame, so pressing I or O doesn't restart the sound.
+  - The blip cap is gone, since blips are at least a frame apart anyway.
+  - The render page retries a failed audio render instead of caching the failure.
+  - The drift checks after a seek in the browser tests poll instead of sleeping.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -328,7 +372,7 @@ The MCP server now also checks a scene file's modification time and size before 
    4. Check the result with View, and export it yourself.
 
    Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
-2. M7, ticket 12: procedural audio. The findings in tickets 04 and 14 apply.
+2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
 3. M8, ticket 16: the integrated AI. It starts with a grilling session on its scope.
 
 ## Open questions
@@ -348,3 +392,8 @@ The MCP server now also checks a scene file's modification time and size before 
 - A hover probe draws every layer in full, 5 to 11 ms on `bear-test`. Scenes with many layers or heavier rigs will feel it. A bounds cull would need rigs to declare bounds.
 - Browser tests need the headless shell downloaded once (`npx playwright install chromium-headless-shell`). Installing a newer Playwright deletes cached browsers that no installed Playwright uses. On 2026-09-23 that removed the Chromium 140 build ticket 03 used, which had to be reinstalled through Playwright 1.55 in `/tmp`.
 - `apply_to_selection` can add or merge overrides, but not remove one. In the user's first MCP test on 2026-09-24 ("remove the plaster"), the agent removed bruno's `bear.bandaged` override through `update_scene`, sending the whole `layers` array. Both the agent and I flagged this as clunky. A small "remove override" option on `apply_to_selection` would fix it.
+- Opus plays 312 samples (6.5 ms) late in AVFoundation, which ignores the start delay Opus carries. It's the fallback only where there is no AAC encoder, such as Linux, and the error is well under a frame.
+- Windows AAC exports assume AudioToolbox's 2112 priming samples. Media Foundation's count is unmeasured, so audio in MP4s exported on Windows may be off by a few milliseconds until someone measures it on a Windows machine.
+- Mediabunny's reader ignores the trimmed audio edit list and reports an audio-bearing MP4 about 30 ms longer than it is. ffprobe and AVFoundation read it right. The tests read durations with ffprobe.
+- A scene's sound renders in one piece, so a long scene with heavy generators takes a while before its sound plays in the viewer. The picture plays silent until then.
+- Editing `src/rigs/parts/params.ts` now reloads the viewer instead of hot-swapping, because the audio renderer that the viewer imports reads params through it.

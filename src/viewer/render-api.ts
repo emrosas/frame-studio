@@ -9,6 +9,8 @@ export interface RenderSceneInfo {
   frameCount: number;
   width: number;
   height: number;
+  /** Whether the scene has audio cues. */
+  audio: boolean;
 }
 
 export interface RenderExportResult {
@@ -20,6 +22,8 @@ export interface RenderExportResult {
   seconds: number;
   ms: number;
   codec?: string;
+  /** The audio codec string when the MP4 has sound, e.g. "mp4a.40.2" or "opus". GIFs are always silent. */
+  audioCodec?: string;
   colours?: number;
 }
 
@@ -65,6 +69,8 @@ export interface RenderStudioApi {
   resolveFrame(text: string, end?: boolean): number;
   /** Draws frame n synchronously at scene size. Returns n. */
   renderFrame(frame: number): number;
+  /** SHA-256, as hex, of the scene's rendered audio (float32 samples, channel after channel). Null for a silent scene. */
+  audioHash(): Promise<string | null>;
   /** SHA-256, as hex, of the canvas RGBA bytes after drawing frame n. */
   pixelHash(frame: number): Promise<string>;
   /**
@@ -74,8 +80,16 @@ export interface RenderStudioApi {
   writePng(frame: number, sinkId: string, options?: { maxWidth?: number }): Promise<number>;
   /** The layer, and with parts the part, at scene pixel (x, y) on frame n. */
   hitTest(frame: number, x: number, y: number, options?: { parts?: boolean }): RenderHit;
-  /** Encodes frames [from, to) and streams the file to the sink. Defaults to the whole scene. */
-  exportVideo(target: ExportTarget, sinkId: string, range?: { from?: number; to?: number }): Promise<RenderExportResult>;
+  /**
+   * Encodes frames [from, to) and streams the file to the sink. Defaults to
+   * the whole scene. MP4s carry the scene's audio for that range unless
+   * silent, as AAC, or Opus where there is no AAC encoder; audioCodec forces one.
+   */
+  exportVideo(
+    target: ExportTarget,
+    sinkId: string,
+    options?: { from?: number; to?: number; silent?: boolean; audioCodec?: 'aac' | 'opus' },
+  ): Promise<RenderExportResult>;
   /** Draws every Nth frame of [from, to) into one grid and writes it as PNG to the sink. */
   contactSheet(sinkId: string, options?: { from?: number; to?: number; every?: number; columns?: number }): Promise<ContactSheetResult>;
 }

@@ -35,11 +35,12 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `get_scene(id)` | The scene JSON exactly as it is in its file. |
 | `update_scene(id, patch)` | Applies an RFC 7386 JSON merge patch. Objects merge, `null` deletes a key, and arrays are replaced whole. The result is validated first, and nothing is saved when it is invalid. |
 | `list_rigs()` | Each rig's param schema, the parts it declares, its variants and, for a variant, its base. |
+| `list_generators()` | Each audio generator's param schema, for the scene's `audio` cues. |
 | `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` and returns a preview up to `maxWidth` wide (1280 by default). |
 | `render_contact_sheet(sceneId, from?, to?, every?, columns?)` | A labelled grid of every Nth frame, returned as an image and written to `out/<scene>/`. |
 | `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. |
 | `apply_to_selection(selection, patch)` | A scoped edit. Over `[from, to)` of one layer, it swaps to a rig variant and/or holds params, written as overrides. |
-| `export(sceneId, target, from?, to?)` | `mp4`, `gif` or `html`. Returns the file path under `out/`. |
+| `export(sceneId, target, from?, to?, silent?)` | `mp4`, `gif` or `html`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. Returns the file path under `out/`. |
 | `next_request()` | Claims the oldest pending request from the viewer's queue and returns it, with instructions. |
 | `get_request(id)` | A request by id, as in a pasted line. A request that is still pending gets claimed, so its checkpoint is taken. |
 | `complete_request(id, status, summary)` | Marks a request `done` or `failed`, with a one-line summary the viewer shows. |
@@ -59,7 +60,7 @@ When an agent claims a request, the scene file is saved first. When it calls `co
 
 1. `list_scenes`, then `render_frame` to see where things stand.
 2. `hit_test` on the thing to change, to get its layer.
-3. `apply_to_selection` for a change over some frames, or `update_scene` for a change to the whole scene.
+3. `apply_to_selection` for a change over some frames, or `update_scene` for a change to the whole scene. Sound is `update_scene` on the scene's `audio` cues, with generators from `list_generators`. The agent can't hear it, so place cues by frame: a cue starts on the frame its `start` falls in.
 4. `render_frame` or `render_contact_sheet` again to check it. Frames outside the edited range are untouched.
 5. `export` when it looks right.
 

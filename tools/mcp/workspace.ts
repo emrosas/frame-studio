@@ -41,6 +41,12 @@ export interface RigInfo {
   params: Rig['params'];
 }
 
+export interface GeneratorInfo {
+  id: string;
+  description?: string;
+  params: Rig['params'];
+}
+
 export type ExportTarget = 'mp4' | 'gif' | 'html';
 
 const show = (path: string) => relative(ROOT, path);
@@ -178,7 +184,7 @@ export class Workspace {
     const current = JSON.parse(await readFile(path, 'utf8')) as { id?: unknown };
     const next = modules.engine.mergePatch(current, patch) as { id?: unknown };
     if (next?.id !== current.id) throw new Error(`update_scene cannot change a scene's id ("${String(current.id)}"); its file is named after it`);
-    const result = modules.engine.validateScene(next, modules.createRegistry());
+    const result = modules.validate(next, modules.createRegistry());
     if (!result.ok) throw new Error(`The patched scene is invalid, so nothing was saved:\n${result.errors.join('\n')}`);
     await this.writeScene(path, next, modules);
     return { file: show(path), scene: next };
@@ -275,7 +281,7 @@ export class Workspace {
       if (!target) throw new Error(`no layer "${layerId}" in ${show(file)}`);
       target.overrides = layerIn(edited, layerId)?.overrides;
     }
-    const result = modules.engine.validateScene(raw, modules.createRegistry());
+    const result = modules.validate(raw, modules.createRegistry());
     if (!result.ok) throw new Error(`That edit would make the scene invalid, so nothing was saved:\n${result.errors.join('\n')}`);
     await this.writeScene(file, raw, modules);
     return {
@@ -289,21 +295,35 @@ export class Workspace {
     };
   }
 
-  async export(key: string, target: ExportTarget, range: { from?: FrameInput; to?: FrameInput } = {}): Promise<{ file: string } & Partial<RenderExportResult> & { bytes?: number; rigs?: string[] }> {
+  async listGenerators(): Promise<GeneratorInfo[]> {
+    const modules = await this.modules();
+    return [...modules.createGenerators().values()].map((g) => ({
+      id: g.id,
+      ...(g.description ? { description: g.description } : {}),
+      params: g.params,
+    }));
+  }
+
+  async export(
+    key: string,
+    target: ExportTarget,
+    options: { from?: FrameInput; to?: FrameInput; silent?: boolean } = {},
+  ): Promise<{ file: string } & Partial<RenderExportResult> & { bytes?: number; rigs?: string[]; generators?: string[] }> {
     const { scene, file } = await this.validScene(key);
     if (target === 'html') {
-      if (range.from !== undefined || range.to !== undefined) throw new Error('html exports the whole scene; leave out from and to');
-      const embed = await buildEmbed(key, { server: this.vite });
+      if (options.from !== undefined || options.to !== undefined) throw new Error('html exports the whole scene; leave out from and to');
+      const embed = await buildEmbed(key, { server: this.vite, silent: options.silent });
       const path = join(ROOT, `out/${scene.id}/${scene.id}.html`);
       await writeFileAtomic(path, embed.html);
-      return { file: show(path), bytes: embed.bytes.total, rigs: embed.rigs };
+      return { file: show(path), bytes: embed.bytes.total, rigs: embed.rigs, generators: embed.generators };
     }
+    if (target === 'gif' && options.silent !== undefined) throw new Error('gif is always silent; leave out silent');
     const studio = await this.page(key, file);
-    const from = range.from === undefined ? undefined : await this.resolveFrame(studio, range.from);
-    const to = range.to === undefined ? undefined : await this.resolveFrame(studio, range.to, true);
+    const from = options.from === undefined ? undefined : await this.resolveFrame(studio, options.from);
+    const to = options.to === undefined ? undefined : await this.resolveFrame(studio, options.to, true);
     const suffix = from !== undefined || to !== undefined ? `-${pad(from ?? 0)}-${pad(to ?? studio.scene.frameCount)}` : '';
     const path = join(ROOT, `out/${scene.id}/${scene.id}${suffix}.${target}`);
-    const result = await writeViaSink(studio, path, (sink) => studio.call('exportVideo', target, sink, { from, to }));
+    const result = await writeViaSink(studio, path, (sink) => studio.call('exportVideo', target, sink, { from, to, silent: options.silent }));
     return { file: show(path), ...result };
   }
 

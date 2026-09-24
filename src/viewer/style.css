@@ -233,6 +233,10 @@ body {
   fill: currentColor;
 }
 
+.sound-button.is-waiting {
+  color: var(--muted);
+}
+
 .timecode,
 .frame-readout,
 .fps-readout {

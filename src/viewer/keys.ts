@@ -10,6 +10,8 @@ export type KeyAction =
   | { type: 'markOut' }
   /** Escape: clears the hover, else the layer selection, else the range. */
   | { type: 'escape' }
+  /** M: sound on or off. */
+  | { type: 'mute' }
   /** A key the viewer owns but should not act on (Space auto-repeat). */
   | { type: 'ignore' };
 
@@ -25,8 +27,9 @@ export interface KeyInput {
 
 /**
  * Space play/pause, Left/Right one frame (Shift: one second), Home/End,
- * I and O for the range, Escape to clear the selection one step at a time.
- * A held Space toggles once: its auto-repeats are ignored. Held arrows keep
+ * I and O for the range, Escape to clear the selection one step at a time,
+ * M for sound on or off.
+ * A held Space or M toggles once: its auto-repeats are ignored. Held arrows keep
  * stepping, so they scrub.
  */
 export function keyAction(e: KeyInput, fps: number): KeyAction | null {
@@ -52,6 +55,9 @@ export function keyAction(e: KeyInput, fps: number): KeyAction | null {
       return { type: 'markOut' };
     case 'Escape':
       return { type: 'escape' };
+    case 'm':
+    case 'M':
+      return e.repeat ? { type: 'ignore' } : { type: 'mute' };
     default:
       return null;
   }

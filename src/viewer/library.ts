@@ -1,11 +1,12 @@
 // Turns raw scene files into a validated scene library. Pure: the caller passes
-// file contents, the validator, and the registry factory, so this is testable
-// without Vite or the real engine.
+// file contents, the validator, and the registry factories, so this is
+// testable without Vite or the real engine.
 
+import type { GeneratorRegistry } from '../audio/types';
 import type { ValidationResult } from '../engine';
 import type { RigRegistry, Scene } from '../engine/types';
 
-export type ValidateScene = (input: unknown, registry?: RigRegistry) => ValidationResult;
+export type ValidateScene = (input: unknown, registry?: RigRegistry, generators?: GeneratorRegistry) => ValidationResult;
 
 export interface SceneEntry {
   /** Picker and URL key: the scene id, or the file path when the id is missing or taken. */
@@ -24,6 +25,8 @@ export interface SceneLibrary {
   entries: readonly SceneEntry[];
   /** Null when the rig registry failed to build; nothing can render then. */
   registry: RigRegistry | null;
+  /** Null when the generator list failed to build; scenes then play silent. */
+  generators: GeneratorRegistry | null;
   /** Problems that affect every scene (e.g. the rig registry failed to build). */
   errors: readonly string[];
 }
@@ -47,6 +50,7 @@ export function buildLibrary(
   files: Readonly<Record<string, string>>,
   validate: ValidateScene,
   createRegistry: () => RigRegistry,
+  createGenerators: () => GeneratorRegistry = () => new Map(),
 ): SceneLibrary {
   const errors: string[] = [];
   let registry: RigRegistry | null = null;
@@ -54,6 +58,12 @@ export function buildLibrary(
     registry = createRegistry();
   } catch (err) {
     errors.push(`rig registry: ${message(err)} (fix the rig list in src/rigs/index.ts)`);
+  }
+  let generators: GeneratorRegistry | null = null;
+  try {
+    generators = createGenerators();
+  } catch (err) {
+    errors.push(`audio generators: ${message(err)} (fix the generator list in src/audio/index.ts)`);
   }
 
   const entries: SceneEntry[] = [];
@@ -75,7 +85,7 @@ export function buildLibrary(
 
     if (parsed) {
       try {
-        const result = validate(json, registry ?? undefined);
+        const result = validate(json, registry ?? undefined, generators ?? undefined);
         if (result.ok) scene = result.scene;
         else entryErrors.push(...result.errors);
       } catch (err) {
@@ -110,7 +120,7 @@ export function buildLibrary(
     entries.push(entry);
   }
 
-  return { entries, registry, errors };
+  return { entries, registry, generators, errors };
 }
 
 function duplicateIdError(id: string, owner: string): string {

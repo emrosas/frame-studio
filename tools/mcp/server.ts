@@ -107,6 +107,17 @@ server.registerTool(
 );
 
 server.registerTool(
+  'list_generators',
+  {
+    title: 'List audio generators',
+    description:
+      "Every audio generator a scene's audio cues can use: its param schema (type, default, range, options, description). A cue is { id, generator, start, end, params } in seconds, and plays inside [start, end), snapped to frames.",
+    annotations: { readOnlyHint: true },
+  },
+  tool(async (w) => text(await w.listGenerators())),
+);
+
+server.registerTool(
   'render_frame',
   {
     title: 'Render a frame',
@@ -197,16 +208,20 @@ server.registerTool(
   {
     title: 'Export',
     description:
-      'Exports a scene. mp4 is H.264 at the scene fps, gif loops, and html is a single self-contained file that draws the scene live with no network requests. mp4 and gif take an optional [from, to) range; html is always the whole scene. Returns the output path.',
+      "Exports a scene. mp4 is H.264 at the scene fps, gif loops, and html is a single self-contained file that draws the scene live with no network requests. mp4 and html carry the scene's audio unless silent is true; gif is always silent. mp4 and gif take an optional [from, to) range; html is always the whole scene. Returns the output path.",
     inputSchema: {
       sceneId,
       target: z.enum(['mp4', 'gif', 'html']),
       from: frame.optional(),
       to: frame.optional(),
+      silent: z.boolean().optional().describe("Leave the scene's audio out of an mp4 or html export."),
     },
   },
-  tool(async (w, { sceneId: id, target, from, to }: { sceneId: string; target: 'mp4' | 'gif' | 'html'; from?: number | string; to?: number | string }) =>
-    text(await w.export(id, target, { from, to })),
+  tool(
+    async (
+      w,
+      { sceneId: id, target, from, to, silent }: { sceneId: string; target: 'mp4' | 'gif' | 'html'; from?: number | string; to?: number | string; silent?: boolean },
+    ) => text(await w.export(id, target, { from, to, silent })),
   ),
 );
 

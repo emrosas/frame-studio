@@ -1,10 +1,21 @@
 // Render mode (render.html?scene=<id>): no UI, one canvas at scene size, and
 // window.studio for the headless tools. The canvas follows ticket 03: CPU
 // raster ({ willReadFrequently: true }), sRGB, no devicePixelRatio transform.
-// Exports encode here, in the page that draws the frames (ticket 14).
+// Exports encode here, in the page that draws the frames (ticket 14). The
+// scene's audio renders once, offline, and exports slice it (M7).
 
+import { hasAudio, renderSceneAudio, SAMPLE_RATE, samplesPerFrame } from '../audio';
 import { formatTimecode, frameCount, hitTest, render, type Ctx2D, type RigRegistry, type Scene } from '../engine';
-import { contactSheetFrames, contactSheetLayout, exportGif, exportMp4, type ByteSink, type ExportProgress, type FrameSource } from '../export';
+import {
+  contactSheetFrames,
+  contactSheetLayout,
+  exportGif,
+  exportMp4,
+  type AudioTrackSource,
+  type ByteSink,
+  type ExportProgress,
+  type FrameSource,
+} from '../export';
 import { findEntry } from './library';
 import type { ContactSheetResult, ExportTarget, RenderExportResult, RenderHostBindings, RenderStudioApi } from './render-api';
 import { loadLibrary } from './scenes';
@@ -66,6 +77,8 @@ function boot(): RenderStudioApi {
   const scene: Scene | null = entry?.scene ?? null;
   const registry: RigRegistry | null = library.registry;
   const total = scene ? frameCount(scene) : 0;
+  const sound = scene !== null && hasAudio(scene);
+  if (sound && !library.generators) errors.push('The scene has audio, but the audio generators failed to load.');
 
   const canvas = document.createElement('canvas');
   canvas.width = scene?.size[0] ?? 0;
@@ -96,11 +109,27 @@ function boot(): RenderStudioApi {
     return { from, to };
   };
 
+  let rendered: Promise<AudioBuffer> | null = null;
+  /** The whole scene's audio, rendered on first use. */
+  const sceneAudio = (): Promise<AudioBuffer> => {
+    const { scene: s } = need();
+    if (!library.generators) throw new Error('The audio generators failed to load.');
+    if (!rendered) {
+      const attempt = renderSceneAudio(s, library.generators);
+      rendered = attempt;
+      // Don't keep a failure, so the next call tries again.
+      attempt.catch(() => {
+        if (rendered === attempt) rendered = null;
+      });
+    }
+    return rendered;
+  };
+
   document.title = scene ? `${scene.id} · render · Frame Studio` : 'render · Frame Studio';
 
   return {
     ready: true,
-    scene: scene ? { id: scene.id, fps: scene.fps, frameCount: total, width: scene.size[0], height: scene.size[1] } : null,
+    scene: scene ? { id: scene.id, fps: scene.fps, frameCount: total, width: scene.size[0], height: scene.size[1], audio: sound } : null,
     errors,
     scenes: library.entries.map((e) => e.key),
     canvas,
@@ -114,6 +143,15 @@ function boot(): RenderStudioApi {
     renderFrame(frame) {
       draw(frame);
       return frame;
+    },
+    async audioHash() {
+      if (!sound) return null;
+      const buffer = await sceneAudio();
+      const bytes = new Uint8Array(buffer.length * buffer.numberOfChannels * 4);
+      for (let c = 0; c < buffer.numberOfChannels; c++) {
+        bytes.set(new Uint8Array(buffer.getChannelData(c).slice().buffer), c * buffer.length * 4);
+      }
+      return hex(bytes);
     },
     async pixelHash(frame) {
       draw(frame);
@@ -152,8 +190,24 @@ function boot(): RenderStudioApi {
       const sink = hostSink(sinkId);
       const start = performance.now();
       if (target === 'mp4') {
-        const out = await exportMp4(source, r, sink, { onProgress: progress });
-        return { target, ...r, frames: out.frames, seconds: out.durationUs / 1e6, ms: performance.now() - start, codec: out.codec };
+        let audio: AudioTrackSource | undefined;
+        if (sound && !options.silent) {
+          progress({ stage: 'rendering audio', done: 0, total: r.to - r.from });
+          const buffer = await sceneAudio();
+          const spf = samplesPerFrame(s.fps);
+          const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).subarray(r.from * spf, r.to * spf));
+          audio = { sampleRate: SAMPLE_RATE, channels };
+        }
+        const out = await exportMp4(source, r, sink, { onProgress: progress, audio, audioCodec: options.audioCodec });
+        return {
+          target,
+          ...r,
+          frames: out.frames,
+          seconds: out.durationUs / 1e6,
+          ms: performance.now() - start,
+          codec: out.codec,
+          ...(out.audio ? { audioCodec: out.audio.codecString } : {}),
+        };
       }
       if (target === 'gif') {
         const out = await exportGif(source, r, sink, { onProgress: progress });

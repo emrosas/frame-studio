@@ -2,6 +2,10 @@
 // the selection (layer, part, frame range) and the HTML overlay. Renders only
 // when the frame, the scene, or the canvas size changes.
 
+// The audio modules without the generators, so a generator edit hot-swaps through ./scenes like a rig edit.
+import { LivePlayback } from '../audio/live';
+import { audioKey, generatorsUsed, hasAudio, renderSceneAudio, sameGenerators } from '../audio/render';
+import type { AudioGenerator } from '../audio/types';
 import { formatTimecode, frameCount as countFrames, hitTest, render, type HitResult, type HitTestOptions } from '../engine';
 import type { Scene } from '../engine/types';
 import { CanvasView } from './canvas';
@@ -54,6 +58,12 @@ export interface StudioApi {
   /** Frames in the selected scene; valid frames are [0, frameCount). 0 when no valid scene. */
   readonly frameCount: number;
   readonly playing: boolean;
+  /**
+   * The scene's sound. status is none for a silent scene; unlocked is false
+   * until a click or key lets the browser play; heard is the scene time
+   * reaching the speakers, in seconds, or null while nothing plays.
+   */
+  readonly sound: { status: 'none' | 'rendering' | 'ready' | 'failed'; muted: boolean; unlocked: boolean; heard: number | null };
   /** Scene keys (ids) in picker order. */
   readonly scenes: readonly string[];
   /** Every error the panel is showing, flattened. Empty when all is well. */
@@ -108,6 +118,9 @@ export interface AppOptions {
 
 /** sessionStorage key: play state carried across Vite's full-reload fallback. */
 export const RESUME_KEY = 'frame-studio:resume-playback';
+
+/** localStorage key: sound muted, kept across reloads and scenes. */
+const MUTED_KEY = 'frame-studio:muted';
 
 /** Start of the notice shown when a hover probe throws. */
 const HOVER_OFF = 'Hover inspect is off';
@@ -176,6 +189,12 @@ export class App {
   private hoverFailedFrame: number | null = null;
   private scrubbing = false;
 
+  // ---- sound (M7) ----
+  private readonly sound = new LivePlayback(() => new AudioContext({ latencyHint: 'interactive' }));
+  /** What the rendered sound was made from: the cues, and the generator objects they use. A change to either renders again. */
+  private soundFor: { key: string; generators: (AudioGenerator | undefined)[] } | null = null;
+  private soundStatus: 'none' | 'rendering' | 'ready' | 'failed' = 'none';
+
   // ---- handoff to the agent (ADR 0003) ----
   private readonly studio = new StudioClient();
   /** Where the click that picked the layer landed, in scene pixels; sent with the selection. */
@@ -200,6 +219,7 @@ export class App {
 
     this.actions = {
       togglePlay: () => this.togglePlay(),
+      toggleMute: () => this.toggleMute(),
       scrubStart: () => {
         this.resumeAfterScrub = this.clock.playing;
         this.pauseInternal();
@@ -273,6 +293,10 @@ export class App {
     canvas.addEventListener('pointerleave', this.onCanvasPointerLeave);
     window.addEventListener('keydown', this.onKey);
     window.addEventListener('pagehide', this.onPageHide);
+    // Browsers hold sound back until the person interacts. A mouse press, the end of a touch or pen
+    // tap, a click or a key lets it start (HTML's activation-triggering events).
+    for (const type of ['pointerdown', 'pointerup', 'click', 'keydown']) window.addEventListener(type, this.unlockSound, true);
+    this.sound.setMuted(readMuted());
 
     const { entry: initial, missing } = openingEntry(library, options.scene);
     if (missing && options.scene !== null) {
@@ -402,6 +426,7 @@ export class App {
     document.title = entry ? `${entry.key} · Frame Studio` : 'Frame Studio';
     this.syncUrl();
     this.schedulePublish();
+    this.refreshSound();
     this.invalidate();
   }
 
@@ -560,6 +585,9 @@ export class App {
         break;
       case 'escape':
         this.escape();
+        break;
+      case 'mute':
+        if (this.soundStatus !== 'none') this.toggleMute();
         break;
       case 'ignore':
         break;
@@ -864,6 +892,91 @@ export class App {
     this.flushNow();
   }
 
+  // ---- sound ----
+
+  /** Renders the scene's audio when what it depends on changed. Playback stays silent until it is ready. */
+  private refreshSound(): void {
+    const scene = this.validScene();
+    const generators = this.library.generators;
+    if (!scene || !generators || !hasAudio(scene)) {
+      this.soundFor = null;
+      this.soundStatus = 'none';
+      this.sound.setBuffer(null);
+      this.errors.set('audio', null);
+      return;
+    }
+    const key = audioKey(scene);
+    const used = generatorsUsed(scene, generators);
+    // A scene or rig edit reloads the library, but the generator modules it didn't touch are the same objects.
+    if (this.soundFor?.key === key && sameGenerators(this.soundFor.generators, used)) return;
+    const request = { key, generators: used };
+    this.soundFor = request;
+    this.soundStatus = 'rendering';
+    this.sound.setBuffer(null);
+    const settle = () => {
+      this.uiDirty = true;
+      this.schedule();
+    };
+    renderSceneAudio(scene, generators).then(
+      (buffer) => {
+        if (this.soundFor !== request) return;
+        this.sound.setBuffer(buffer);
+        this.soundStatus = 'ready';
+        this.errors.set('audio', null);
+        settle();
+      },
+      (err: unknown) => {
+        if (this.soundFor !== request) return;
+        this.soundStatus = 'failed';
+        const { message, stack } = errorText(err);
+        this.errors.set('audio', { title: `Audio failed to render for "${scene.id}"`, lines: [message], detail: stack });
+        settle();
+      },
+    );
+  }
+
+  private readonly unlockSound = (): void => {
+    if (this.soundStatus === 'none' || this.sound.unlocked) return;
+    this.sound.unlock().then(
+      () => {
+        this.uiDirty = true;
+        this.schedule();
+      },
+      () => {},
+    );
+  };
+
+  private toggleMute(): void {
+    this.sound.setMuted(!this.sound.isMuted);
+    try {
+      localStorage.setItem(MUTED_KEY, this.sound.isMuted ? '1' : '0');
+    } catch {
+      // storage unavailable; the setting lasts until reload
+    }
+    this.uiDirty = true;
+    this.schedule();
+  }
+
+  /**
+   * Keeps the sound on the playhead. Runs on every flush, so it follows play, pause, seeks and loops.
+   * It reads the clock now, after the draw, rather than the animation frame's start time, so the time
+   * spent drawing doesn't count as drift.
+   */
+  private syncSound(): void {
+    const scene = this.validScene();
+    const loop = this.clock.activeLoop;
+    if (!scene || !loop) {
+      this.sound.update({ playing: false, seconds: 0, loop: { from: 0, to: 0 }, repeat: true });
+      return;
+    }
+    this.sound.update({
+      playing: this.clock.playing,
+      seconds: this.clock.position(performance.now()) / scene.fps,
+      loop: { from: loop.from / scene.fps, to: loop.to / scene.fps },
+      repeat: true,
+    });
+  }
+
   // ---- rendering ----
 
   private invalidate(): void {
@@ -895,6 +1008,7 @@ export class App {
 
   private flushNow(now = performance.now()): void {
     if (this.canvasDirty) this.drawNow();
+    this.syncSound();
     if (this.uiDirty) this.syncUi(now);
     this.syncOverlay();
   }
@@ -950,6 +1064,8 @@ export class App {
     const ui = this.ui;
     ui.playing = this.clock.playing;
     ui.canPlay = scene !== null;
+    const status = this.soundStatus === 'ready' && !this.sound.unlocked ? 'locked' : this.soundStatus;
+    ui.sound = scene && status !== 'none' ? { status, muted: this.sound.isMuted } : null;
     ui.band = scene && this.range ? { range: this.range, frameCount: this.total } : null;
     ui.selection = {
       sceneId: scene?.id ?? null,
@@ -1021,6 +1137,9 @@ export class App {
       },
       get frameCount() {
         return app.clock.timeline ? app.total : 0;
+      },
+      get sound() {
+        return { status: app.soundStatus, muted: app.sound.isMuted, unlocked: app.sound.unlocked, heard: app.sound.heardSeconds };
       },
       get playing() {
         return app.clock.playing;
@@ -1131,5 +1250,13 @@ export class App {
         app.flushNow();
       },
     };
+  }
+}
+
+function readMuted(): boolean {
+  try {
+    return localStorage.getItem(MUTED_KEY) === '1';
+  } catch {
+    return false;
   }
 }

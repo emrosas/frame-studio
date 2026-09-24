@@ -371,6 +371,54 @@ describe('audio errors', () => {
   it('rejects duplicate audio ids', () => {
     expectError(withChange((s) => s.audio.push({ ...s.audio[0] })), 'audio[1].id', /duplicate/);
   });
+
+  it('keeps each cue inside the scene', () => {
+    expectError(withChange((s) => (s.audio[0].start = -1)), 'audio[0].start', /0 or more/);
+    expectError(withChange((s) => (s.audio[0].end = 11)), 'audio[0].end', /duration \(10 s\)/);
+    expect(withChange((s) => (s.audio[0].end = 10))).toEqual([]);
+  });
+
+  it('rejects "/" in cue ids, which would let two cues share random numbers', () => {
+    expectError(withChange((s) => (s.audio[0].id = 'buzz/wander')), 'audio[0].id', /may not contain "\/"/);
+  });
+
+  it('needs an fps that divides 48000 when the scene has audio, so frames land on whole samples', () => {
+    expectError(withChange((s) => (s.fps = 7)), 'fps', /48000.*12, 24, 25, 30/);
+    expect(withChange((s) => (s.fps = 25))).toEqual([]);
+    expect(withChange((s) => ((s.fps = 7), (s.audio = [])))).toEqual([]);
+  });
+});
+
+describe('audio generators', () => {
+  const generators = new Map([
+    ['buzz', { id: 'buzz', params: { pitch: { type: 'number', default: 220 }, wave: { type: 'enum', default: 'saw', options: ['saw', 'square'] } } }],
+    ['pad', { id: 'pad', params: {} }],
+  ] as const);
+  const check = (change: (s: Mutable) => void) => {
+    const s = validScene() as unknown as Mutable;
+    change(s);
+    const r = validateScene(s, registry, generators as never);
+    return r.ok ? [] : r.errors;
+  };
+
+  it('accepts a cue for a known generator with matching params', () => {
+    expect(check(() => {})).toEqual([]);
+    expect(check((s) => (s.audio[0].params = { pitch: 330, wave: 'square' }))).toEqual([]);
+  });
+
+  it('names an unknown generator and lists the known ones', () => {
+    expectError(check((s) => (s.audio[0].generator = 'buz')), 'audio[0].generator', /unknown generator "buz".*buzz, pad/);
+  });
+
+  it('checks params against the generator schema', () => {
+    expectError(check((s) => (s.audio[0].params = { pitch: 'high' })), 'audio[0].params.pitch', /generator "buzz" param "pitch" expects a number/);
+    expectError(check((s) => (s.audio[0].params = { wave: 'sine' })), 'audio[0].params.wave', /"sine" is not an option/);
+    expectError(check((s) => (s.audio[0].params = { volume: 1 })), 'audio[0].params.volume', /unknown param "volume" for generator "buzz"/);
+  });
+
+  it('skips generator checks without a generator registry', () => {
+    expect(withChange((s) => (s.audio[0].generator = 'anything'))).toEqual([]);
+  });
 });
 
 describe('unknown fields', () => {

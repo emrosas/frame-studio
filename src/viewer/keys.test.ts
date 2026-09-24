@@ -42,6 +42,13 @@ describe('keyAction', () => {
     expect(keyAction(press('o', { altKey: true }), 12)).toBeNull();
   });
 
+  it('M turns sound on or off, and leaves Cmd+M to the system', () => {
+    expect(keyAction(press('m'), 12)).toEqual({ type: 'mute' });
+    expect(keyAction(press('M'), 12)).toEqual({ type: 'mute' });
+    expect(keyAction(press('m', { metaKey: true }), 12)).toBeNull();
+    expect(keyAction(press('m', { repeat: true }), 12)).toEqual({ type: 'ignore' });
+  });
+
   it('Escape clears one step of the selection', () => {
     expect(keyAction(press('Escape'), 12)).toEqual({ type: 'escape' });
     expect(keyAction(press('Escape', { ctrlKey: true }), 12)).toBeNull();

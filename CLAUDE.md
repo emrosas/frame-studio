@@ -151,10 +151,12 @@ Users can attach reference images to a prompt. References are **input to the age
 
 ## Audio
 
-- Audio generators schedule Web Audio nodes for a time range, seeded like visuals.
-- Preview plays live through an AudioContext synced to the viewer clock, including after seeking.
-- Video export renders the same graph through an `OfflineAudioContext`, encodes it with WebCodecs `AudioEncoder` (AAC-LC at 48 kHz, or Opus where there is no AAC encoder), and muxes it next to the video. Signal AAC priming with an edit list and a `roll` sample group, or it plays 44 ms late. Audio and video share the scene timeline as the single master clock.
-- The HTML embed includes the audio generators unless exported silent. GIF is always silent.
+- Audio generators schedule Web Audio nodes for a time range, seeded like visuals (`src/audio`, ADR 0005). Authoring guide: `docs/SCENES.md`, "Writing a generator".
+- Audio renders at 48 kHz, and a scene with audio needs an fps that divides 48000, so every frame starts on a whole sample. Cue times snap to frames.
+- No input may receive more than two connections: Chromium sums three or more in an order that changes run to run. Sum with `mix()`.
+- The whole scene's audio renders once through an `OfflineAudioContext`. The viewer preview, the embed and exports all play or encode that one buffer. Preview and embed keep it in step with the playback clock, including after seeking.
+- Export encodes it with WebCodecs `AudioEncoder` (AAC-LC at 48 kHz, or Opus where there is no AAC encoder) and muxes it next to the video. AAC priming is signalled with an edit list and a `roll` sample group (`src/export/audio-track.ts`), or it plays 44 ms late. Audio and video share the scene timeline as the single master clock.
+- The HTML embed includes the audio generators unless exported silent. It starts muted, since browsers allow sound only after a gesture. GIF is always silent.
 
 ## Headless rendering and export
 
@@ -169,11 +171,12 @@ Users can attach reference images to a prompt. References are **input to the age
 `tools/mcp/server.ts`, over stdio. The repo's `.mcp.json` registers it for Claude Code. Setup and the full tool reference are in `docs/MCP.md`. Keep inputs and outputs simple JSON. Tools:
 - `list_scenes()`, `get_scene(id)`, `update_scene(id, patch)`: JSON merge patch, validated before saving
 - `list_rigs()`: each rig's param schema, parts, and variants
+- `list_generators()`: each audio generator's param schema
 - `render_frame(sceneId, frame | timecode)`: returns a PNG so the agent can see its work
 - `render_contact_sheet(sceneId, from, to, every)`: a grid of frames for reviewing motion
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
 - `apply_to_selection(selection, patch)`: writes a scoped override for the selection
-- `export(sceneId, target)`: `mp4` | `gif` | `html`, returns an output path
+- `export(sceneId, target, from?, to?, silent?)`: `mp4` | `gif` | `html`, returns an output path
 - `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request queue and current selection (ADR 0003), plus the `/frame-studio:next` prompt and the `selection://current` resource
 
 ## Conventions

@@ -2,17 +2,24 @@ import { isCssColor } from './color';
 import { EASING_NAMES } from './easing';
 import { baseRigId, variantsOf } from './registry';
 import { frameCount, quantizeTime } from './time';
-import { BACKGROUND_ID, type ParamSpec, type Rig, type RigRegistry, type Scene } from './types';
+import { BACKGROUND_ID, type ParamSchema, type ParamSpec, type Rig, type RigRegistry, type Scene } from './types';
 
 export type ValidationResult = { ok: true; scene: Scene } | { ok: false; errors: string[] };
+
+/** Anything with an id and a param schema: a rig, or an audio generator (src/audio). */
+export interface SchemaOwner {
+  id: string;
+  params: ParamSchema;
+}
 
 /**
  * Check an untrusted scene (e.g. parsed JSON). Collects every problem as
  * "path: message", with paths like layers[1].tracks[0].keys[2].t, and
  * messages that say how to fix it. With a registry it also checks rig ids,
- * param names, and param value types against each rig's schema.
+ * param names, and param value types against each rig's schema, and with
+ * generators it does the same for audio cues.
  */
-export function validateScene(input: unknown, registry?: RigRegistry): ValidationResult {
+export function validateScene(input: unknown, registry?: RigRegistry, generators?: ReadonlyMap<string, SchemaOwner>): ValidationResult {
   const errors: string[] = [];
   const err = (path: string, message: string) => errors.push(`${path}: ${message}`);
 
@@ -47,7 +54,16 @@ export function validateScene(input: unknown, registry?: RigRegistry): Validatio
 
   const rigNames = registry ? [...registry.keys()].sort().map((k) => JSON.stringify(k)).join(', ') || '(none)' : '';
 
-  const env: Env = { err, registry, rigNames, fps, frames };
+  const env: Env = {
+    err,
+    registry,
+    rigNames,
+    fps,
+    frames,
+    duration: durationOk ? (s.duration as number) : undefined,
+    generators,
+    generatorNames: generators ? [...generators.keys()].join(', ') || 'none' : '',
+  };
 
   if (s.background !== undefined) {
     if (!isObject(s.background)) {
@@ -98,6 +114,9 @@ interface Env {
   rigNames: string;
   fps: number | undefined;
   frames: number | undefined;
+  duration: number | undefined;
+  generators: ReadonlyMap<string, SchemaOwner> | undefined;
+  generatorNames: string;
 }
 
 type Obj = Record<string, unknown>;
@@ -204,16 +223,18 @@ function lookupRig(env: Env, rigId: unknown, path: string): Rig | undefined {
   return rig;
 }
 
-function unknownParam(rig: Rig, name: string): string {
+type OwnerKind = 'rig' | 'generator';
+
+function unknownParam(rig: SchemaOwner, name: string, kind: OwnerKind = 'rig'): string {
   const known = Object.keys(rig.params);
   return known.length > 0
-    ? `unknown param "${name}" for rig "${rig.id}"; known params: ${known.join(', ')}`
-    : `unknown param "${name}": rig "${rig.id}" takes no params`;
+    ? `unknown param "${name}" for ${kind} "${rig.id}"; known params: ${known.join(', ')}`
+    : `unknown param "${name}": ${kind} "${rig.id}" takes no params`;
 }
 
 /** Why a value does not fit a param spec, or undefined if it fits. */
-function typeMismatch(spec: ParamSpec, v: unknown, rig: Rig, name: string): string | undefined {
-  const who = `rig "${rig.id}" param "${name}"`;
+function typeMismatch(spec: ParamSpec, v: unknown, rig: SchemaOwner, name: string, kind: OwnerKind = 'rig'): string | undefined {
+  const who = `${kind} "${rig.id}" param "${name}"`;
   switch (spec.type) {
     case 'number':
       return typeof v === 'number' ? undefined : `${who} expects a number, got ${show(v)}`;
@@ -235,11 +256,11 @@ function typeMismatch(spec: ParamSpec, v: unknown, rig: Rig, name: string): stri
 }
 
 /** The rig's spec for a param name. Own keys only, so "toString" or "constructor" are not params. */
-function specOf(rig: Rig, name: string): ParamSpec | undefined {
+function specOf(rig: SchemaOwner, name: string): ParamSpec | undefined {
   return Object.hasOwn(rig.params, name) ? rig.params[name] : undefined;
 }
 
-function checkParams(env: Env, params: unknown, path: string, rig: Rig | undefined): void {
+function checkParams(env: Env, params: unknown, path: string, rig: SchemaOwner | undefined, kind: OwnerKind = 'rig'): void {
   if (params === undefined) return;
   if (!isObject(params)) {
     env.err(path, `must be an object mapping param names to values, got ${show(params)}`);
@@ -253,7 +274,7 @@ function checkParams(env: Env, params: unknown, path: string, rig: Rig | undefin
     }
     if (!rig) continue;
     const spec = specOf(rig, name);
-    const problem = spec ? typeMismatch(spec, v, rig, name) : unknownParam(rig, name);
+    const problem = spec ? typeMismatch(spec, v, rig, name, kind) : unknownParam(rig, name, kind);
     if (problem) env.err(p, problem);
   }
 }
@@ -522,6 +543,8 @@ function checkAudio(env: Env, audio: unknown): void {
     checkFields(err, cue, p, AUDIO_FIELDS);
     if (!isNonEmptyString(cue.id)) {
       err(`${p}.id`, `must be a non-empty string, got ${show(cue.id)}`);
+    } else if (cue.id.includes('/')) {
+      err(`${p}.id`, `audio ids may not contain "/" (it separates RNG fork keys), got ${show(cue.id)}`);
     } else if (seen.has(cue.id)) {
       err(`${p}.id`, `duplicate audio id "${cue.id}" (also used by audio[${seen.get(cue.id)}]); audio ids must be unique`);
     } else {
@@ -535,6 +558,19 @@ function checkAudio(env: Env, audio: unknown): void {
     if (startOk && endOk && !((cue.start as number) < (cue.end as number))) {
       err(p, `needs start < end, got start ${cue.start}, end ${cue.end}`);
     }
-    checkParams(env, cue.params, `${p}.params`, undefined);
+    if (startOk && (cue.start as number) < 0) err(`${p}.start`, `must be 0 or more seconds, got ${cue.start}`);
+    if (endOk && env.duration !== undefined && (cue.end as number) > env.duration) {
+      err(`${p}.end`, `must be within the scene duration (${env.duration} s), got ${cue.end}`);
+    }
+    let generator: SchemaOwner | undefined;
+    if (env.generators && isNonEmptyString(cue.generator)) {
+      generator = env.generators.get(cue.generator);
+      if (!generator) err(`${p}.generator`, `unknown generator "${cue.generator}"; known generators: ${env.generatorNames}`);
+    }
+    checkParams(env, cue.params, `${p}.params`, generator, 'generator');
   });
+  // Audio renders at 48 kHz, and a frame has to start on a whole sample for audio and video to line up (ticket 04).
+  if (audio.length > 0 && env.fps !== undefined && 48000 % env.fps !== 0) {
+    err('fps', `must divide 48000 when the scene has audio, so every frame starts on a whole sample; use 12, 24, 25, 30, 48 or 60, got ${env.fps}`);
+  }
 }

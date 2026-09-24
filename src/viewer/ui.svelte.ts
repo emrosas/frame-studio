@@ -32,6 +32,13 @@ export interface SelectionState {
   notice: string | null;
 }
 
+/** The scene's sound, for the mute button. Null for a silent scene. */
+export interface SoundState {
+  /** rendering: the audio is being rendered. locked: the browser waits for a click or key first. */
+  status: 'rendering' | 'ready' | 'locked' | 'failed';
+  muted: boolean;
+}
+
 export interface ErrorBlock {
   source: string;
   title: string;
@@ -43,6 +50,7 @@ export interface ErrorBlock {
 /** What the components can ask the App to do. */
 export interface ViewerActions {
   togglePlay(): void;
+  toggleMute(): void;
   scrubStart(): void;
   scrub(frame: number): void;
   scrubEnd(): void;
@@ -84,6 +92,7 @@ export class ViewerUi {
   canPlay = $state(false);
   timeline = $state<TimelineReadout | null>(null);
   fps = $state<{ scene: number; measured: number | null } | null>(null);
+  sound = $state<SoundState | null>(null);
   scenes = $state<SceneOption[]>([]);
   selectedScene = $state<string | null>(null);
   /** The frame range band on the scrubber. */

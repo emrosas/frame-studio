@@ -9,6 +9,9 @@
  *   and from a cross-origin host page.
  * - The engine and player stay under 50 KB minified, and only the rigs the
  *   scene uses are bundled.
+ * - A scene with audio (M7) bundles only its generators, starts muted, plays
+ *   sound once the speaker button is clicked, and stays in step after a seek.
+ *   A silent scene or export carries no audio code.
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -30,12 +33,15 @@ beforeAll(async () => {
   browser = await launchBrowser();
   studio = await openStudio('bear-test', { browser });
   dir = mkdtempSync(join(tmpdir(), 'frame-studio-embed-'));
-  for (const key of ['bear-test', 'shapes-test']) {
+  for (const key of ['bear-test', 'shapes-test', 'audio-test']) {
     const build = await buildEmbed(key, { measureRuntime: true });
     const path = join(dir, `${key}.html`);
     writeFileSync(path, build.html);
     embeds.set(key, { build, url: pathToFileURL(path).href });
   }
+  const silent = await buildEmbed('audio-test', { silent: true, measureRuntime: true });
+  writeFileSync(join(dir, 'audio-test-silent.html'), silent.html);
+  embeds.set('audio-test-silent', { build: silent, url: pathToFileURL(join(dir, 'audio-test-silent.html')).href });
 });
 
 afterAll(async () => {
@@ -114,6 +120,19 @@ describe('the embed file', () => {
     for (const id of ['circle', 'rect', 'star']) expect(hasRig(bear.html, id), id).toBe(false);
     expect(hasRig(shapes.html, 'bear')).toBe(false);
     expect(bear.html).not.toContain('did you mean');
+  });
+
+  it('bundles only the generators a scene uses, without their descriptions, and no audio code for silent embeds', () => {
+    const sound = embeds.get('audio-test')!.build;
+    expect(sound.generators).toEqual(['blip', 'buzz', 'pad']);
+    expect(sound.html).toContain('OfflineAudioContext');
+    expect(sound.html).not.toContain('Seconds between blips');
+    for (const key of ['bear-test', 'shapes-test', 'audio-test-silent']) {
+      const { build } = embeds.get(key)!;
+      expect(build.generators, key).toEqual([]);
+      expect(build.html, key).not.toMatch(/AudioContext|AudioBufferSourceNode/);
+    }
+    expect(embeds.get('audio-test-silent')!.build.scene.audio).toBeUndefined();
   });
 });
 
@@ -280,6 +299,51 @@ describe('a host page on another origin', () => {
       await send({ type: 'frame-studio', command: 'seek', frame: '40' });
       await page.waitForFunction(() => (window as unknown as HostWindow).states.at(-1)?.error !== undefined);
       expect((await page.evaluate(() => (window as unknown as HostWindow).states.at(-1)))!.error).toMatch(/numeric frame/);
+    } finally {
+      await context.close();
+    }
+  });
+});
+
+describe('sound', () => {
+  type Sound = { muted: boolean; unlocked: boolean; ready: boolean; heard: number | null };
+  const sound = (page: Page) => page.evaluate(() => (window as unknown as { studio: { sound: Sound } }).studio.sound);
+  /** How far the sound reaching the speakers is from the frame on screen, in seconds. */
+  const offBy = (page: Page) =>
+    page.evaluate(() => {
+      const studio = (window as unknown as EmbedWindow).studio;
+      const heard = studio.sound?.heard ?? null;
+      return heard === null ? null : Math.abs(heard - studio.frame / studio.fps);
+    });
+
+  it('has no speaker button without sound', async () => {
+    const { page, context } = await openEmbed('audio-test-silent');
+    try {
+      expect(await page.getByRole('button').count()).toBe(0);
+      expect(await page.evaluate(() => (window as unknown as EmbedWindow).studio.sound)).toBeNull();
+    } finally {
+      await context.close();
+    }
+  });
+
+  it('starts muted, plays after the speaker button is clicked, and stays in step after a seek', async () => {
+    const { page, context, problems } = await openEmbed('audio-test');
+    try {
+      await expect.poll(async () => (await sound(page)).ready).toBe(true);
+      // Playing, but silent until someone asks for sound: browsers need a gesture.
+      expect(await sound(page)).toMatchObject({ muted: true, heard: null });
+      await page.getByRole('button', { name: 'Turn sound on' }).click();
+      await expect.poll(async () => (await sound(page)).heard, { timeout: 3000 }).not.toBeNull();
+      expect(await sound(page)).toMatchObject({ muted: false, unlocked: true });
+      const step = 2 / 30 + 0.04; // the frame on screen is floored, plus the resync tolerance
+      await expect.poll(() => offBy(page)).toBeLessThan(step);
+      await page.evaluate(() => (window as unknown as EmbedWindow).studio.seek(90));
+      await expect.poll(() => offBy(page)).toBeLessThan(step);
+      await page.evaluate(() => (window as unknown as EmbedWindow).studio.pause());
+      expect((await sound(page)).heard).toBeNull();
+      await page.getByRole('button', { name: 'Turn sound off' }).click();
+      expect((await sound(page)).muted).toBe(true);
+      expect(problems).toEqual([]);
     } finally {
       await context.close();
     }
