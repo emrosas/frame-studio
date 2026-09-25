@@ -16,8 +16,9 @@ import type { ContactSheetResult, RenderExportResult, RenderHit } from '../../sr
 import { buildEmbed } from '../bundle/embed.ts';
 import { openStudio, startVite, writeViaSink, type Studio } from '../render/studio.ts';
 import { entryPath, loadModules, ROOT, SCENES_DIR, sceneLibrary, writeFileAtomic, type LoadedModules } from '../scene-files.ts';
-import { describeTarget, type StudioRequest } from '../../src/studio/protocol.ts';
-import { STUDIO_DIR } from '../studio/plugin.ts';
+import type { StudioRequest } from '../../src/studio/protocol.ts';
+import { describeThread, type SceneInfo } from '../studio/describe.ts';
+import { STUDIO_DIR } from '../studio/paths.ts';
 import { StudioQueue } from '../studio/queue.ts';
 
 /** A frame number, or an MM:SS:FF timecode string. */
@@ -327,46 +328,36 @@ export class Workspace {
     return { file: show(path), ...result };
   }
 
-  /** Claims the oldest pending request for this session; null when none is pending. */
+  /** Claims the oldest thread waiting for an external agent, for this session; null when none is waiting. */
   nextRequest(): Promise<StudioRequest | null> {
-    return this.queue.claimNext(this.session);
+    return this.queue.claimNext(this.session, ['external']);
   }
 
-  /** A request by id, claimed for this session if it is still pending, so its checkpoint is taken. */
+  /** A thread by id, its waiting turn claimed for this session if it is an external agent's, so its checkpoint is taken. */
   getRequest(id: number): Promise<StudioRequest> {
-    return this.queue.claim(id, this.session);
+    return this.queue.claim(id, this.session, ['external']);
   }
 
+  /** Ends the working turn of a thread. */
   completeRequest(id: number, status: 'done' | 'failed', summary: string): Promise<StudioRequest> {
-    return this.queue.complete(id, status, summary);
+    // Only a turn an external agent works; the studio's own agents end theirs themselves.
+    return this.queue.complete(id, status, summary, {}, { agents: ['external'] });
   }
 
-  /** A request described for the agent: what was asked, what is selected, and how to finish. */
-  async describeRequest(request: StudioRequest): Promise<string> {
-    const s = request.selection;
-    let file = '';
-    let range = `frames [${s.from}, ${s.to})`;
+  /** What the viewer's library says about a scene, for describing a thread. */
+  async sceneInfo(sceneId: string): Promise<SceneInfo> {
     try {
-      const { modules, entry } = await this.entry(s.sceneId);
-      file = ` (${entry.file})`;
-      if (entry.scene) range += ` (${modules.engine.formatTimecode(s.from, entry.scene.fps)} to ${modules.engine.formatTimecode(s.to, entry.scene.fps)})`;
+      const { modules, entry } = await this.entry(sceneId);
+      const scene = entry.scene;
+      return { file: entry.file, ...(scene ? { timecode: (f: number) => modules.engine.formatTimecode(f, scene.fps) } : {}) };
     } catch {
       // The scene may have been renamed; the id still says which one.
+      return {};
     }
-    const target = `${describeTarget(s)}${s.layerId === undefined ? ' (a whole-frame-range selection)' : ''}`;
-    const attempt = request.attempt && request.attempt > 1 ? ` (attempt ${request.attempt} of #${request.retryOf}; the user reverted the earlier attempt and asked again)` : '';
-    const lines = [
-      `Frame Studio request #${request.id}${attempt}. Status: ${request.status.replace('_', ' ')}.`,
-      `Prompt: ${request.prompt}`,
-      `Scene: ${s.sceneId}${file}`,
-      `Selection: ${target}, ${range}`,
-      `Frame on screen when sent: ${request.frame}${request.point ? `; the user clicked scene pixel (${Math.round(request.point.x)}, ${Math.round(request.point.y)})` : ''}`,
-      ...(request.references.length > 0 ? [`Reference images (open them to see what the user means; never put them in a scene or export): ${request.references.join(', ')}`] : []),
-      ...(request.checkpoint ? ['The scene was saved before you start, so the user can revert your change.'] : []),
-      '',
-      'How to do it: look with render_frame, render_contact_sheet and hit_test. Change it with apply_to_selection (pass this selection), update_scene, or a new rig variant under src/rigs applied through an override. Render again to check.',
-      `When you finish, call complete_request with id ${request.id}, status "done" or "failed", and a one-line summary of what you changed or why it failed.`,
-    ];
-    return lines.join('\n');
+  }
+
+  /** A thread described for the external agent: what was asked, what is selected, and how to finish the turn. */
+  async describeRequest(request: StudioRequest): Promise<string> {
+    return describeThread(request, await this.sceneInfo(request.sceneId), { agent: 'external' });
   }
 }

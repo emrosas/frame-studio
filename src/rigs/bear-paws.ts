@@ -137,27 +137,44 @@ function limbOutline(length: number, r: number): Pt[] {
   return pts;
 }
 
-/** Draws both paws. The context is in the body frame. */
+/** Draws both paws, or one of them when `hidePaw` hides the other. The context is in the body frame. */
 export function drawPaws(ctx: Ctx2D, body: PawBody, p: ParamReader, rng: Rng, t: number): void {
-  const { W } = body;
+  const r = (p.number('pawSize') * body.W) / 2;
+  if (r < 1) return;
+  const hide = p.string('hidePaw');
+  for (const lb of layout(body, p, t, rng)) {
+    const key = lb.side < 0 ? 'left' : 'right';
+    if (hide === key || hide === 'both') continue;
+    paintLimb(ctx, body, p, rng.fork(key), lb, r, true);
+  }
+}
+
+/**
+ * One loose arm, painted like the bear's paws: a limb from the shoulder at
+ * (ax, ay) turned `angle` radians from +x, with the paw centre `length` out.
+ * It has no body to sit on, so it throws no shade and draws no rim; the
+ * context is in whatever frame the caller wants.
+ */
+export function drawArm(ctx: Ctx2D, W: number, p: ParamReader, rng: Rng, ax: number, ay: number, angle: number, length: number): void {
   const r = (p.number('pawSize') * W) / 2;
   if (r < 1) return;
-  const color = p.string('body');
-  const limbs = layout(body, p, t, rng);
-  for (const lb of limbs) {
-    const rl = rng.fork(lb.side < 0 ? 'left' : 'right');
-    // Resampled after the wobble, so the ragged edge and flicks have as many points to work with as the body's edge.
-    const outline = resample(wobble(limbOutline(lb.length, r), rl.fork('shape'), r * 0.05 * p.number('edgeRough'), 4), clamp(W / 60, 3, 40));
-    const cos = Math.cos(lb.angle);
-    const sin = Math.sin(lb.angle);
-    const toBody = ([x, y]: Pt): Pt => [lb.ax + x * cos - y * sin, lb.ay + x * sin + y * cos];
-    drawShade(ctx, body, p, rl.fork('shade'), outline.map(toBody));
-    ctx.save();
-    ctx.translate(lb.ax, lb.ay);
-    ctx.rotate(lb.angle);
-    drawLimb(ctx, body, p, rl, lb, outline, r, color, toBody);
-    ctx.restore();
-  }
+  const loose: PawBody = { W, depth: () => -1, solid: [], sides: () => [0, 0] };
+  paintLimb(ctx, loose, p, rng, { side: 1, ax, ay, angle, length: Math.max(1, length) }, r, false);
+}
+
+function paintLimb(ctx: Ctx2D, body: PawBody, p: ParamReader, rl: Rng, lb: Limb, r: number, shaded: boolean): void {
+  const { W } = body;
+  // Resampled after the wobble, so the ragged edge and flicks have as many points to work with as the body's edge.
+  const outline = resample(wobble(limbOutline(lb.length, r), rl.fork('shape'), r * 0.05 * p.number('edgeRough'), 4), clamp(W / 60, 3, 40));
+  const cos = Math.cos(lb.angle);
+  const sin = Math.sin(lb.angle);
+  const toBody = ([x, y]: Pt): Pt => [lb.ax + x * cos - y * sin, lb.ay + x * sin + y * cos];
+  if (shaded) drawShade(ctx, body, p, rl.fork('shade'), outline.map(toBody));
+  ctx.save();
+  ctx.translate(lb.ax, lb.ay);
+  ctx.rotate(lb.angle);
+  drawLimb(ctx, body, p, rl, lb, outline, r, p.string('body'), toBody);
+  ctx.restore();
 }
 
 /** A soft shade the limb throws on the body, down and to the side of it. */

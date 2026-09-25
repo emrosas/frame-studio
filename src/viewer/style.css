@@ -569,12 +569,12 @@ body {
 /* ---- request panel (ADR 0003) ---- */
 
 .studio-panel {
-  flex: 0 0 320px;
+  flex: 0 0 360px;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow-y: auto;
-  border-left: 1px solid var(--line);
+  border-right: 1px solid var(--line);
   background: var(--bar);
 }
 
@@ -828,6 +828,341 @@ body {
   align-self: flex-start;
 }
 
+.studio-count.is-quiet {
+  color: var(--muted);
+}
+
+.prompt-box {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.prompt-box .attach {
+  align-self: flex-start;
+}
+
+/* ---- agent picker (ADR 0006) ---- */
+
+.agent-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.agent-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
+.agent-picker select {
+  max-width: 100%;
+  padding: 3px 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--stage);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.agent-fixed {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.full-access {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.agent-note {
+  margin: 0;
+  color: #f0a15c;
+  font-size: 12px;
+}
+
+.agent-note code {
+  font: 11px var(--mono);
+}
+
+.studio-panel button.link {
+  padding: 0;
+  border: 0;
+  color: var(--pick);
+  text-decoration: underline;
+}
+
+/* ---- a thread (ADR 0006) ---- */
+
+.thread {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.thread-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--bar);
+}
+
+.studio-panel button.back {
+  padding: 2px 8px;
+}
+
+.thread-title {
+  flex: 1 1 auto;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.thread-status {
+  color: var(--muted);
+  font: 11px var(--mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.thread-status.is-working,
+.thread-status.is-pending {
+  color: var(--pick);
+}
+
+.thread-status.is-your_turn {
+  color: #7fd18b;
+}
+
+.thread-status.is-stalled {
+  color: #f0a15c;
+}
+
+.turns {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0;
+  padding: 12px 14px;
+  list-style: none;
+}
+
+.turn {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.turn.is-reverted,
+.turn.is-cancelled {
+  opacity: 0.5;
+}
+
+.ask {
+  align-self: flex-end;
+  max-width: 92%;
+  padding: 7px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.ask-prompt {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+}
+
+.ask-meta {
+  margin: 3px 0 0;
+  color: var(--faint);
+  font: 11px var(--mono);
+}
+
+.ask .composer-refs {
+  margin-top: 6px;
+}
+
+.work {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.work-text {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.work-step {
+  margin: 0;
+  padding-left: 16px;
+  position: relative;
+  color: var(--muted);
+  font: 12px var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.work-step::before {
+  content: '✓';
+  position: absolute;
+  left: 0;
+  color: #7fd18b;
+}
+
+.work-step.is-running::before {
+  content: '…';
+  color: var(--pick);
+}
+
+.work-step.is-failed::before {
+  content: '×';
+  color: #f0a15c;
+}
+
+.work-frames {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.studio-panel button.thumb {
+  position: relative;
+  padding: 0;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.thumb img {
+  display: block;
+  width: 96px;
+  height: auto;
+}
+
+.thumb span {
+  position: absolute;
+  right: 3px;
+  bottom: 2px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.6);
+  font: 10px var(--mono);
+}
+
+.approval {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+.approval.is-open {
+  border-color: var(--pick);
+}
+
+.approval p {
+  margin: 0;
+}
+
+.approval-summary {
+  font-size: 13px;
+}
+
+.approval-detail {
+  color: var(--muted);
+  font: 12px var(--mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.approval-answer {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.work-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-style: italic;
+}
+
+.work-note.is-error {
+  color: var(--error-text);
+  font-style: normal;
+}
+
+.turn-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  color: var(--faint);
+  font: 11px var(--mono);
+}
+
+.turn-summary {
+  flex-basis: 100%;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+}
+
+.turn-foot button {
+  margin-left: auto;
+}
+
+.thread-actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: auto;
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--bar);
+}
+
+.thread-actions textarea {
+  width: 100%;
+  resize: vertical;
+  padding: 7px 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--stage);
+  color: var(--text);
+  font: inherit;
+}
+
+.thread-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.studio-panel button.stop {
+  align-self: flex-start;
+  border-color: #f0a15c;
+  color: #f0a15c;
+}
+
 /* ---- finished-request notice ---- */
 
 .toast {
@@ -846,7 +1181,9 @@ body {
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45);
 }
 
-.toast.is-failed {
+.toast.is-failed,
+.toast.is-stopped,
+.toast.is-interrupted {
   border-color: #f0a15c;
 }
 

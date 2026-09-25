@@ -6,9 +6,10 @@
 import { mkdir, open, rename, rm, type FileHandle } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { chromium, type Browser, type BrowserContext, type Page } from 'playwright';
-import { createServer, type ViteDevServer } from 'vite';
+import { createServer, type InlineConfig, type ViteDevServer } from 'vite';
 import type { RenderSceneInfo, RenderStudioApi } from '../../src/viewer/render-api.ts';
 import { ROOT } from '../scene-files.ts';
+import type { StudioInlineConfig } from '../studio/paths.ts';
 
 export { ROOT };
 
@@ -54,14 +55,21 @@ export interface OpenOptions {
  * CLI runs once and leaves it off. With hmr, open pages get hot updates, as
  * the viewer does under npm run dev.
  */
-export async function startVite(options: { watch?: boolean; hmr?: boolean } = {}): Promise<ViteDevServer> {
+/**
+ * A Vite server for the tools. Tools don't run the studio's agents (ADR 0006)
+ * unless `agents` is set: only the dev server the viewer uses should claim
+ * threads, or a tool that exits would leave turns interrupted.
+ */
+export async function startVite(options: { watch?: boolean; hmr?: boolean; agents?: boolean } = {}): Promise<ViteDevServer> {
   // Port 0: the OS picks a free port as Vite binds it, so parallel runs cannot collide.
-  const server = await createServer({
+  const config: InlineConfig & StudioInlineConfig = {
     root: ROOT,
     configFile: resolve(ROOT, 'vite.config.ts'),
     logLevel: 'error',
     server: { host: '127.0.0.1', port: 0, strictPort: true, hmr: options.hmr ?? false, ...(options.watch ? {} : { watch: null }) },
-  });
+    frameStudio: { agents: options.agents ?? false },
+  };
+  const server = await createServer(config);
   try {
     await server.listen();
   } catch (err) {

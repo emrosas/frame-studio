@@ -74,8 +74,9 @@ tools/
   bundle/     Single-file HTML builder: validates the scene, bundles only the rigs
               it uses with the player, inlines all. npm run export -- --target html.
   mcp/        MCP server exposing the studio to the agent (docs/MCP.md).
-  studio/     The request queue on disk, and the studio server (a Vite plugin
-              serving /__studio/ to the viewer).
+  studio/     The request queue on disk, the studio server (a Vite plugin
+              serving /__studio/ to the viewer), and agents/, the agents it
+              runs itself (M8): providers, access rules, the turn runner.
 out/          Renders and exports (gitignored).
 ```
 
@@ -138,7 +139,7 @@ The product direction: **the canvas is the selection surface**. Users don't mana
 
 A **selection** is `{ sceneId, layerId, partId?, from, to }`. It's the unit passed to the agent alongside a prompt, and every edit tool accepts one. A selection with no `layerId` means "the whole frame range" (e.g. redo frames 3 to 4 entirely).
 
-Selections reach the agent through files (`docs/adr/0003-selection-handoff-file-queue.md`). `.frame-studio/selection.json` holds the current selection. Each ask is a request file in `.frame-studio/requests/` that the agent claims through MCP tools and completes with a summary. The MCP server snapshots the scene when it claims a request, so the viewer can offer Revert and Try again. The files are the source of truth; the viewer and the MCP server keep nothing the other needs in memory.
+Selections reach the agent through files (`docs/adr/0003-selection-handoff-file-queue.md`). `.frame-studio/selection.json` holds the current selection. Each ask is a request file in `.frame-studio/requests/` that the agent claims through MCP tools and completes with a summary. The MCP server snapshots the scene when it claims a request, so the viewer can offer Revert and Try again. The files are the source of truth; the viewer and the MCP server keep nothing the other needs in memory. From M8 a request is a thread you reply to until you settle it, with a checkpoint per agent turn, worked by the external agent or the integrated AI (`docs/adr/0006-requests-are-threads.md`).
 
 Engine support required from the start:
 - `hitTest(probe, scene, frame, x, y, registry, options?)` returns the layer id (and, with `options.parts` where the rig declares parts, a part id) at that pixel. `probe` is a scratch 1x1 2D context.
@@ -177,7 +178,15 @@ Users can attach reference images to a prompt. References are **input to the age
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
 - `apply_to_selection(selection, patch)`: writes a scoped override for the selection
 - `export(sceneId, target, from?, to?, silent?)`: `mp4` | `gif` | `html`, returns an output path
-- `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request queue and current selection (ADR 0003), plus the `/frame-studio:next` prompt and the `selection://current` resource
+- `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request threads and current selection (ADR 0003, ADR 0006). `complete_request` ends a turn; the user replies or settles. Plus the `/frame-studio:next` prompt and the `selection://current` resource
+
+## Integrated AI (M8)
+
+An AI inside the studio that works request threads like a chat in T3 Code (`docs/adr/0006-requests-are-threads.md`).
+- It runs locally in the studio server. Providers launch the user's own signed-in CLI: `claude` through Anthropic's Agent SDK (dev-only package, pointed at the installed binary) and `codex app-server`. Never offer a login screen, never read or store the user's tokens, and never call it Claude Code. A missing or signed-out CLI shows the command to run.
+- Its tools are the studio operations the MCP server offers. By default it may also write in `scenes/`, `src/rigs/` and `src/audio/`; anything else asks first through an approval card, unless the thread is in full access.
+- One working thread per scene. Each agent turn gets a checkpoint, and only the user settles a thread.
+- Only the dev server the viewer uses runs agents. Tools start Vite with agents off (`startVite` in `tools/render/studio.ts`), so a render or an MCP session never claims a thread. The scripted test agent appears with `FRAME_STUDIO_FAKE_AGENT=1`.
 
 ## Conventions
 
@@ -189,11 +198,11 @@ Users can attach reference images to a prompt. References are **input to the age
 
 ## Later (don't build yet)
 
-- Desktop shell (Electron) wrapping the viewer. Chromium keeps canvas output identical between preview and export. The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
+- Desktop shell (Electron) wrapping the viewer, roadmap M9. Chromium keeps canvas output identical between preview and export. The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
+- Projects: many scenes per project, stitched into a longer video (ticket 17, grilled before M9).
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
 - Camera layer (pan, zoom, shake), scene transitions, multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.
-- The integrated AI is roadmap M8, built last (ADR 0004). It connects to the user's own Claude, ChatGPT or other model by subscription or API key, and reads the same request files as the external agent.
 
 ## Agent skills
 

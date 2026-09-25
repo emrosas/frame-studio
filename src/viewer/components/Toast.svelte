@@ -1,4 +1,4 @@
-<!-- A request just finished: say what the agent did, and offer View, which loops its range. -->
+<!-- An agent's turn just ended: say what it did, and offer View, which opens the thread and loops its range. -->
 <script lang="ts">
   import type { Toast, ViewerActions } from '../ui.svelte';
 
@@ -12,6 +12,7 @@
       type="button"
       class="toast-view"
       onclick={() => {
+        actions.openThread(toast.id);
         actions.viewRequest(toast.id);
         actions.dismissToast();
       }}>View</button

@@ -4,7 +4,7 @@ Type: map
 
 ## Destination
 
-Every milestone in `docs/ROADMAP.md`, M1 through M8, passes its acceptance criteria, and `docs/PROGRESS.md` records it.
+Every milestone in `docs/ROADMAP.md`, M1 through M9, passes its acceptance criteria, and `docs/PROGRESS.md` records it.
 
 ## Notes
 
@@ -36,16 +36,17 @@ Every milestone in `docs/ROADMAP.md`, M1 through M8, passes its acceptance crite
 - [How does a selection reach the agent?](issues/10-selection-handoff.md) Through files in `.frame-studio/`: a current selection, and a queue of request files the agent claims atomically through MCP tools, plus a Claude Code slash command and resource. Scene checkpoints on claim allow Revert and Try again. The viewer uses one studio server protocol, T3 Code-style (ADR 0003, ADR 0001 amended), and an integrated AI becomes M8 (ADR 0004).
 - [M6: Selection-to-prompt in the viewer](issues/11-m6-selection-to-prompt.md) M6 is done. The viewer UI is Svelte (TypeScript 6 for svelte-check). The request queue, studio server, MCP request tools and Requests panel work end to end, with checkpoints, Revert and Try again. The studio server takes same-origin JSON only.
 - [M7: Procedural audio](issues/12-m7-procedural-audio.md) M7 is done. Generators build Web Audio graphs for cues. The whole scene renders once offline, and the viewer, the embed and exports all play or encode that buffer (ADR 0005). MP4 audio is AAC with its priming signalled by an edit list and a patched-in `roll` group, or Opus. The embed starts muted and plays after a click.
+- [What does the integrated AI need to do?](issues/16-m8-integrated-ai.md) Requests become threads like a T3 Code chat: pending, working, your turn, settled. Each turn has a checkpoint and only you settle. It runs locally in the studio server with two providers that launch the user's own signed-in CLI, Claude through the Agent SDK and Codex through `codex app-server`, with no login screen. By default it has studio tools and writes in `scenes/`, `src/rigs/` and `src/audio/`, with approvals for anything else. One working thread per scene, and a left thread panel (ADR 0006). Electron becomes M9, after a Projects grill (ticket 17).
+- [M8: Integrated AI](issues/18-m8-integrated-ai-build.md) M8 is done. Requests are threads with per-turn checkpoints and Settle. The studio runs Claude (the Agent SDK with in-process studio tools) and Codex (`codex app-server`) through the user's own signed-in CLIs, streaming each turn into a left panel with approval cards. One working thread per scene holds across processes, and the studio server answers only this computer.
 
 ## Not yet specified
 
-- How an open viewer picks up edits the agent makes through MCP. MCP writes scene files, and M1 showed the viewer swaps in file edits live, so it should need nothing more. No one has watched it happen in a browser yet.
 - Text. The first scene that needs words will choose between vector paths in code and generic system fonts. System fonts render differently per machine, which may break the embed's pixel match.
 - Where shared rig parts live. M2 produces one character. The second character will show which parts are actually shared.
 - Frame-range picking moved into M2 at the user's request. M6 still owns the handoff to the agent.
 - Where the Electron build keeps scenes. Local files come first (ADR 0001), but `import.meta.glob` and hot reload only work in dev. The web app's backend comes after the local path works.
-- How the web app reaches an agent. It can't reach a local MCP agent. Its route is the integrated AI in M8 (ADR 0004), or the hosted service.
+- How the web app reaches an agent. It can't reach a local MCP agent or a local CLI. Its route is a tool loop over the Anthropic and OpenAI APIs with the user's keys, run by its backend (ADR 0006), or the hosted service.
 
 ## Out of scope
 
-- The roadmap's "Later" list: an Electron shell, a timeline editor and rig-controls panel, a camera layer with transitions and multi-shot files, and a hosted service. The destination stops at M8, the integrated AI, which the user added on 2026-09-24.
+- The roadmap's "Later" list: an Electron shell, a timeline editor and rig-controls panel, a camera layer with transitions and multi-shot files, and a hosted service. The destination stops at M9, the Electron app, which the user scheduled on 2026-09-25 after M8 and the Projects grill.

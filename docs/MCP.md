@@ -41,9 +41,9 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. |
 | `apply_to_selection(selection, patch)` | A scoped edit. Over `[from, to)` of one layer, it swaps to a rig variant and/or holds params, written as overrides. |
 | `export(sceneId, target, from?, to?, silent?)` | `mp4`, `gif` or `html`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. Returns the file path under `out/`. |
-| `next_request()` | Claims the oldest pending request from the viewer's queue and returns it, with instructions. |
-| `get_request(id)` | A request by id, as in a pasted line. A request that is still pending gets claimed, so its checkpoint is taken. |
-| `complete_request(id, status, summary)` | Marks a request `done` or `failed`, with a one-line summary the viewer shows. |
+| `next_request()` | Claims the oldest request waiting for an external agent and returns the whole thread, with instructions for this turn. |
+| `get_request(id)` | A request by id, as in a pasted line, with its thread. A turn that is still waiting gets claimed, so its checkpoint is taken. |
+| `complete_request(id, status, summary)` | Ends your turn as `done` or `failed`, with a one-line summary the viewer shows. The thread stays open for the user to reply or settle. |
 | `get_selection()` | What is selected in the viewer right now: scene, layer, part, range, frame, and click point. |
 
 In Claude Code the server also offers the `/frame-studio:next` command, which takes the next request and hands it to the agent, and the resource `@frame-studio:selection://current`, the viewer's current selection.
@@ -52,9 +52,25 @@ A selection is `{ sceneId, layerId?, partId?, from, to }`. `layerId` comes from 
 
 ## Requests from the viewer
 
-The viewer's Requests panel sends asks to the agent through files in `.frame-studio/` (`docs/adr/0003-selection-handoff-file-queue.md`). You select something on the canvas, write what should change, attach reference images if you like, and press **Send to agent**. The request lands in the queue, and a line to paste into any agent goes to the clipboard: `Frame Studio request #7: "..." ... get_request (id 7) ...`. In Claude Code, `/frame-studio:next` does the same without pasting.
+The viewer's Requests panel, on the left, sends asks to an agent through files in `.frame-studio/` (`docs/adr/0003-selection-handoff-file-queue.md`, `docs/adr/0006-requests-are-threads.md`). You select something on the canvas, write what should change, attach reference images if you like, pick who works it, and press **Send to agent**.
 
-When an agent claims a request, the scene file is saved first. When it calls `complete_request`, the viewer shows the summary with **View**, which loops the request's range. **Revert** restores the saved scene. **Try again** reverts and queues the same ask as the next attempt, with the prompt editable. Both are offered only when no other request on that scene was active after the save, so they can never throw away someone else's work.
+A request is a thread, like a chat. The agent works a turn and ends it with a summary; you look, and reply ("a bit smaller") or **Settle** it when it's right. Only you settle a thread, and replying to a settled one reopens it. Each turn saves the scene file before the agent starts, so **Revert to here** on any turn puts the scene back to how it was before that turn. **Try again** reverts the newest turn and asks again, with the prompt editable. Reverting is offered only when no other request on that scene was active after the save, so it can never throw away someone else's work. One thread per scene works at a time; threads on other scenes run in parallel.
+
+### The external agent
+
+Pick **External agent** and the request waits for any MCP agent, such as Claude Code in a terminal. A line to paste goes to the clipboard: `Frame Studio request #7: "..." ... get_request (id 7) ...`. In Claude Code, `/frame-studio:next` does the same without pasting. When you reply, the thread goes back into the queue, and the next `next_request` or `get_request` returns it with every turn so far.
+
+### Agents in the studio
+
+Pick **Claude** or **Codex** and the studio runs the agent itself, on your machine, through the CLI you already have installed and signed in: `claude`, through Anthropic's Agent SDK, or `codex app-server`. The studio never shows a login screen and never sees a token. An API key in your environment works through either CLI. If a CLI is missing or signed out, the picker says so and shows the command that fixes it (`claude auth login`, `codex login`).
+
+The thread streams what the agent does: its reply, one line per step, and thumbnails of the frames it rendered, which you can click to see on the canvas. Each thread has its own model, effort and access, and you can change them between turns.
+
+- **Access.** By default the agent uses the studio's tools (the same operations as this MCP server) on its own scene, reads the project, and writes in `scenes/`, `src/rigs/` and `src/audio/`. Anything else, such as another file, a shell command or the network, shows an approval card in the thread first. **Full access** turns the cards off. Either way, a scene another request is working on is off limits, and editing a rig that scene draws with asks first.
+- **Stop** ends the agent's turn and keeps what it changed so far. If the dev server stops mid-turn, the turn shows as interrupted, and your next reply resumes the agent's session.
+- Claude gets the studio tools in the studio server's own process. Codex reaches them at `/__studio/mcp` on the dev server, with a token per turn passed in its environment. Transcripts and thumbnails live next to the request in `.frame-studio/requests/`.
+- The access rules keep a well-meaning agent inside the lines; they are not a sandbox. Rig and generator code an agent writes runs in the studio server and the browser.
+- The studio server answers only this computer, even when Vite listens on the network. Programs on this computer are trusted, as they are by any dev server.
 
 ## A typical loop
 

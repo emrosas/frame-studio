@@ -1,8 +1,9 @@
 /**
- * M6: the selection handoff in the viewer (ADR 0003), end to end. The test
- * plays the agent's side through the file queue, as the MCP server would, on
- * a throwaway handoff folder and a copy of bear-test, so no real queue or
- * scene is touched.
+ * M6 and M8: the selection handoff in the viewer (ADR 0003, ADR 0006), end to
+ * end, with the external agent. The test plays the agent's side through the
+ * file queue, as the MCP server would, on a throwaway handoff folder and a
+ * copy of bear-test, so no real queue or scene is touched. Requests are
+ * threads: the agent works a turn, you reply, revert to any turn, settle.
  */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -76,6 +77,9 @@ const readSelection = () => (existsSync(join(STUDIO, 'selection.json')) ? (JSON.
 /** The smallest valid PNG: one opaque pixel. */
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
 
+const thread = () => panel().getByRole('region', { name: /^Request \d+$/ });
+const turn = (n: number) => thread().getByRole('listitem', { name: `Turn ${n}` });
+
 describe('sending a request from the viewer', () => {
   it('publishes the current selection, with the click point, after a short pause', async () => {
     await clickScene(760, 500);
@@ -86,7 +90,8 @@ describe('sending a request from the viewer', () => {
     await expect.poll(() => readSelection()?.from, { timeout: 3000 }).toBe(60);
   });
 
-  it('queues the prompt with its selection and a reference, and copies a line for the agent', async () => {
+  it('queues the prompt with its selection and a reference for the external agent, and copies a line for it', async () => {
+    await expect.poll(() => panel().getByRole('combobox', { name: 'Agent' }).inputValue()).toBe('external');
     await panel().getByRole('textbox', { name: 'Prompt' }).fill('make bruno look sad here');
     await panel().locator('input[type=file]').setInputFiles({ name: 'Sad Bear.png', mimeType: 'image/png', buffer: PNG });
     await panel().getByRole('img', { name: 'Sad Bear.png' }).waitFor();
@@ -94,37 +99,42 @@ describe('sending a request from the viewer', () => {
     await expectText(panel().getByRole('status'), 'Request #1 queued');
 
     const [sent] = await agent.list();
-    uploaded.push(...sent.references);
-    expect(sent).toMatchObject({ id: 1, status: 'pending', prompt: 'make bruno look sad here', frame: 60 });
-    expect(Math.abs(sent.point!.x - 760) + Math.abs(sent.point!.y - 500)).toBeLessThanOrEqual(6);
-    expect(sent.selection).toEqual({ sceneId: ID, layerId: 'bruno', from: 60, to: 96 });
-    expect(sent.references).toHaveLength(1);
-    expect(sent.references[0]).toMatch(/^references\/\d{4}-\d{2}-\d{2}-sad-bear\.png$/);
-    expect(readFileSync(join(ROOT, sent.references[0]))).toEqual(PNG);
+    const ask = sent.turns[0].ask;
+    uploaded.push(...ask.references);
+    expect(sent).toMatchObject({ id: 1, status: 'pending', agent: 'external', sceneId: ID });
+    expect(ask).toMatchObject({ prompt: 'make bruno look sad here', frame: 60 });
+    expect(Math.abs(ask.point!.x - 760) + Math.abs(ask.point!.y - 500)).toBeLessThanOrEqual(6);
+    expect(ask.selection).toEqual({ sceneId: ID, layerId: 'bruno', from: 60, to: 96 });
+    expect(ask.references).toHaveLength(1);
+    expect(ask.references[0]).toMatch(/^references\/\d{4}-\d{2}-\d{2}-sad-bear\.png$/);
+    expect(readFileSync(join(ROOT, ask.references[0]))).toEqual(PNG);
     expect(await page.evaluate(() => navigator.clipboard.readText())).toMatch(/^Frame Studio request #1: "make bruno look sad here" .*get_request \(id 1\)/);
     await expectText(request(1), 'waiting');
     expect(await panel().getByRole('textbox', { name: 'Prompt' }).inputValue()).toBe('');
   });
 });
 
-describe('following a request', () => {
-  it('shows the agent working, then a notice whose View loops the range', async () => {
+describe('following a thread', () => {
+  it('shows the agent working, then a notice whose View opens the thread and loops the range', async () => {
     const claimed = await agent.claimNext('test-agent');
     expect(claimed?.id).toBe(1);
-    await expectText(request(1), 'in progress');
+    await expectText(request(1), 'working');
 
     // The agent edits the scene: bruno's body turns blue over his range.
     const scene = JSON.parse(readFileSync(SCENE_FILE, 'utf8'));
-    scene.layers.find((l: { id: string }) => l.id === 'bruno').overrides.push({ from: 72, to: 96, params: { body: '#3355ff' } });
+    const bruno = scene.layers.find((l: { id: string }) => l.id === 'bruno');
+    (bruno.overrides ??= []).push({ from: 72, to: 96, params: { body: '#3355ff' } });
     writeFileSync(SCENE_FILE, `${JSON.stringify(scene, null, 2)}\n`);
     await agent.complete(1, 'done', 'turned bruno blue over frames 72 to 96');
 
     await expectText(request(1), 'turned bruno blue over frames 72 to 96');
+    await expectText(request(1), 'your turn');
     const notice = page.getByRole('status', { name: 'Request finished' });
     await expectText(notice, '#1 done');
     await page.keyboard.press('Escape'); // clear the layer first, so View has something to restore
     await notice.getByRole('button', { name: 'View' }).click();
     await expect.poll(() => notice.count()).toBe(0);
+    await expectText(thread(), 'turned bruno blue over frames 72 to 96');
     await expect.poll(() => page.getByRole('status', { name: 'Selected layer' }).textContent()).toBe('bruno');
     await expect.poll(() => page.getByRole('status', { name: 'Frame range' }).textContent()).toBe('[60, 96)');
     const frames = new Set<number>();
@@ -136,32 +146,57 @@ describe('following a request', () => {
     expect([...frames].every((f) => f >= 60 && f < 96), [...frames].join(',')).toBe(true);
   });
 
-  it('reverts the newest finished request, restoring the scene file exactly', async () => {
-    await request(1).getByRole('button', { name: 'Revert' }).click();
-    await expectText(request(1), 'reverted');
+  it('replies in the thread, and the agent works the reply as the next turn', async () => {
+    await thread().getByRole('textbox', { name: 'Reply' }).fill('a lighter blue');
+    await thread().getByRole('button', { name: 'Reply' }).click();
+    await expectText(turn(2), 'a lighter blue');
+    await expectText(thread().getByRole('status', { name: 'Request status' }), 'waiting');
+    const claimed = await agent.claimNext('test-agent');
+    expect(claimed).toMatchObject({ id: 1, turns: [{ status: 'done' }, { status: 'working', ask: { prompt: 'a lighter blue' } }] });
+    const scene = JSON.parse(readFileSync(SCENE_FILE, 'utf8'));
+    scene.layers.find((l: { id: string }) => l.id === 'bruno').overrides.at(-1).params.body = '#7799ff';
+    writeFileSync(SCENE_FILE, `${JSON.stringify(scene, null, 2)}\n`);
+    await agent.complete(1, 'done', 'lightened the blue');
+    await expectText(turn(2), 'lightened the blue');
+  });
+
+  it('reverts to before any turn, restoring the scene file exactly', async () => {
+    await turn(1).getByRole('button', { name: 'Revert to before turn 1' }).click();
+    await expectText(turn(1), 'reverted');
+    await expectText(turn(2), 'reverted');
     expect(readFileSync(SCENE_FILE, 'utf8')).toBe(original);
   });
 
   it('tries again with an edited prompt as the next attempt', async () => {
-    // A fresh finished request to retry.
+    await thread().getByRole('button', { name: 'Back to requests' }).click();
     await agent.create({ selection: { sceneId: ID, layerId: 'pip', from: 0, to: 24 }, frame: 0, prompt: 'make pip wave', references: [] });
     await agent.claimNext('test-agent');
     await agent.complete(2, 'failed', 'could not find a wave that reads at 12 fps');
-    await expectText(request(2), 'failed');
-    await request(2).getByRole('button', { name: 'Try again' }).click();
-    const retry = request(2).getByRole('textbox', { name: 'Prompt for the next attempt' });
+    await expectText(request(2), 'your turn');
+    await request(2).getByRole('button').click();
+    await thread().getByRole('button', { name: 'Try again' }).click();
+    const retry = thread().getByRole('textbox', { name: 'Prompt for the next attempt' });
     expect(await retry.inputValue()).toBe('make pip wave');
     await retry.fill('make pip wave with the left paw, slower');
-    await request(2).getByRole('button', { name: /Revert and queue attempt 2/ }).click();
-    await expectText(request(3), 'attempt 2');
-    expect(await agent.get(3)).toMatchObject({ prompt: 'make pip wave with the left paw, slower', attempt: 2, retryOf: 2, status: 'pending' });
-    expect((await agent.get(2)).status).toBe('reverted');
+    await thread().getByRole('button', { name: 'Revert and try again' }).click();
+    await expectText(turn(2), 'attempt 2');
+    const two = await agent.get(2);
+    expect(two.status).toBe('pending');
+    expect(two.turns.map((t) => t.status)).toEqual(['reverted', 'pending']);
+    expect(two.turns[1]).toMatchObject({ attempt: 2, ask: { prompt: 'make pip wave with the left paw, slower' } });
   });
 
-  it('cancels a waiting request and clears finished ones', async () => {
-    await request(3).getByRole('button', { name: 'Cancel' }).click();
-    await expectText(request(3), 'cancelled');
-    await panel().getByRole('button', { name: 'Clear finished' }).click();
+  it('cancels a waiting turn, settles a thread, and clears settled ones', async () => {
+    await thread().getByRole('button', { name: 'Cancel' }).click();
+    await expectText(thread().getByRole('status', { name: 'Request status' }), 'your turn');
+    await thread().getByRole('button', { name: 'Settle' }).click();
+    await expectText(thread().getByRole('status', { name: 'Request status' }), 'settled');
+    await thread().getByRole('button', { name: 'Back to requests' }).click();
+    await request(1).getByRole('button').click();
+    await thread().getByRole('button', { name: 'Settle' }).click();
+    await expectText(thread().getByRole('status', { name: 'Request status' }), 'settled');
+    await thread().getByRole('button', { name: 'Back to requests' }).click();
+    await panel().getByRole('button', { name: 'Clear settled' }).click();
     await expect.poll(() => panel().getByRole('article').count()).toBe(0);
     expect(await agent.list()).toEqual([]);
   });

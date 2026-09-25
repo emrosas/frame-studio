@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-24, after M7.
+Last updated 2026-09-25, after M8.
 
 ## Done
 
@@ -363,6 +363,80 @@ Two review agents read the M7 diff: one covered the render and the export, the o
   - The render page retries a failed audio render instead of caching the failure.
   - The drift checks after a seek in the browser tests poll instead of sleeping.
 
+### M8: Integrated AI
+
+M8 is built as ticket 16 settled it (ADR 0006), and its acceptance criteria pass. Requests are threads now, and the studio runs Claude and Codex itself, through the CLIs you already have signed in.
+
+What M8 delivered:
+
+- **Threads.** A request is a thread of turns: pending, working, your turn, then settled when you close it (`src/studio/protocol.ts`, `tools/studio/queue.ts`).
+  - Each turn saves the scene before its agent starts, and "Revert to here" goes back to any turn.
+  - Try again reverts the newest turn and asks again.
+  - A per-scene lock file keeps one working thread per scene, even across the dev server and an external MCP server.
+  - Request files from before threads read as one-turn threads.
+- **Agents in the studio** (`tools/studio/agents/`), run by the studio server:
+  - a runner that claims threads for them, starts turns, logs and pushes every event, and marks turns interrupted after a restart
+  - access rules
+  - three providers: Claude, through Anthropic's Agent SDK pointed at your installed `claude`, with `canUseTool` running the access rules; Codex, through `codex app-server` over stdio, answering its approval requests through the same rules; and a scripted test agent for the browser tests
+- **The studio tools over HTTP** at `/__studio/mcp`. The tool definitions moved to `tools/mcp/tools.ts`, so the stdio MCP server and the studio's agents register the same ones. A bearer token per turn tells the studio which thread a call belongs to, so it can apply the scene rules and save rendered frames as thumbnails.
+- **The left panel.**
+  - An agent picker with model, effort and full access, which says which command fixes an agent that isn't ready.
+  - The thread list, and a thread view: your asks, the agent's streamed reply, one line per step, clickable frame thumbnails, approval cards, token use, and Revert to here.
+  - A reply box with Settle, Try again, Stop and Cancel.
+- **MCP for threads.** `next_request` and `get_request` return the whole thread, `complete_request` ends a turn, and a reply puts the thread back in the queue.
+- Tools start Vite with agents off (`startVite`), so only the viewer's dev server claims threads.
+
+### How each M8 acceptance criterion was verified
+
+1. **The Claude loop.** Through the studio server with the real `claude`:
+   - A request to make the ball blue over [12, 24) took 20 s. Claude called `apply_to_selection`, retried once after a bad first call, rendered frame 12 to check (the thumbnail was saved), and ended with the summary "Set the ball's fill to blue over frames 12–24". The override landed only on [12, 24).
+   - `tests/browser/agents.test.ts` runs the same loop in the viewer with the test agent: streamed text, steps, a clickable frame thumbnail, a reply that resumes the session, Revert to here restoring the scene byte for byte, and Settle.
+2. **The same loop with Codex.** With the real `codex` (signed in with ChatGPT), "make the ball green" applied `#39a845` over [12, 24) and rendered frames to check. The reply "now a darker green" resumed the same Codex thread and applied `#267a32`. Getting there found one real problem: Codex asks before each MCP tool call through an elicitation, which the adapter had declined. It now allows the studio's own tools there.
+3. **Access.** With the default access, the test agent writes a rig file in `src/rigs/` without a card. Editing a file in `docs/` shows a card, and declining blocks the write. A shell command shows a card. With full access there are no cards. `tests/node/agents.test.ts` checks the rules themselves, and how Claude's and Codex's tools map onto them.
+4. **Concurrency.** Two threads on one scene and one on another: the first and third work at once, and the second waits until the first ends.
+5. **Interruptions.**
+   - Stop keeps the orange the agent had applied and hands the thread back.
+   - Closing the dev server mid-turn marks the turn interrupted, and the new server's first reply resumes the agent's session.
+6. **External agent.** `tests/browser/mcp.test.ts` works a thread through `next_request`, replies, gets the whole thread back from `next_request` with the first turn and its summary, and completes the second turn. `tests/browser/handoff.test.ts` follows the same in the viewer: reply, Revert to here, Try again, cancel, settle and clear.
+7. **Setup.** With `claude` or `codex` missing from PATH, or signed out, their status says so and names the command to run. With a signed-in `claude` it reads as ready. Nothing in the studio asks for credentials.
+
+After the review fixes, real Claude and Codex turns ran again in parallel on two scenes: 12 s and 8 s, each rendering frames to check its edit. The suites are at 1073 unit tests and 82 browser tests, all passing with the committed `bear-test.json`.
+
+### M8 review
+
+Two review agents read the M8 diff, one on the server side and one on the viewer. The server review found real problems, several confirmed by running them. All of these are fixed:
+
+- **Starting agents from outside.** Any local program, or another host when Vite runs with `--host`, could post a request that starts a full-access agent. The studio server now answers only this computer. Claude also had its per-turn token on the `claude` command line, visible in `ps`. Claude now gets the studio tools in-process, and needs no token.
+- **The per-scene lock didn't hold.** A lock whose holder was mid-claim read as stale, and an empty lock file read as thread 0. Two claims on one scene both won in 200 of 200 runs.
+  - Claims and locks are now written whole and linked into place.
+  - A lock is live while its holder's claim file exists.
+  - A stale one is renamed aside and checked before it's removed.
+  - A new test runs 20 rounds of four simultaneous claims from two queues.
+- **A late complete ended someone else's turn.** A turn now ends only for the session and turn that claimed it, and `complete_request` only for external agents' threads. The runner removes only its own run's entry.
+- **One missing scene blocked the whole queue.** That thread's turn now fails with the reason, and the threads after it go on.
+- **Direct edits to another scene's file skipped the scene rules.** Writing `scenes/other.json` now counts as changing that scene.
+- **An open approval card froze every thread's tools.** It waited inside the one tool queue all turns share. It now waits outside it, and calls queued behind it don't run after their turn ends.
+- **Codex Stop could be lost or hang during setup.** Stop now works from the first moment, and every setup step races it. The model list has a timeout. Status checks answer from a cache and refresh in the background. The runner also looks for work every 30 s, so an agent that signs in picks up its waiting threads.
+- **Smaller ones:**
+  - Resumed sessions now get the whole thread, so they hear about reverts.
+  - Recovery leaves a live second dev server's turns alone.
+  - Orphaned claim files are cleared.
+  - Thumbnail names are unique per run.
+  - Changes to one thread take turns within the process.
+  - Codex's copy of the studio tools has its own server name, and Claude uses only the studio's MCP server.
+
+The viewer review found nothing critical. These are fixed:
+
+- The panel now keys the thread view on the thread, so a draft or Try again no longer carries over to the next thread opened.
+- Try again takes the reply box's settings and images, and shows only when the server will allow the revert.
+- Turn events live in raw state, are appended rather than re-sorted, and are dropped when their thread is cleared.
+- Opening a thread fetches every turn not yet fetched.
+- The notice fires for fast turns too.
+- An unanswered card says so instead of "Declined".
+- Cancel appears when Stop can't reach the turn.
+- Reference images show only for real reference paths.
+- The agents test waits long enough for real CLIs to answer.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -373,7 +447,8 @@ Two review agents read the M7 diff: one covered the render and the export, the o
 
    Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
 2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
-3. M8, ticket 16: the integrated AI. It starts with a grilling session on its scope.
+3. Try the integrated AI: in the viewer, pick Claude or Codex in the Requests panel, select something, and ask for a change.
+4. Grill Projects (ticket 17), then build the Electron app as M9 (ticket 19).
 
 ## Open questions
 
@@ -397,3 +472,10 @@ Two review agents read the M7 diff: one covered the render and the export, the o
 - Mediabunny's reader ignores the trimmed audio edit list and reports an audio-bearing MP4 about 30 ms longer than it is. ffprobe and AVFoundation read it right. The tests read durations with ffprobe.
 - A scene's sound renders in one piece, so a long scene with heavy generators takes a while before its sound plays in the viewer. The picture plays silent until then.
 - Editing `src/rigs/parts/params.ts` now reloads the viewer instead of hot-swapping, because the audio renderer that the viewer imports reads params through it.
+- Codex with full access applies edits without asking, so the check before editing a rig that another busy scene draws with applies to Claude only. The studio tools' scene rule still applies to both.
+- The Claude Agent SDK package brings a 222 MB Claude Code binary into `node_modules`, which the studio never runs. It points the SDK at the installed `claude` instead. It is a dev dependency, so it stays out of the runtime and the embed.
+- Codex's app-server protocol is marked experimental. The adapter is written against codex-cli 0.156, so check it on upgrades.
+- A thread for an agent that isn't ready waits as pending until the agent is ready, with a note in the thread. Nothing times it out.
+- With the default access, Codex runs commands it considers safe, such as `cat`, without asking, even on files outside the project. Claude asks before reading outside the project.
+- The access rules aren't a sandbox. Rig and generator code an agent writes runs in the studio server and the browser.
+

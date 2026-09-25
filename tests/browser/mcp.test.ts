@@ -224,7 +224,7 @@ describe('an agent session', () => {
   });
 });
 
-describe('the request queue (M6)', () => {
+describe('the request queue (M6, threads from M8)', () => {
   it('works a viewer request end to end: background over [1, 14), only those frames change, and Revert restores it', async () => {
     const original = readFileSync(SCENE_FILE, 'utf8');
     const before = new Map<number, string>();
@@ -245,12 +245,12 @@ describe('the request queue (M6)', () => {
     expect(described).toContain('Prompt: make the ground a deep blue for the first second');
     expect(described).toContain('layer background, frames [1, 14)');
     expect(described).toMatch(/complete_request with id \d+/);
-    expect((await viewerQueue.get(sent.id)).status).toBe('in_progress');
-    json(await call('apply_to_selection', { selection: { ...sent.selection }, patch: { params: { tone: '#1d3a8a' } } }));
-    const done = json<{ status: string; summary: string }>(
+    expect((await viewerQueue.get(sent.id)).status).toBe('working');
+    json(await call('apply_to_selection', { selection: { ...sent.turns[0].ask.selection }, patch: { params: { tone: '#1d3a8a' } } }));
+    const done = json<{ status: string; turns: { status: string; summary: string }[] }>(
       await call('complete_request', { id: sent.id, status: 'done', summary: 'set the ground to #1d3a8a over frames 1 to 14' }),
     );
-    expect(done).toMatchObject({ status: 'done', summary: 'set the ground to #1d3a8a over frames 1 to 14' });
+    expect(done).toMatchObject({ status: 'your_turn', turns: [{ status: 'done', summary: 'set the ground to #1d3a8a over frames 1 to 14' }] });
 
     const after = new Map<number, string>();
     for (const f of [0, 1, 13, 14]) after.set(f, await imageHash(await render(f)));
@@ -259,16 +259,28 @@ describe('the request queue (M6)', () => {
     expect(after.get(1)).not.toBe(before.get(1));
     expect(after.get(13)).not.toBe(before.get(13));
 
-    // Revert puts the scene back byte for byte, and the frames with it.
-    await viewerQueue.revert(sent.id);
+    // A reply comes back to the agent as the next turn, with the thread so far.
+    await viewerQueue.reply(sent.id, { selection: { sceneId: ID, layerId: 'background', from: 1, to: 14 }, frame: 5, prompt: 'a little lighter', references: [] });
+    const again = textOf(await call('next_request'));
+    expect(again).toContain('Earlier in this thread:');
+    expect(again).toContain('1. The user asked: make the ground a deep blue for the first second');
+    expect(again).toContain('Summary: set the ground to #1d3a8a over frames 1 to 14');
+    expect(again).toContain('Now, turn 2:');
+    expect(again).toContain('Prompt: a little lighter');
+    json(await call('apply_to_selection', { selection: { sceneId: ID, layerId: 'background', from: 1, to: 14 }, patch: { params: { tone: '#3355aa' } } }));
+    const second = json<{ status: string; turns: { status: string }[] }>(await call('complete_request', { id: sent.id, status: 'done', summary: 'lighter' }));
+    expect(second).toMatchObject({ status: 'your_turn', turns: [{ status: 'done' }, { status: 'done' }] });
+
+    // Revert to before the first turn puts the scene back byte for byte, and the frames with it.
+    await viewerQueue.revertTo(sent.id, 0);
     expect(readFileSync(SCENE_FILE, 'utf8')).toBe(original);
     expect(await imageHash(await render(1))).toBe(before.get(1));
   });
 
   it('claims a pasted request by id, serves the /next prompt, and reports an empty queue plainly', async () => {
     const pasted = await viewerQueue.create({ selection: { sceneId: ID, layerId: 'pip', from: 0, to: 12 }, frame: 0, prompt: 'wave', references: [] });
-    expect(textOf(await call('get_request', { id: pasted.id }))).toContain('Status: in progress.');
-    expect((await viewerQueue.get(pasted.id)).checkpoint).toBe(true);
+    expect(textOf(await call('get_request', { id: pasted.id }))).toContain('Status: working.');
+    expect((await viewerQueue.get(pasted.id)).turns[0].checkpointAt).toBeTruthy();
     json(await call('complete_request', { id: pasted.id, status: 'failed', summary: 'could not find a wave pose' }));
 
     const queued = await viewerQueue.create({ selection: { sceneId: ID, from: 0, to: 4 }, frame: 0, prompt: 'redo these frames', references: ['references/x.png'] });
@@ -277,7 +289,7 @@ describe('the request queue (M6)', () => {
     expect(message.type === 'text' && message.text).toContain(`request #${queued.id}`);
     expect(message.type === 'text' && message.text).toContain('all layers (a whole-frame-range selection)');
     expect(message.type === 'text' && message.text).toContain('references/x.png');
-    expect(textOf(await call('next_request'))).toMatch(/no pending Frame Studio requests/);
+    expect(textOf(await call('next_request'))).toMatch(/No Frame Studio request is waiting for an external agent/);
     const late = await call('complete_request', { id: 999, status: 'done', summary: 'x' });
     expect(late.isError).toBe(true);
     expect(textOf(late)).toMatch(/no request #999/);

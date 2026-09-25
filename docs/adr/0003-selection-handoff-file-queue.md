@@ -1,6 +1,6 @@
 # 0003: Selections reach the agent through a file queue
 
-Status: accepted, 2026-09-24 (ticket 10)
+Status: accepted, 2026-09-24 (ticket 10). Amended 2026-09-25: a request is now a thread with a checkpoint per turn (ADR 0006).
 
 ## Context
 

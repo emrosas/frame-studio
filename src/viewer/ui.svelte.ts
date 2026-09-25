@@ -2,7 +2,7 @@
 // (app.ts) owns all the logic and writes here; components read it and call
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
-import type { StudioRequest } from '../studio/protocol';
+import type { AgentId, AgentStatus, ApprovalDecision, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { FrameRange, RangeText } from './selection';
 import type { RequestAction } from './studio-client';
 
@@ -59,15 +59,37 @@ export interface ViewerActions {
   clearRange(): void;
   /** Applies a typed range end. Returns an error message and changes nothing when the text is invalid. */
   editRange(end: 'from' | 'to', text: string): string | null;
-  /** Queues a request about the current selection, uploading reference images first, and copies its line for the agent. */
-  sendRequest(prompt: string, files: File[]): Promise<{ ok: true; id: number; copied: boolean } | { ok: false; error: string }>;
-  /** Cancel, requeue, revert or try again. Returns an error message, or null. */
-  requestAction(id: number, action: RequestAction, prompt?: string): Promise<string | null>;
+  /**
+   * Starts a thread about the current selection, uploading reference images
+   * first. For the external agent it also copies a line to paste into it.
+   */
+  sendRequest(
+    prompt: string,
+    files: File[],
+    agent: AgentId,
+    settings?: TurnSettings,
+  ): Promise<{ ok: true; id: number; copied: boolean } | { ok: false; error: string }>;
+  /** Replies in a thread, about the current selection when it is on the thread's scene, else the thread's own. */
+  reply(id: number, prompt: string, files: File[], settings?: TurnSettings): Promise<string | null>;
+  /** Cancel, requeue, settle or stop. Returns an error message, or null. */
+  requestAction(id: number, action: RequestAction): Promise<string | null>;
+  /** Try again: reverts the newest turn and asks again, with an edited prompt, new images and settings. */
+  retry(id: number, prompt: string, files: File[], settings?: TurnSettings): Promise<string | null>;
+  /** "Revert to here" on a turn, or with no turn, the whole thread. Returns an error message, or null. */
+  revert(id: number, turn?: number): Promise<string | null>;
+  /** Answers an approval card. Returns an error message, or null. */
+  respond(id: number, approval: string, decision: ApprovalDecision): Promise<string | null>;
   clearFinished(): Promise<void>;
+  /** Shows a thread in the panel, loading its turns' events; null goes back to the list. */
+  openThread(id: number | null): void;
   /** Brings back a request's selection on the canvas. */
   restoreRequest(id: number): void;
   /** Restores a request's selection and loops its range. */
   viewRequest(id: number): void;
+  /** Shows frame n of a thread's scene. */
+  showFrame(id: number, frame: number): void;
+  /** Asks the studio server again which agents are ready. */
+  refreshAgents(): void;
   dismissToast(): void;
 }
 
@@ -78,11 +100,15 @@ export interface StudioState {
   /** Updated every 30 s so stalled requests show up. */
   now: number;
   error: string | null;
+  /** The external agent and the agents the studio runs, as the picker offers them. */
+  agents: AgentStatus[];
+  /** The thread open in the panel, or null for the list. */
+  open: number | null;
 }
 
 export interface Toast {
   id: number;
-  status: 'done' | 'failed';
+  status: 'done' | 'failed' | 'interrupted';
   text: string;
 }
 
@@ -99,7 +125,12 @@ export class ViewerUi {
   band = $state<{ range: FrameRange; frameCount: number } | null>(null);
   selection = $state<SelectionState>({ sceneId: null, layer: '', range: null, rangeText: null, frameCount: 0, notice: null });
   errors = $state<ErrorBlock[]>([]);
-  studio = $state<StudioState>({ available: false, requests: [], now: Date.now(), error: null });
+  studio = $state<StudioState>({ available: false, requests: [], now: Date.now(), error: null, agents: [], open: null });
+  /**
+   * Each turn's events so far, keyed "id:turn": pushed ones for every thread, and saved ones for threads
+   * opened. Raw, and replaced rather than changed, since a long turn has thousands of events.
+   */
+  turnEvents = $state.raw<Record<string, TurnEvent[]>>({});
   /** A request that just finished, with View to see it. */
   toast = $state<Toast | null>(null);
 }

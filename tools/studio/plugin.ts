@@ -1,30 +1,53 @@
 // The studio server protocol (ADR 0001), served by the Vite dev server for
 // now: HTTP endpoints under /__studio/ for the request queue, the current
 // selection and reference uploads, and a push of the whole queue over Vite's
-// websocket (event "frame-studio:queue") whenever .frame-studio/ changes. The
-// same endpoints move into a standalone Node server when the Electron app
-// arrives. Node only.
+// websocket (event "frame-studio:queue") whenever .frame-studio/ changes. It
+// also runs the agents that live in the studio (ADR 0006): their turns stream
+// over the same websocket (event "frame-studio:turn"), and they reach the
+// studio tools at /__studio/mcp. The same endpoints move into a standalone
+// Node server when the Electron app arrives. Node only.
 
 import { watch, type FSWatcher } from 'node:fs';
-import { mkdir, stat } from 'node:fs/promises';
+import { mkdir, readFile, stat } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import type { Plugin, ViteDevServer } from 'vite';
 import {
   checkNewRequest,
+  checkRetry,
   MAX_REFERENCE_BYTES,
   QUEUE_EVENT,
   REFERENCE_TYPES,
+  type AgentStatus,
+  type ApprovalDecision,
   type CurrentSelection,
   type NewRequest,
+  type Reply,
+  type TurnSettings,
 } from '../../src/studio/protocol.ts';
+import { createSerial } from '../mcp/tools.ts';
+import type { Workspace } from '../mcp/workspace.ts';
 import { entryPath, loadModules, ROOT, sceneLibrary, writeFileAtomic } from '../scene-files.ts';
+import { STUDIO_INSTRUCTIONS } from './agents/instructions.ts';
+import { createProviders } from './agents/providers.ts';
+import { AgentRunner, readTurnEvents } from './agents/runner.ts';
+import { McpEndpoint } from './mcp-http.ts';
+import { REFERENCES_DIR, STUDIO_DIR, type StudioInlineConfig } from './paths.ts';
 import { StudioQueue } from './queue.ts';
 
-/** The handoff folder. FRAME_STUDIO_DIR moves it, so tests never touch a real queue. */
-export const STUDIO_DIR = process.env.FRAME_STUDIO_DIR ?? join(ROOT, '.frame-studio');
-export const REFERENCES_DIR = join(ROOT, 'references');
-export { QUEUE_EVENT };
+/** The external agent, as the agent picker shows it next to the studio's own. */
+const EXTERNAL: AgentStatus = {
+  id: 'external',
+  label: 'External agent',
+  ready: true,
+  detail: 'Any agent with the frame-studio MCP server, such as Claude Code in a terminal. Take it with /frame-studio:next.',
+  models: [],
+  efforts: [],
+};
+
+const FRAME_FILE = /^frame-[a-z0-9]+-\d{3,}\.png$/;
+
+export { QUEUE_EVENT, REFERENCES_DIR, STUDIO_DIR };
 
 const MAX_JSON_BYTES = 256 * 1024;
 
@@ -45,6 +68,19 @@ async function body(req: IncomingMessage, limit: number): Promise<Buffer> {
     chunks.push(chunk as Buffer);
   }
   return Buffer.concat(chunks);
+}
+
+/**
+ * Refuses anything not from this computer, even when Vite listens on the
+ * network (--host): the studio server can start agents, and a full-access
+ * agent runs commands. Processes on this computer are trusted, as they could
+ * write the queue files directly anyway; the standalone server of M9 adds
+ * pairing (ADR 0001).
+ */
+function checkLocal(req: IncomingMessage): void {
+  const remote = req.socket.remoteAddress ?? '';
+  const loopback = remote === '::1' || remote.startsWith('127.') || remote.startsWith('::ffff:127.');
+  if (!loopback) throw new HttpError(403, 'The studio server only answers this computer.');
 }
 
 /**
@@ -126,6 +162,52 @@ export function studioServer(): Plugin {
         return entryPath(entry);
       });
 
+      // Agents run only in the dev server the viewer uses, not in the Vite servers tools start (startVite).
+      const agents = (server.config.inlineConfig as StudioInlineConfig).frameStudio?.agents !== false;
+
+      // The studio tools for agents in the studio, over one workspace (its own Vite server and
+      // headless page), started when an agent first calls a tool.
+      let workspace: Promise<Workspace> | null = null;
+      // Loaded on first use, so the dev server doesn't load Playwright until an agent needs pixels.
+      const ws = () =>
+        (workspace ??= import('../mcp/workspace.ts')
+          .then(({ Workspace }) => Workspace.open())
+          .catch((err) => {
+            workspace = null;
+            throw err;
+          }));
+      const endpoint = new McpEndpoint(ws, createSerial());
+      const runner = new AgentRunner({
+        queue,
+        providers: agents ? createProviders(STUDIO_DIR) : [],
+        root: ROOT,
+        endpoint,
+        mcpUrl: () => {
+          const base = server.resolvedUrls?.local[0];
+          return base ? `${base}__studio/mcp` : null;
+        },
+        push: (event, data) => server.ws.send({ type: 'custom', event, data }),
+        instructions: async () => STUDIO_INSTRUCTIONS,
+        sceneInfo: async (sceneId) => {
+          const modules = await loadModules(server);
+          const entry = modules.library.findEntry(await sceneLibrary(modules), sceneId);
+          if (!entry) return {};
+          const scene = entry.scene;
+          if (!scene) return { file: entry.file };
+          const rigs = [...new Set(modules.engine.rigIdsUsed(scene).map((id) => modules.engine.baseRigId(id)))];
+          return { file: entry.file, timecode: (f: number) => modules.engine.formatTimecode(f, scene.fps), rigs };
+        },
+      });
+      if (agents) {
+        server.httpServer?.once('listening', () => {
+          runner.start().catch((err) => console.error('[frame-studio] agent runner:', err));
+        });
+      }
+      server.httpServer?.once('close', () => {
+        void runner.dispose();
+        void workspace?.then((w) => w.close()).catch(() => {});
+      });
+
       // Push the queue when .frame-studio/ changes. Watch the folders, not files, and wait
       // out the several steps an atomic write takes (T3 Code does the same).
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -133,6 +215,7 @@ export function studioServer(): Plugin {
         if (timer) clearTimeout(timer);
         timer = setTimeout(async () => {
           timer = null;
+          runner.kick();
           try {
             server.ws.send({ type: 'custom', event: QUEUE_EVENT, data: { requests: await queue.list() } });
           } catch {
@@ -153,8 +236,14 @@ export function studioServer(): Plugin {
         const url = new URL(req.url ?? '/', 'http://studio');
         const parts = url.pathname.split('/').filter(Boolean);
         try {
+          checkLocal(req);
           checkOrigin(req);
+          // The studio tools for agents in the studio; the endpoint checks the turn's token and reads the body itself.
+          if (url.pathname === '/mcp') return await endpoint.handle(req, res);
           if (req.method === 'GET' && url.pathname === '/queue') return send(res, 200, { requests: await queue.list() });
+          if (req.method === 'GET' && url.pathname === '/agents') {
+            return send(res, 200, { agents: [EXTERNAL, ...(await runner.statuses(url.searchParams.has('fresh')))] });
+          }
           if (req.method === 'GET' && url.pathname === '/selection') return send(res, 200, { selection: await queue.readSelection() });
           if (req.method === 'PUT' && url.pathname === '/selection') {
             const selection = await json<Omit<CurrentSelection, 'updatedAt'> | null>(req);
@@ -173,19 +262,66 @@ export function studioServer(): Plugin {
             return send(res, 201, { request: await queue.create(input) });
           }
           if (req.method === 'POST' && url.pathname === '/requests/clear') return send(res, 200, { removed: await queue.clearFinished() });
-          if (req.method === 'POST' && parts[0] === 'requests' && parts.length === 3) {
-            const id = Number(parts[1]);
-            if (!Number.isInteger(id)) throw new HttpError(400, `Bad request id ${JSON.stringify(parts[1])}.`);
-            const action = parts[2];
-            if (action === 'cancel') return send(res, 200, { request: await queue.cancel(id) });
-            if (action === 'requeue') return send(res, 200, { request: await queue.requeue(id) });
-            if (action === 'revert') return send(res, 200, { request: await queue.revert(id) });
-            if (action === 'retry') {
-              const input = await json<{ prompt?: unknown } | null>(req);
-              const prompt = input?.prompt;
-              if (prompt !== undefined && (typeof prompt !== 'string' || prompt.length > 8000)) throw new HttpError(400, 'prompt must be text');
-              return send(res, 201, { request: await queue.retry(id, prompt) });
+          const id = parts[0] === 'requests' && parts.length >= 3 ? Number(parts[1]) : NaN;
+          if (parts[0] === 'requests' && parts.length >= 3 && !Number.isInteger(id)) throw new HttpError(400, `Bad request id ${JSON.stringify(parts[1])}.`);
+          // A turn's saved events, and the frames its agent rendered.
+          if (req.method === 'GET' && Number.isInteger(id) && parts[2] === 'turns' && parts.length >= 5) {
+            const turn = Number(parts[3]);
+            if (!Number.isInteger(turn) || turn < 0) throw new HttpError(400, `Bad turn ${JSON.stringify(parts[3])}.`);
+            const dir = join(queue.threadDir(id));
+            if (parts[4] === 'events' && parts.length === 5) return send(res, 200, { events: await readTurnEvents(join(dir, `turn-${turn}.jsonl`)) });
+            if (parts[4] === 'frames' && parts.length === 6 && FRAME_FILE.test(parts[5])) {
+              const data = await readFile(join(dir, `turn-${turn}`, parts[5])).catch(() => null);
+              if (!data) throw new HttpError(404, 'No such frame.');
+              res.statusCode = 200;
+              res.setHeader('Content-Type', 'image/png');
+              res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+              return res.end(data);
             }
+          }
+          if (req.method === 'POST' && Number.isInteger(id) && parts.length === 3) {
+            const action = parts[2];
+            if (action === 'reply') {
+              const input = await json<Reply>(req);
+              const problem = checkNewRequest(input, { reply: true });
+              if (problem) throw new HttpError(400, problem);
+              return send(res, 201, { request: await queue.reply(id, input) });
+            }
+            if (action === 'settle') return send(res, 200, { request: await queue.settle(id) });
+            if (action === 'stop') {
+              if (!(await runner.stop(id))) throw new HttpError(409, `No agent in the studio is working on request #${id}.`);
+              return send(res, 200, { ok: true });
+            }
+            if (action === 'cancel') {
+              // A studio agent working the turn is stopped first, so it can't write after the cancel.
+              await runner.stop(id);
+              return send(res, 200, { request: await queue.cancel(id) });
+            }
+            if (action === 'requeue') return send(res, 200, { request: await queue.requeue(id) });
+            if (action === 'revert') {
+              const input = await json<{ turn?: unknown } | null>(req);
+              const turn = input?.turn;
+              if (turn !== undefined && !(typeof turn === 'number' && Number.isInteger(turn) && turn >= 0)) throw new HttpError(400, 'turn must be a turn index');
+              return send(res, 200, { request: turn === undefined ? await queue.revertAll(id) : await queue.revertTo(id, turn) });
+            }
+            if (action === 'retry') {
+              const input = await json<{ prompt?: string; references?: string[]; settings?: TurnSettings } | null>(req);
+              const problem = checkRetry(input);
+              if (problem) throw new HttpError(400, problem);
+              return send(res, 201, {
+                request: await queue.retry(id, input?.prompt, {
+                  ...(input?.references ? { references: input.references } : {}),
+                  ...(input?.settings ? { settings: input.settings } : {}),
+                }),
+              });
+            }
+          }
+          if (req.method === 'POST' && Number.isInteger(id) && parts[2] === 'approvals' && parts.length === 4) {
+            const input = await json<{ decision?: unknown } | null>(req);
+            const decision = input?.decision;
+            if (decision !== 'accept' && decision !== 'decline') throw new HttpError(400, 'decision must be "accept" or "decline"');
+            if (!runner.respond(id, parts[3], decision as ApprovalDecision)) throw new HttpError(409, 'That approval is no longer open.');
+            return send(res, 200, { ok: true });
           }
           if (req.method === 'POST' && url.pathname === '/references') {
             const name = url.searchParams.get('name') ?? 'reference';

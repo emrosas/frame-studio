@@ -16,4 +16,4 @@ The studio is meant to be driven by an AI. Today that AI is a coding agent the u
 
 - The MCP tool implementations (`tools/mcp/workspace.ts`) have to run where the integrated AI runs. That's the Electron main process or the standalone studio server (ADR 0001), and the backend for the web app.
 - Streaming progress into the viewer, left out of the external-agent handoff, comes naturally with the integrated AI.
-- Ticket 16 in `.scratch/frame-studio/` specifies the milestone.
+- Ticket 16 in `.scratch/frame-studio/` specified the milestone, and ADR 0006 records what it settled.

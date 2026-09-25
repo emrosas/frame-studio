@@ -152,6 +152,7 @@ const params: ParamSchema = {
   pawSize: num(0.2, 0, 0.5, 'Paw width, as a fraction of width. 0 hides the paws.'),
   wavePaw: choice('right', ['left', 'right'], 'Which paw waves in the wave pose, as seen on screen.'),
   waveSpeed: num(1.5, 0, 5, 'Waves per second in the wave pose. 0 holds the paw still.'),
+  hidePaw: choice('none', ['none', 'left', 'right', 'both'], 'Leaves out one paw, as seen on screen, or both, for example while a bearArm layer draws that arm reaching somewhere. The other paw keeps its pose.'),
 
   // Face animation
   expression: choice('neutral', BEAR_EXPRESSIONS, 'Expression: neutral, happy, sad or surprised. Moves the brows, mouth and eyes from their face params, so per-bear tuning still shows.'),

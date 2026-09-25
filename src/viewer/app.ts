@@ -31,7 +31,17 @@ import {
   type SceneShape,
   type SelectionParams,
 } from './selection';
-import { clipboardLine, type CurrentSelection, type RequestSelection, type StudioRequest } from '../studio/protocol';
+import {
+  clipboardLine,
+  currentSelection,
+  currentTurn,
+  type AgentId,
+  type CurrentSelection,
+  type RequestSelection,
+  type StudioRequest,
+  type TurnEvent,
+  type TurnSettings,
+} from '../studio/protocol';
 import { StudioClient } from './studio-client';
 import type { SceneOption, ViewerActions, ViewerUi } from './ui.svelte';
 import { parseFrameParam, RELOAD_KEY, reloadRecord, UrlSync, type UrlPosition } from './url';
@@ -201,6 +211,8 @@ export class App {
   private selectionPoint: Point | null = null;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
   private requests: StudioRequest[] = [];
+  /** Turns whose saved events were fetched, "id:turn". */
+  private readonly loadedTurns = new Set<string>();
 
   /**
    * `root` holds the mounted Viewer.svelte, whose .stage and .stage-frame the
@@ -254,20 +266,34 @@ export class App {
         this.flushNow();
         return null;
       },
-      sendRequest: (prompt, files) => this.sendRequest(prompt, files),
-      requestAction: async (id, action, prompt) => {
-        try {
-          await this.studio.act(id, action, prompt);
-          return null;
-        } catch (err) {
-          return errorText(err).message;
-        }
-      },
+      sendRequest: (prompt, files, agent, settings) => this.sendRequest(prompt, files, agent, settings),
+      reply: (id, prompt, files, settings) => this.reply(id, prompt, files, settings),
+      requestAction: (id, action) => attempt(() => this.studio.act(id, action)),
+      retry: (id, prompt, files, settings) =>
+        attempt(async () => {
+          const references: string[] = [];
+          for (const file of files) references.push(await this.studio.uploadReference(file));
+          const thread = this.requests.find((r) => r.id === id);
+          await this.studio.retry(id, {
+            prompt,
+            ...(references.length > 0 ? { references } : {}),
+            ...(thread && thread.agent !== 'external' && settings ? { settings } : {}),
+          });
+        }),
+      revert: (id, turn) => attempt(() => this.studio.revert(id, turn)),
+      respond: (id, approval, decision) => attempt(() => this.studio.respond(id, approval, decision)),
       clearFinished: async () => {
         await this.studio.clearFinished().catch(() => {});
       },
+      openThread: (id) => this.openThread(id),
       restoreRequest: (id) => this.restoreRequest(id, false),
       viewRequest: (id) => this.restoreRequest(id, true),
+      showFrame: (id, frame) => {
+        this.restoreRequest(id, false);
+        this.pauseInternal();
+        this.seekInternal(frame, true);
+      },
+      refreshAgents: () => this.refreshAgents(true),
       dismissToast: () => (this.ui.toast = null),
     };
     this.view = new CanvasView(
@@ -814,12 +840,25 @@ export class App {
     const apply = (requests: StudioRequest[]) => {
       for (const r of requests) {
         const before = this.requests.find((p) => p.id === r.id);
-        if (before && before.status !== r.status && (r.status === 'done' || r.status === 'failed')) {
-          this.ui.toast = { id: r.id, status: r.status, text: r.summary ?? '' };
+        const turn = currentTurn(r);
+        const ended = turn.status === 'done' || turn.status === 'failed' || turn.status === 'interrupted';
+        // A turn ended: say so, unless its thread is open in the panel, where the turn shows it. A push can
+        // fold the claim and the end together, so any change to "your turn" with an ended turn counts.
+        // Stopped turns are the user's own doing, so they need no notice.
+        const changed = before && (before.status !== r.status || before.turns.length !== r.turns.length);
+        if (changed && r.status === 'your_turn' && ended && this.ui.studio.open !== r.id) {
+          this.ui.toast = { id: r.id, status: turn.status as 'done' | 'failed' | 'interrupted', text: turn.summary ?? '' };
         }
       }
       this.requests = requests;
       this.ui.studio.requests = requests;
+      // Drop the events of threads that left the queue (cleared into the archive).
+      const ids = new Set(requests.map((r) => `${r.id}:`));
+      const kept = Object.entries(this.ui.turnEvents).filter(([key]) => ids.has(key.slice(0, key.indexOf(':') + 1)));
+      if (kept.length !== Object.keys(this.ui.turnEvents).length) this.ui.turnEvents = Object.fromEntries(kept);
+      for (const key of [...this.loadedTurns]) if (!ids.has(key.slice(0, key.indexOf(':') + 1))) this.loadedTurns.delete(key);
+      // A thread that got a new turn while open needs that turn's events.
+      if (this.ui.studio.open !== null) void this.loadEvents(this.ui.studio.open);
     };
     // A push is always newer than the first fetch, so once one arrives the fetch result is dropped.
     let pushed = false;
@@ -833,11 +872,72 @@ export class App {
       pushed = true;
       apply(requests);
     });
-    // Stalled requests are judged against the clock, so let the panel re-check now and then.
+    this.studio.onTurnEvent(({ id, turn, event }) => this.addEvents(id, turn, [event]));
+    this.refreshAgents(false);
+    // Stalled requests are judged against the clock, and agents sign in and out, so check now and then.
     setInterval(() => (this.ui.studio.now = Date.now()), 30_000);
+    setInterval(() => this.refreshAgents(false), 60_000);
   }
 
-  private async sendRequest(prompt: string, files: File[]): Promise<{ ok: true; id: number; copied: boolean } | { ok: false; error: string }> {
+  private refreshAgents(fresh: boolean): void {
+    this.studio.agents(fresh).then(
+      (agents) => (this.ui.studio.agents = agents),
+      () => {},
+    );
+  }
+
+  /** Merges events into a turn's list, in order, without repeats (a push can race the first fetch). */
+  private addEvents(id: number, turn: number, events: TurnEvent[]): void {
+    const key = `${id}:${turn}`;
+    const have = this.ui.turnEvents[key] ?? [];
+    const last = have.length > 0 ? have[have.length - 1].seq : 0;
+    let next: TurnEvent[];
+    if (events.every((e) => e.seq > last)) {
+      // The usual case, a push of what comes next: append.
+      if (events.length === 0 && this.ui.turnEvents[key]) return;
+      next = [...have, ...events];
+    } else {
+      const seen = new Set(have.map((e) => e.seq));
+      const fresh = events.filter((e) => !seen.has(e.seq));
+      if (fresh.length === 0 && this.ui.turnEvents[key]) return;
+      next = [...have, ...fresh].sort((a, b) => a.seq - b.seq);
+    }
+    this.ui.turnEvents = { ...this.ui.turnEvents, [key]: next };
+  }
+
+  private openThread(id: number | null): void {
+    this.ui.studio.open = id;
+    if (id !== null) {
+      void this.loadEvents(id);
+      this.restoreRequest(id, false);
+    }
+  }
+
+  /**
+   * Loads the saved events of a thread's turns that haven't been fetched yet, and always its newest
+   * turn. Pushed events alone don't count as loaded: they may start mid-turn.
+   */
+  private async loadEvents(id: number): Promise<void> {
+    const thread = this.requests.find((r) => r.id === id);
+    if (!thread || thread.agent === 'external') return;
+    for (let k = 0; k < thread.turns.length; k++) {
+      const key = `${id}:${k}`;
+      if (this.loadedTurns.has(key) && k < thread.turns.length - 1) continue;
+      try {
+        this.addEvents(id, k, await this.studio.turnEvents(id, k));
+        this.loadedTurns.add(key);
+      } catch {
+        // Shown as a turn with no transcript; the next queue push tries again.
+      }
+    }
+  }
+
+  private async sendRequest(
+    prompt: string,
+    files: File[],
+    agent: AgentId,
+    settings?: TurnSettings,
+  ): Promise<{ ok: true; id: number; copied: boolean } | { ok: false; error: string }> {
     const selection = this.requestSelection();
     if (!selection) return { ok: false, error: 'Open a valid scene first.' };
     if (!prompt.trim()) return { ok: false, error: 'Write what you want changed.' };
@@ -850,13 +950,17 @@ export class App {
         ...(this.selectionPoint && this.layerId !== null ? { point: this.selectionPoint } : {}),
         prompt,
         references,
+        agent,
+        ...(agent !== 'external' && settings ? { settings } : {}),
       });
       let copied = false;
-      try {
-        await navigator.clipboard.writeText(clipboardLine(request));
-        copied = true;
-      } catch {
-        // The clipboard can refuse, e.g. without focus. The request is queued either way.
+      if (agent === 'external') {
+        try {
+          await navigator.clipboard.writeText(clipboardLine(request));
+          copied = true;
+        } catch {
+          // The clipboard can refuse, e.g. without focus. The request is queued either way.
+        }
       }
       return { ok: true, id: request.id, copied };
     } catch (err) {
@@ -864,11 +968,39 @@ export class App {
     }
   }
 
+  /**
+   * Replies in a thread. It is about the current selection when that is on the
+   * thread's scene; otherwise it keeps the thread's own selection.
+   */
+  private async reply(id: number, prompt: string, files: File[], settings?: TurnSettings): Promise<string | null> {
+    const thread = this.requests.find((r) => r.id === id);
+    if (!thread) return `There is no request #${id}.`;
+    if (!prompt.trim()) return 'Write your reply.';
+    const here = this.requestSelection();
+    const onScene = here !== null && here.sceneId === thread.sceneId && (this.layerId !== null || this.range !== null);
+    const last = currentTurn(thread).ask;
+    try {
+      const references: string[] = [];
+      for (const file of files) references.push(await this.studio.uploadReference(file));
+      await this.studio.reply(id, {
+        selection: onScene ? here : last.selection,
+        frame: onScene ? this.clock.frame : last.frame,
+        ...(onScene && this.selectionPoint && this.layerId !== null ? { point: this.selectionPoint } : {}),
+        prompt,
+        references,
+        ...(thread.agent !== 'external' && settings ? { settings } : {}),
+      });
+      return null;
+    } catch (err) {
+      return errorText(err).message;
+    }
+  }
+
   /** Brings back a request's scene, layer, part, range and frame. With play, loops its range, for View. */
   private restoreRequest(id: number, play: boolean): void {
     const request = this.requests.find((r) => r.id === id);
     if (!request) return;
-    const sel = request.selection;
+    const sel = currentSelection(request);
     const entry = findEntry(this.library, sel.sceneId);
     if (!entry) {
       this.notice = `Scene "${sel.sceneId}" is no longer in scenes/.`;
@@ -883,7 +1015,7 @@ export class App {
     this.partId = this.layerId !== null && sel.partId !== undefined && parts?.includes(sel.partId) ? sel.partId : null;
     this.selectionPoint = null;
     this.range = rangeError(sel.from, sel.to, this.total) === null ? { from: sel.from, to: sel.to } : null;
-    this.clock.seek(play && this.range ? this.range.from : request.frame);
+    this.clock.seek(play && this.range ? this.range.from : currentTurn(request).ask.frame);
     this.selectionChanged();
     if (missing) this.notice = `Layer "${sel.layerId}" is no longer in the scene.`;
     this.canvasDirty = true;
@@ -1258,5 +1390,15 @@ function readMuted(): boolean {
     return localStorage.getItem(MUTED_KEY) === '1';
   } catch {
     return false;
+  }
+}
+
+/** Runs a studio call, turning a failure into its message for the panel. */
+async function attempt(call: () => Promise<unknown>): Promise<string | null> {
+  try {
+    await call();
+    return null;
+  } catch (err) {
+    return errorText(err).message;
   }
 }

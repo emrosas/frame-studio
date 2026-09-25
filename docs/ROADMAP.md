@@ -93,17 +93,46 @@ Acceptance:
 - The same scene renders identical audio twice.
 - The HTML embed plays audio after a user gesture (browser autoplay rules) and stays in sync after seeking.
 
-## M8: Integrated AI (polish, last)
+## M8: Integrated AI
 
-- An AI inside the studio that connects to Claude, ChatGPT or other models, through the user's subscription or their own API key. The studio provides the interface, not the model (ADR 0004).
-- It reads the same request files as the external agent (ADR 0003), and its tool loop calls the operations the MCP server offers.
-- Reference: T3 Code (github.com/pingdotgg/t3code). It spawns the user's installed CLIs and SDKs and leaves sign-in to them.
+An AI inside the studio that works on your selections like a chat in T3 Code (ADR 0004, ADR 0006).
 
-Acceptance: settled in ticket 16 before the milestone starts.
+- Requests become threads: pending, working, your turn, settled. There's a checkpoint per turn with "Revert to here", and only you settle a thread.
+- A provider layer with two adapters that launch the user's own signed-in CLI:
+  - Claude, through the Agent SDK pointed at the user's installed `claude`
+  - Codex, through `codex app-server`
+
+  The studio has no login screen and handles no tokens. Both adapters get the studio's operations as tools.
+- Per-thread agent, model, effort and access mode. By default the agent uses the studio tools and writes in `scenes/`, `src/rigs/` and `src/audio/`. Anything else shows an approval card, and full access is a switch.
+- One working thread per scene. Threads on different scenes run in parallel.
+- A left panel with the thread list. A thread opens in place, with streamed text, one line per step, frame thumbnails, approval cards, and a reply box showing the selection it applies to.
+- Stop, interrupted turns with Retry, and sessions that resume. Transcripts live in `.frame-studio/`.
+- The external agent works threads through the same MCP tools.
+- A scripted fake provider for the automated tests.
+
+Acceptance:
+1. Select a layer and a range, pick Claude, and send. The thread streams text, one line per step, and the frames the agent rendered. The edit lands only inside the range. A reply such as "a bit smaller" continues the same session. "Revert to here" on the first turn restores the scene exactly. Settle closes the thread.
+2. The same loop works with Codex.
+3. With the default access, the agent writes a new rig variant in `src/rigs/` without asking. Editing a file anywhere else, or running a shell command, shows an approval card, and declining blocks it. Full access removes the prompts.
+4. Two threads on different scenes work at the same time. A second thread on the same scene waits until the first thread's turn ends.
+5. Stop keeps the edits so far and hands the thread back. Restarting the dev server mid-turn shows Interrupted with Retry, and the next reply resumes the provider's session.
+6. A thread sent to "External agent" is taken by `/frame-studio:next`. Your reply puts it back in the queue with the full history, and `complete_request` ends the turn.
+7. A missing or signed-out CLI shows as unavailable in the agent picker, with the command to run. Nothing in the studio asks for credentials.
+
+## M9: Electron app
+
+The desktop shell from ADR 0001. Grill Projects (ticket 17) first, since it decides how scenes sit on disk.
+
+- Move the studio server out of Vite into a standalone Node server. Electron starts it as a child process and passes the page its address and a pairing token, as T3 Code does.
+- A file-backed scene store in place of `import.meta.glob` and Vite's hot reload.
+- Main and preload scripts that carry only native features and the server's address. The viewer stays web-only code.
+- The installed app leaves out the Claude Agent SDK's bundled Claude binary (about 220 MB), since the studio runs the user's installed `claude`. T3 Code excludes it the same way.
+
+Acceptance: settled in ticket 19 before the milestone starts.
 
 ## Later
 
-- Desktop shell (Electron) around the viewer.
+- Projects: many scenes per project, stitched into a longer video, which covers multi-shot story files (ticket 17).
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
-- Camera layer, scene transitions, multi-shot story files.
+- Camera layer and scene transitions.
 - Hosted service with prompt-crafting and style-steering UI.
