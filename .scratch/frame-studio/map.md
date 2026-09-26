@@ -4,7 +4,7 @@ Type: map
 
 ## Destination
 
-Every milestone in `docs/ROADMAP.md`, M1 through M9, passes its acceptance criteria, and `docs/PROGRESS.md` records it.
+Every milestone in `docs/ROADMAP.md`, M1 through M10, passes its acceptance criteria, and `docs/PROGRESS.md` records it.
 
 ## Notes
 
@@ -38,6 +38,7 @@ Every milestone in `docs/ROADMAP.md`, M1 through M9, passes its acceptance crite
 - [M7: Procedural audio](issues/12-m7-procedural-audio.md) M7 is done. Generators build Web Audio graphs for cues. The whole scene renders once offline, and the viewer, the embed and exports all play or encode that buffer (ADR 0005). MP4 audio is AAC with its priming signalled by an edit list and a patched-in `roll` group, or Opus. The embed starts muted and plays after a click.
 - [What does the integrated AI need to do?](issues/16-m8-integrated-ai.md) Requests become threads like a T3 Code chat: pending, working, your turn, settled. Each turn has a checkpoint and only you settle. It runs locally in the studio server with two providers that launch the user's own signed-in CLI, Claude through the Agent SDK and Codex through `codex app-server`, with no login screen. By default it has studio tools and writes in `scenes/`, `src/rigs/` and `src/audio/`, with approvals for anything else. One working thread per scene, and a left thread panel (ADR 0006). Electron becomes M9, after a Projects grill (ticket 17).
 - [M8: Integrated AI](issues/18-m8-integrated-ai-build.md) M8 is done. Requests are threads with per-turn checkpoints and Settle. The studio runs Claude (the Agent SDK with in-process studio tools) and Codex (`codex app-server`) through the user's own signed-in CLIs, streaming each turn into a left panel with approval cards. One working thread per scene holds across processes, and the studio server answers only this computer.
+- [Projects: many scenes, one longer video](issues/17-projects.md) A project is a folder with `project.json` (fps, size, main, cast), its scenes and its own rigs, and outside it scenes have qualified ids. Scenes place scenes as scene layers with a start, a trim, placement and animated masks, and a shot renders the same inside and alone. A cast keeps characters consistent. Project edits wait for the project's other threads. Projects become M9, and Electron M10 (ADR 0007).
 
 ## Not yet specified
 
@@ -49,4 +50,4 @@ Every milestone in `docs/ROADMAP.md`, M1 through M9, passes its acceptance crite
 
 ## Out of scope
 
-- The roadmap's "Later" list: an Electron shell, a timeline editor and rig-controls panel, a camera layer with transitions and multi-shot files, and a hosted service. The destination stops at M9, the Electron app, which the user scheduled on 2026-09-25 after M8 and the Projects grill.
+- The roadmap's "Later" list: an Electron shell, a timeline editor and rig-controls panel, a camera layer with transitions and multi-shot files, and a hosted service. The destination stops at M10, the Electron app. On 2026-09-25 the user put Projects (M9) before it.

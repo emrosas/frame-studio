@@ -448,7 +448,8 @@ The viewer review found nothing critical. These are fixed:
    Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
 2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
 3. Try the integrated AI: in the viewer, pick Claude or Codex in the Requests panel, select something, and ask for a change.
-4. Grill Projects (ticket 17), then build the Electron app as M9 (ticket 19).
+4. M9, ticket 20: Projects. Ticket 17 settled it on 2026-09-25 (ADR 0007), and `docs/ROADMAP.md` has its acceptance criteria.
+5. M10, ticket 19: the Electron app, reading the project layout.
 
 ## Open questions
 

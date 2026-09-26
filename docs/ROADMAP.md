@@ -119,9 +119,37 @@ Acceptance:
 6. A thread sent to "External agent" is taken by `/frame-studio:next`. Your reply puts it back in the queue with the full history, and `complete_request` ends the turn.
 7. A missing or signed-out CLI shows as unavailable in the agent picker, with the command to run. Nothing in the studio asks for credentials.
 
-## M9: Electron app
+## M9: Projects
 
-The desktop shell from ADR 0001. Grill Projects (ticket 17) first, since it decides how scenes sit on disk.
+Many scenes in one project, stitched into one longer video (ADR 0007).
+
+- `projects/<id>/` folders with `project.json` (name, fps, size, main, cast), scenes, and optional project rigs. `scenes/` stays as loose scenes.
+- Qualified scene ids (`<project>/<scene>`) in URLs, threads, the queue and MCP.
+- Scene layers: a scene placing another scene of its project, with a start, a trim, and trackable position, scale, rotation and opacity. There are no cycles, and nesting has a depth limit.
+- Masks on any layer, animated like any rig, for iris and wipe transitions.
+- A cast of named characters that layers use and can override.
+- Audio through scene layers, shifted and trimmed, with trackable volume and mute. The main scene can add cues across cuts.
+- The viewer:
+  - a project and scene picker
+  - shot bands on the scrubber
+  - Open shot at the matching frame, and back
+- Agents: project rigs are writable by default. A `project.json` edit waits until no other thread in the project is working. Turns also checkpoint `project.json`.
+- MCP: `list_projects`, `get_project` and `update_project`, and qualified ids in every tool.
+
+Acceptance:
+1. A project in `projects/<id>/` shows in the viewer with qualified ids in the URL. Loose scenes and every existing test are unchanged.
+2. The sample `projects/bears-story/` main scene places at least three shots, with a cut, a crossfade and a mask transition. Where a shot shows in full, the main scene's frame is pixel-identical to the shot rendered alone at the matching frame.
+3. The shots use `bruno` and `pip` from the cast. A cast change changes every shot, and a layer's own param still wins.
+4. A rig in `projects/bears-story/rigs/` is offered only to that project's scenes, and bundles into its embed.
+5. Shots' audio comes along, shifted and trimmed. A music bed on the main scene ducks under a shot. In the MP4, blips at the cuts land within one frame.
+6. The main scene exports to MP4, GIF and HTML. The HTML carries the nested shots, the project rigs and the cast, and makes no requests.
+7. Threads on two shots work at once, and a thread on the main scene edits the cut. A cast edit waits while a shot's thread works. Revert to here on a turn that changed the cast restores both files.
+8. `list_projects`, `get_project` and `update_project` work, every tool takes qualified ids, and `list_rigs` marks project rigs.
+9. Shot bands show on the main scene's scrubber. Double-clicking a shot opens it at the matching frame, and the link returns.
+
+## M10: Electron app
+
+The desktop shell from ADR 0001, reading the project layout M9 settles (ADR 0007).
 
 - Move the studio server out of Vite into a standalone Node server. Electron starts it as a child process and passes the page its address and a pairing token, as T3 Code does.
 - A file-backed scene store in place of `import.meta.glob` and Vite's hot reload.
@@ -132,7 +160,7 @@ Acceptance: settled in ticket 19 before the milestone starts.
 
 ## Later
 
-- Projects: many scenes per project, stitched into a longer video, which covers multi-shot story files (ticket 17).
+- Retiming shots (speed, freeze, reverse), selecting inside a shot from its parent, and a library of transitions (ADR 0007, out of scope for M9).
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
 - Camera layer and scene transitions.
 - Hosted service with prompt-crafting and style-steering UI.

@@ -1,7 +1,7 @@
 # Projects: many scenes, one longer video
 
 Type: grilling
-Status: needs-triage
+Status: resolved
 Blocked by: 18
 
 ## Question
@@ -16,3 +16,18 @@ It overlaps the roadmap's "multi-shot story files" and "scene transitions" in La
 - exporting a project: one MP4, GIF or embed from many scenes
 - how the viewer, the thread list and the MCP tools address a scene inside a project
 - what "consistent across shots" means for characters shared between scenes
+
+## Answer
+
+Settled with the user on 2026-09-25 and recorded in `docs/adr/0007-projects-and-scene-layers.md`. Ticket 20 builds it as M9, and Electron moves to M10 (ticket 19).
+
+- **A project is a folder**, `projects/<id>/`, with `project.json` (name, fps, size, main, cast), its scenes, and optional `rigs/`. `scenes/` stays as loose scenes.
+- **Ids:** qualified ids (`<project>/<scene>`) outside a project, and bare ids inside.
+- **Stitching.** Scenes place scenes as **scene layers**, with a start, a trim, and trackable placement and opacity. Any layer can take an animated **mask**, which covers iris and wipe transitions. The main scene is an ordinary scene that places the shots. A shot renders identically inside and alone.
+- **One fps and size per project.** A **cast** of named characters keeps shots consistent, and layers can override it.
+- **Rigs:** the global `src/rigs/` library, plus each project's own rigs.
+- **Audio:** shots bring their cues, shifted and trimmed, with trackable volume. The main scene can add a music bed.
+- **Export and the viewer.** Exporting the main scene exports the whole video. The viewer shows shot bands and opens a shot at the matching frame.
+- **Agents.** Project rigs are writable by default. A `project.json` edit waits until no other thread in the project works, and is covered by Revert to here.
+- **MCP** gains `list_projects`, `get_project` and `update_project`, and takes qualified ids.
+

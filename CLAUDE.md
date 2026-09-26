@@ -66,7 +66,9 @@ src/
               loop, window.studio and postMessage API. Runtime rules apply.
   studio/     The viewer-to-agent handoff protocol (ADR 0003): request and
               selection shapes and shared rules. Import-free, so Node uses it too.
-scenes/       Scene files (JSON). The primary thing the agent edits.
+scenes/       Loose scene files (JSON). The primary thing the agent edits.
+projects/     Projects (M9, ADR 0007): <id>/project.json (fps, size, main,
+              cast), the project's scenes, and optional rigs/.
 references/   Reference images supplied by the user (agent input only, gitignored).
 tools/
   render/     CLI driving render.html in Playwright: frame -> PNG, range -> MP4/GIF,
@@ -123,6 +125,7 @@ Scenes are data, so the agent, the selection UI, and any future timeline editor 
 - Key times are in seconds. Numeric params interpolate with named easings; non-numeric params (strings, booleans) step.
 - The background is a layer like any other (it can have tracks and overrides), so "change the background for frames 1 to 14" is an ordinary scoped edit.
 - **`overrides`** express scoped edits: over a frame range, a layer may swap to a rig variant and/or apply param overrides. This keeps "change this element for frames 36 to 48" a contained change instead of forking drawing code. Overlapping overrides on one layer are invalid.
+- **Projects (M9, ADR 0007).** A project is a folder, `projects/<id>/`, with scenes that share one fps and size. A scene can place another scene of its project as a **scene layer**: a start, a trim, and trackable placement and opacity. A shot renders identically inside its parent and on its own. Any layer can take an animated **mask**, which covers transitions. `project.json` holds a **cast**: named characters (rig plus params) that layers use with `"cast": "bruno"` and can override. Outside a project, its scenes have qualified ids, `<project>/<scene>`.
 - Validate scenes on load and surface clear errors in the viewer.
 
 ## Rigs
@@ -198,8 +201,7 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 
 ## Later (don't build yet)
 
-- Desktop shell (Electron) wrapping the viewer, roadmap M9. Chromium keeps canvas output identical between preview and export. The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
-- Projects: many scenes per project, stitched into a longer video (ticket 17, grilled before M9).
+- Desktop shell (Electron) wrapping the viewer, roadmap M10. Chromium keeps canvas output identical between preview and export. The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
 - Camera layer (pan, zoom, shake), scene transitions, multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.
