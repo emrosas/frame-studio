@@ -1,6 +1,8 @@
 # Writing scenes
 
-A scene is one JSON file in `scenes/` at the repo root, named after its id: `scenes/shapes-test.json` holds the scene with `"id": "shapes-test"`. The viewer picks up every file in that folder. `scenes/hello.json` is the smallest working scene and a good one to copy. Give the copy its own id. While two files share an id, the file named after the id keeps it and the other file shows as invalid.
+The studio works on a **studio folder** (ADR 0008): the one the app has open, or the repo under `npm run dev`. A folder holds `scenes/`, `projects/`, its own rigs in `rigs/` and sound generators in `audio/`, `references/`, and `out/` for renders. The built-in rigs and generators come with the app; in the repo they are `src/rigs` and `src/audio`.
+
+A scene is one JSON file in the folder's `scenes/`, named after its id: `scenes/shapes-test.json` holds the scene with `"id": "shapes-test"`. The viewer picks up every file in that folder. `scenes/hello.json` is the smallest working scene and a good one to copy. Give the copy its own id. While two files share an id, the file named after the id keeps it and the other file shows as invalid.
 
 A longer piece is a project: a folder in `projects/` whose scenes share a frame rate, a size and a cast, and can place each other. See [Projects](#projects).
 
@@ -479,11 +481,11 @@ Mask tracks use the same clock as the layer's tracks. A mask takes no overrides.
 
 ### Project rigs
 
-A rig that only one project needs goes in `projects/<id>/rigs/`, as a module that exports it, the way `projects/bears-story/rigs/iris.ts` exports `iris`. Only that project's scenes can use it, and it bundles into their HTML exports. Import the shared parts by relative path, such as `../../../src/rigs/parts/params`. A project rig may not share an id with a rig in `src/rigs/`, and no other project's rigs or scenes can import it. The rig rules below apply the same.
+A rig that only one project needs goes in `projects/<id>/rigs/`, as a module that exports it, the way `projects/bears-story/rigs/iris.ts` exports `iris`. Only that project's scenes can use it, and it bundles into their HTML exports. Import the built-in parts by name, such as `@frame-studio/rigs/parts/params` (see [Writing a rig](#writing-a-rig)). A project rig may not share an id with a built-in or folder rig, and no other project's rigs or scenes can import it. The rig rules below apply the same.
 
 ## Opening a scene in the viewer
 
-Run `npm run dev` and open the URL it prints. Add `?scene=<id>&frame=<n>` to land on a scene and frame, for example `http://localhost:5173/?scene=shapes-test&frame=36`. A project scene takes its qualified id, `?scene=bears-story/film`. The scene picker lists loose scenes first, then each project's scenes under the project's name, with its main scene first. `frame` also takes a timecode such as `00:03:00`, and `scene` also takes the file name without `.json`. If `scene` matches nothing, the viewer shows the first scene with an error and opens the requested one as soon as its file exists. The URL follows along as you scrub, so a reload returns to the same place. Space plays and pauses, the arrow keys step one frame, Shift with an arrow steps one second, and Home and End jump to the ends.
+In the app, the viewer is the main window. In the repo, run `npm run dev` and open the link it prints, which ends in `#token=...`: the page pairs with the studio server once and keeps the pairing, so later visits work without it. Add `?scene=<id>&frame=<n>` to land on a scene and frame, for example `http://127.0.0.1:5173/?scene=shapes-test&frame=36`. A project scene takes its qualified id, `?scene=bears-story/film`. The scene picker lists loose scenes first, then each project's scenes under the project's name, with its main scene first. `frame` also takes a timecode such as `00:03:00`, and `scene` also takes the file name without `.json`. If `scene` matches nothing, the viewer shows the first scene with an error and opens the requested one as soon as its file exists. The URL follows along as you scrub, so a reload returns to the same place. Space plays and pauses, the arrow keys step one frame, Shift with an arrow steps one second, and Home and End jump to the ends.
 
 Click the canvas to select the layer under the pointer. The viewer outlines it and shows its id in a tag above it. Clicking the same spot again steps down through the layers painted there and wraps back to the top. Alt with a click picks the part of the layer, such as `bruno › nose`. While paused, hovering shows a fainter outline on the layer the pointer is over. The selection is hidden during playback, since redrawing it costs several times the render, and it comes back on pause. I marks the frame on screen as the start of the frame range and O marks it as the last frame. You can also type a frame number or a timecode into the from and to fields. Ranges are `[from, to)`, so O on frame 30 stores `to: 31`. Escape clears the hover, then the layer, then the range. The URL carries the selection as `layer`, `part`, `from` and `to`.
 
@@ -501,7 +503,9 @@ Scripts and agents can drive the page through `window.studio`. `studio.shots` li
 
 ## Rendering and exporting
 
-Three commands render a scene without the viewer. Each starts its own Vite server and Playwright's headless Chromium (except the HTML export, which needs no browser), prints the file it wrote on stdout, and puts progress on stderr. Frames and range ends take a frame number or a timecode.
+In the viewer, **Export** in the control bar makes an MP4, GIF or HTML file of the scene on screen, or only of the selected range, with or without sound. It shows progress with Cancel, keeps playing meanwhile, and writes the file to the folder's `out/`. In the app, **Reveal in Finder** shows it.
+
+Three commands render a scene without the viewer. They render through a render worker, a hidden Electron window that takes jobs from a studio server (ADR 0008): the running app's or `npm run dev`'s when one is open on the folder, or else one they start and stop themselves. Each prints the file it wrote on stdout and puts progress on stderr. `--folder` picks the studio folder; it defaults to the current one. Frames and range ends take a frame number or a timecode.
 
 ```sh
 npm run render -- --scene bear-test --frame 47            # out/bear-test/frame-00047.png
@@ -535,9 +539,9 @@ iframe.contentWindow.postMessage({ type: 'frame-studio', command: 'seek', frame:
 
 The commands are `play`, `pause`, `seek` (with a numeric `frame`), `mute`, `unmute` and `state`. The embed answers each one with `{ type: 'frame-studio:state', frame, playing, frameCount, fps }`, plus `muted` when it has sound and an `error` field when it could not do what was asked. `muted` stays true until the browser lets the embed play sound, so `unmute` from another page only takes effect where the browser already allows the frame to play sound. Same-origin pages can use `studio.setMuted(false)` and read `studio.sound`. It also posts that state to its parent once on load. A host that starts listening later can send `state` to ask.
 
-### The render page and tests
+### The render worker and tests
 
-The browser needs downloading once, with `npx playwright install chromium-headless-shell`. The page behind the commands is `render.html?scene=<id>`. It draws at scene size on a CPU-rastered canvas, and its `window.studio` has `renderFrame`, `pixelHash`, `audioHash`, `writePng`, `exportVideo` and `contactSheet`. `npm run test:browser` checks that every frame of every scene draws the same pixels whether played or seeked, that exports have the exact frame count and duration, and that the HTML embed matches the render page pixel for pixel with the network off. For sound, it checks that a scene renders the same samples in two browser launches, and that blips in the exported MP4 land within a frame of their frames when ffmpeg decodes it.
+The render worker is `render.html?worker` in a hidden Electron window, with CPU raster and the switches in `desktop/switches.ts`. It draws at scene size, and its render API has `renderFrame`, `pixelHash`, `audioHash`, `writePng`, `exportVideo` and `contactSheet`; the tools reach it through `tools/render/studio.ts`. Electron's Chromium is the pixel reference, so every render the studio makes comes from the same build. `npm install` brings Electron, and the interface tests need Playwright's Chromium once, with `npx playwright install chromium-headless-shell`. `npm run test:browser` checks that every frame of every scene draws the same pixels whether played or seeked, that exports have the exact frame count and duration, and that the HTML embed, opened in Electron, matches the worker pixel for pixel with the network off. For sound, it checks that a scene renders the same samples in two Electron launches, and that blips in the exported MP4 land within a frame of their frames when ffmpeg decodes it.
 
 ## The test scenes
 
@@ -559,7 +563,7 @@ The browser needs downloading once, with `npx playwright install chromium-headle
 
 ## Writing a rig
 
-A rig is a TypeScript object in `src/rigs`, typed as `Rig` in `src/engine/types.ts`:
+A rig is a TypeScript object, typed as `Rig` in `src/engine/types.ts`. A rig for every scene in a studio folder goes in its `rigs/`; one for a single project in `projects/<id>/rigs/`; and in the repo, a built-in goes in `src/rigs/`. The studio loads every module in those folders and takes every rig they export, and it reloads a rig in the open viewer when its file changes, without a page reload.
 
 ```ts
 interface Rig {
@@ -573,7 +577,11 @@ interface Rig {
 
 `draw` gets a context already scaled to scene pixels, the resolved params, the layer time `t` in seconds after `stepFps`, a seeded `rng` for the layer, `stage`, the scene size as `{ width, height }`, and `kit`, whose `part(id, draw)` wraps the drawing of one named part. `CLAUDE.md` still shows the four-argument form. TypeScript accepts a `draw` that leaves out the trailing arguments, and a rig without parts can ignore `kit`.
 
-1. Add the rig to `allRigs` in `src/rigs/index.ts`. That makes it available to scenes and runs the smoke tests in `src/rigs/rigs.test.ts` on it.
+Outside `src/`, import the built-ins by name: `@frame-studio/rigs/parts/params`, `@frame-studio/engine/types`, `@frame-studio/audio/parts`. Inside `src/`, import by relative path. A rig can't take a built-in's id; to change a built-in from a studio folder, make a variant (`bear.blush`) or a rig with a new id that reuses its parts. A studio folder's `tsconfig.json` maps the names to the app's built-in sources, so `npx tsc -p .` in the folder type-checks its rigs.
+
+Write TypeScript that type stripping can remove: no `enum`, no `namespace`, and no constructor parameter properties (`constructor(private x: number)`). The studio server loads rigs with Node's own type stripping, which refuses those (ADR 0008).
+
+1. A built-in goes in `allRigs` in `src/rigs/index.ts`. That makes it available to scenes and runs the smoke tests in `src/rigs/rigs.test.ts` on it. A studio folder's or project's rig needs only to be exported by a module in its folder.
 2. Give the rig a `description` and give every param one. Number params need `min` and `max`, and the default must sit between them. The tests fail otherwise.
 3. Read params through `readParams(schema, params)` from `src/rigs/parts/params.ts`. It falls back to the default for a missing or wrong-typed value and clamps numbers to their range, so an eased overshoot never reaches the canvas. Reading `params` directly skips both.
 4. For a filled, outlined shape, use `defineShapeRig` from `src/rigs/parts/shape.ts`. You supply the geometry, and it adds the shared position, style and wobble params. For a painted look, use the brush, mark and wash helpers in `src/rigs/parts/paint.ts`. The `bear` rig uses all of them.
@@ -598,7 +606,7 @@ The viewer swaps an edited rig in without a reload and keeps the frame.
 
 ## Writing a generator
 
-A generator is a TypeScript object in `src/audio`, typed as `AudioGenerator` in `src/audio/types.ts`:
+A generator is a TypeScript object, typed as `AudioGenerator` in `src/audio/types.ts`. A studio folder's generators go in its `audio/`, and in the repo the built-ins are in `src/audio/`, under the same import and TypeScript rules as rigs.
 
 ```ts
 interface AudioGenerator {
@@ -611,7 +619,7 @@ interface AudioGenerator {
 
 `schedule` builds the cue's Web Audio graph into `out`. `times` holds the cue's span snapped to frames, as samples (`startSample`, `endSample`) and as context seconds (`start`, `end`), plus the scene `fps`. `params` is the same reader rigs use, with defaults and clamping. `rng` is seeded from the scene seed and the cue id. The same code runs in the viewer, the embed and the export, which all play one offline render of the whole scene, so what you hear while previewing is what the MP4 gets.
 
-1. Add the generator to `allGenerators` in `src/audio/index.ts`. The unit tests in `src/audio/audio.test.ts` then run on it with a fake audio graph.
+1. A built-in goes in `allGenerators` in `src/audio/index.ts`. The unit tests in `src/audio/audio.test.ts` then run on it with a fake audio graph. A studio folder's generator needs only to be exported by a module in `audio/`.
 2. Give it a `description` and give every param one, with `min` and `max` on numbers, as for rigs. `list_generators` shows them to agents.
 3. Build the whole graph inside `schedule`. Start and stop every source inside `[times.start, times.end]`. Nothing may be scheduled later.
 4. Never connect more than two nodes into one input, a param or `out`. Chromium adds three or more in an order that changes from run to run, so the samples stop being identical. Sum with `mix(ctx, sources, dest)` from `src/audio/mix.ts`, which builds a tree of two-input gains.

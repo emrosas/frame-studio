@@ -202,6 +202,9 @@
       {/each}
     </select>
   </label>
+  <button type="button" class="export-button" aria-expanded={ui.exporting.open} onclick={() => actions.toggleExport()}>
+    Export
+  </button>
   <output class="fps-readout" aria-label="Frame rate">
     {ui.fps ? `${ui.fps.scene} fps · playback ${ui.fps.measured === null ? '–' : ui.fps.measured.toFixed(1)}` : ''}
   </output>

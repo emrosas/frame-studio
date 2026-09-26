@@ -1,5 +1,6 @@
 node_modules
 dist
+build
 out
 references
 .DS_Store

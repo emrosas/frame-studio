@@ -36,6 +36,7 @@ The whole system rests on one rule: **the image at frame N is a pure function of
 ## Runtime budget (protects the single-file embed)
 
 - `src/engine`, `src/rigs`, `src/audio` and `src/embed` have **zero third-party runtime dependencies**. Validation libraries (zod or similar), Playwright, ffmpeg, and the MCP SDK are tooling only and must never be imported from the runtime path.
+- Runtime TypeScript is **erasable**: no enums, namespaces or constructor parameter properties, since the studio server strips types with Node's own stripping instead of a bundler (ADR 0008). `npm run typecheck` enforces it. Rigs and generators outside `src/` (a studio folder's `rigs/` and `audio/`, a project's `rigs/`) import the built-ins as `@frame-studio/rigs/...`, `@frame-studio/engine/...` and `@frame-studio/audio/...`; inside `src/`, imports stay relative.
 - The embed player (`src/embed/player.ts`) is the one runtime file allowed to read the wall clock, to pick the frame to show during playback. render() never sees time.
 - No fonts, images, or base64 blobs. Text is drawn as vector paths in code or uses generic system font families.
 - Target: engine under ~50 KB minified. Drawing code is expected to be the bulk of a file's size, and that's fine.
@@ -66,19 +67,27 @@ src/
               loop, window.studio and postMessage API. Runtime rules apply.
   studio/     The viewer-to-agent handoff protocol (ADR 0003): request and
               selection shapes and shared rules. Import-free, so Node uses it too.
+desktop/      The Electron shell (ADR 0008): main process, preloads, welcome
+              screen, and worker-only mode. Never imported by src/.
 scenes/       Loose scene files (JSON). The primary thing the agent edits.
 projects/     Projects (M9, ADR 0007): <id>/project.json (fps, size, main,
               cast), the project's scenes, and optional rigs/.
 references/   Reference images supplied by the user (agent input only, gitignored).
 tools/
-  render/     CLI driving render.html in Playwright: frame -> PNG, range -> MP4/GIF,
-              contact sheets. npm run render / export / contact-sheet.
+  render/     CLI rendering through a studio server's render worker: frame -> PNG,
+              range -> MP4/GIF, contact sheets. npm run render / export / contact-sheet.
   bundle/     Single-file HTML builder: validates the scene, bundles only the rigs
-              it uses with the player, inlines all. npm run export -- --target html.
-  mcp/        MCP server exposing the studio to the agent (docs/MCP.md).
-  studio/     The request queue on disk, the studio server (a Vite plugin
-              serving /__studio/ to the viewer), and agents/, the agents it
-              runs itself (M8): providers, access rules, the turn runner.
+              it uses with the player, inlines all, with Rolldown.
+              npm run export -- --target html.
+  mcp/        The MCP tools (docs/MCP.md), and server.ts, the stdio shim an
+              external agent starts, which forwards to a studio server.
+  studio/     The studio server (ADR 0008): the viewer, pairing, the file
+              store, the module service, the render worker's jobs, exports,
+              the request queue on disk, and agents/, the agents it runs
+              itself (M8). bin.ts runs it standalone; connect.ts finds or
+              starts one for a folder.
+  desktop/    npm run desktop and desktop:build: run and package the app.
+  dev.ts      npm run dev: the studio server on the repo with Vite inside.
 out/          Renders and exports (gitignored).
 ```
 
@@ -86,7 +95,8 @@ Rules:
 - `src/engine` never imports from `viewer`, `tools`, or UI code. It runs unchanged in the viewer, the headless renderer, the single-file embed, and any future desktop shell.
 - The canvas renders at the scene's fixed resolution and is scaled with CSS for display. Handle devicePixelRatio for preview only; exports are always native resolution.
 - UI is regular HTML/CSS positioned over the canvas, never drawn into it.
-- The studio ships as a web app and as an Electron app from one viewer (`docs/adr/0001-web-and-electron-targets.md`). `src/viewer` uses web platform APIs only. Anything that needs the machine, such as scene files, export writing, video encoding or the MCP connection, goes behind an interface with a web implementation and an Electron one.
+- The studio ships as a web app and as an Electron app from one viewer (`docs/adr/0001-web-and-electron-targets.md`, ADR 0008). `src/viewer` uses web platform APIs only. Anything that needs the machine goes through the studio server, which serves the viewer, and the app's preload adds only native features (`src/viewer/desktop.ts`).
+- The app and the tools work on a **studio folder** (ADR 0008): `scenes/`, `projects/`, `rigs/`, `audio/`, `references/`, `out/`, `.frame-studio/`. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
 - The viewer stays plain TypeScript until M6, then its UI moves to Svelte 5 with Vite, not SvelteKit (`docs/adr/0002-svelte-from-m6.md`). The runtime never imports Svelte.
 
 ## Scene format (JSON)
@@ -165,15 +175,15 @@ Users can attach reference images to a prompt. References are **input to the age
 
 ## Headless rendering and export
 
-- The viewer has a render mode, `render.html?scene=<id>` (no UI, scene size, CPU raster), exposing `window.studio.renderFrame(n)` and the export calls. Usage: `docs/SCENES.md`, "Rendering and exporting".
-- Playwright loads it, calls `renderFrame`, and captures the canvas as PNG. Use Playwright 1.57 or later: its Chrome for Testing build has an H.264 encoder, and the older open-source headless shell does not.
+- Renders for agents, the CLI and exports come from the **render worker** (ADR 0008): `render.html?worker` in a hidden Electron window (no UI, scene size, CPU raster), taking jobs from the studio server. The app opens it; a server without the app launches Electron in worker-only mode. Electron's Chromium is the pixel reference, so the pixel tests render through it too. Usage: `docs/SCENES.md`, "Rendering and exporting".
+- Playwright drives the viewer's interface in the browser tests, and opens Electron windows where a test compares pixels.
 - The page that draws the frames also encodes them. MP4 is H.264 through WebCodecs `VideoEncoder` at scene fps, muxed with Mediabunny. GIF is gifenc with our own palette code. The CLI, Electron and the web app run the same export code and differ only in where the bytes go (ticket 14, `.scratch/frame-studio/research/export-encoding.md`).
 - MP4s are tagged BT.709 primaries, sRGB transfer and BT.709 matrix at full range, in both the SPS VUI and `colr`. WebCodecs only writes that for I420 frames that carry the colour space, so the exporter converts each frame itself (ticket 15, `src/export/color.ts`).
 - No shipped build bundles ffmpeg. It is a dev-only tool for checking exported files: frame count, duration, frame rate, colour.
 
 ## MCP server (the agent's API)
 
-`tools/mcp/server.ts`, over stdio. The repo's `.mcp.json` registers it for Claude Code. Setup and the full tool reference are in `docs/MCP.md`. Keep inputs and outputs simple JSON. Tools:
+`tools/mcp/server.ts`, over stdio, a shim that forwards to the studio server running on the folder, or starts a headless one (ADR 0008). The repo's `.mcp.json` registers it for Claude Code, and the app ships it as `frame-studio-mcp`. Setup and the full tool reference are in `docs/MCP.md`. Keep inputs and outputs simple JSON. Tools:
 - `list_scenes()`, `get_scene(id)`, `update_scene(id, patch)`: JSON merge patch, validated before saving. Project scenes take qualified ids, `<project>/<scene>`
 - `list_projects()`, `get_project(id)`, `update_project(id, patch)`: projects, and validated merge patches to `project.json`, which wait while another thread in the project works (ADR 0007)
 - `list_rigs()`: each rig's param schema, parts, and variants, with `project` on a project's own rig
@@ -189,21 +199,22 @@ Users can attach reference images to a prompt. References are **input to the age
 
 An AI inside the studio that works request threads like a chat in T3 Code (`docs/adr/0006-requests-are-threads.md`).
 - It runs locally in the studio server. Providers launch the user's own signed-in CLI: `claude` through Anthropic's Agent SDK (dev-only package, pointed at the installed binary) and `codex app-server`. Never offer a login screen, never read or store the user's tokens, and never call it Claude Code. A missing or signed-out CLI shows the command to run.
-- Its tools are the studio operations the MCP server offers. By default it may also write in `scenes/`, `src/rigs/` and `src/audio/`; anything else asks first through an approval card, unless the thread is in full access.
+- Its tools are the studio operations the MCP server offers. By default it may also write in `scenes/`, `rigs/`, `audio/`, projects' `rigs/`, and in the repo `src/rigs/` and `src/audio/`; anything else asks first through an approval card, unless the thread is in full access.
 - One working thread per scene. Each agent turn gets a checkpoint, and only the user settles a thread.
-- Only the dev server the viewer uses runs agents. Tools start Vite with agents off (`startVite` in `tools/render/studio.ts`), so a render or an MCP session never claims a thread. The scripted test agent appears with `FRAME_STUDIO_FAKE_AGENT=1`.
+- Only the studio server the viewer uses runs agents: the app's, or `npm run dev`'s. Headless servers (the CLI's, the MCP shim's, the tests') run with agents off, so a render or an MCP session never claims a thread. The server strips `ELECTRON_RUN_AS_NODE` from every agent CLI it starts, and the app reads PATH from the login shell so a Finder launch finds `claude` and `codex`. The scripted test agent appears with `FRAME_STUDIO_FAKE_AGENT=1`.
 
 ## Conventions
 
 - TypeScript 6, strict mode. Vite for the viewer, with Svelte 5 for its UI (ADR 0002). Vitest for tests. `npm run typecheck` runs tsc for app and Node code and svelte-check for components. TypeScript 7 has no JavaScript API, which svelte-check needs, so the repo stays on 6.
-- `npm test` is the unit suite. `npm run test:browser` runs Playwright against the viewer, the render page, the embed, the handoff and the MCP server.
+- `npm test` is the unit suite. `npm run test:browser` runs Playwright against the viewer, the render worker, the embed, the handoff, the MCP shim, the app from source, and the packaged app when `npm run desktop:build` has built it.
+- `npm run dev` runs the studio server on the repo and prints the viewer's paired URL. `npm run desktop` runs the app from the repo; `npm run desktop:build` packages it for macOS arm64 and checks the result.
 - After changing drawing code, verify visually with `render_frame` or a contact sheet rather than assuming it looks right.
 - Maintain `docs/PROGRESS.md`: done, next, open questions, known issues. Read it at the start of each session and update it at the end.
 - The roadmap is `docs/ROADMAP.md`. Work milestone by milestone; don't start the next until the current one's acceptance criteria pass.
 
 ## Later (don't build yet)
 
-- Desktop shell (Electron) wrapping the viewer, roadmap M10. Chromium keeps canvas output identical between preview and export. The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
+- The app signed and notarized, auto-update, and Windows and Linux builds (ADR 0008 left them for later). The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
 - Camera layer (pan, zoom, shake), scene transitions, multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.

@@ -31,7 +31,11 @@ const MIN_WIDTH = 0.35;
 export class Brush {
   private buckets = new Map<string, Bucket>();
 
-  constructor(private readonly view: Bounds) {}
+  private readonly view: Bounds;
+
+  constructor(view: Bounds) {
+    this.view = view;
+  }
 
   private bucket(color: string, alpha: number, width: number, comp: GlobalCompositeOperation): Bucket | null {
     const a = Math.round(Math.min(1, alpha) * 24) / 24;

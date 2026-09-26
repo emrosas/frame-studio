@@ -7,17 +7,18 @@
 //
 // Scenes are validated here, at export time, so the embed ships without the
 // validator. Scene keys resolve exactly as in the viewer and render page
-// (buildLibrary and findEntry). Node only; runs as TypeScript through Node's
-// type stripping.
+// (buildLibrary and findEntry). Rolldown bundles it, on its own, so the app
+// needs no Vite (ADR 0008); it reads the built-ins and the folder's rigs from
+// disk. Node only; runs as TypeScript through Node's type stripping.
 
-import { readdir } from 'node:fs/promises';
-import { join } from 'node:path';
-import { build, createServer, parseAst, type Plugin, type Rollup, type ViteDevServer } from 'vite';
-import type { AudioGenerator } from '../../src/audio/types.ts';
-import type { Rig, Scene, World } from '../../src/engine/types.ts';
-import { loadModules, PROJECTS_DIR, ROOT, sceneLibrary } from '../scene-files.ts';
-
-export { ROOT };
+import { join, relative, sep } from 'node:path';
+import { rolldown, type Plugin } from 'rolldown';
+import { parseAst } from 'rolldown/parseAst';
+import { transformSync } from 'rolldown/utils';
+import type { Scene, World } from '../../src/engine/types.ts';
+import { loadModules, sceneLibrary } from '../scene-files.ts';
+import type { CodeHost } from '../studio/code.ts';
+import type { StudioFolder } from '../studio/folder.ts';
 
 export interface EmbedBuild {
   html: string;
@@ -44,68 +45,16 @@ export interface EmbedBuild {
 }
 
 export interface EmbedBuildOptions {
-  /** Folder of scene files. Defaults to scenes/. */
-  scenesDir?: string;
-  /** Folder of project folders. Defaults to projects/. */
-  projectsDir?: string;
+  /** The studio folder, and the code host that has its rigs and generators. */
+  folder: StudioFolder;
+  code: CodeHost;
   /** Also bundle the engine and player alone to report bytes.runtime. */
   measureRuntime?: boolean;
-  /** A Vite server to load modules through, such as the MCP workspace's; the caller closes it. Otherwise one is started and closed. */
-  server?: ViteDevServer;
   /** Leave the scene's audio out. */
   silent?: boolean;
 }
 
-
 const ENTRY = 'virtual:frame-studio-embed';
-
-function isRig(value: unknown): value is Rig {
-  const v = value as Partial<Rig> | null;
-  return typeof v === 'object' && v !== null && typeof v.id === 'string' && typeof v.draw === 'function' && typeof v.params === 'object';
-}
-
-/** TypeScript sources under `dir`, tests and test helpers left out. None when it doesn't exist. */
-async function sourceFiles(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name !== 'testing') out.push(...(await sourceFiles(path)));
-    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts') && !entry.name.endsWith('.d.ts')) {
-      out.push(path);
-    }
-  }
-  return out.sort();
-}
-
-function isGenerator(value: unknown): value is AudioGenerator {
-  const v = value as Partial<AudioGenerator> | null;
-  return typeof v === 'object' && v !== null && typeof v.id === 'string' && typeof v.schedule === 'function' && typeof v.params === 'object';
-}
-
-/**
- * Where each rig or generator is defined: its id to the module and export
- * name, found by loading every module under `dir`. A module that only
- * re-exports them (an index) loses to the one that defines them.
- */
-async function definitions(
-  server: ViteDevServer,
-  dir: string,
-  matches: (value: unknown) => value is { id: string },
-): Promise<Map<string, { file: string; name: string }>> {
-  const found = new Map<string, { file: string; name: string; index: boolean }>();
-  for (const file of await sourceFiles(dir)) {
-    const mod = (await server.ssrLoadModule(file)) as Record<string, unknown>;
-    const index = file.endsWith('/index.ts');
-    for (const [name, value] of Object.entries(mod)) {
-      if (!matches(value)) continue;
-      const prev = found.get(value.id);
-      if (!prev || (prev.index && !index)) found.set(value.id, { file, name, index });
-    }
-  }
-  return new Map([...found].map(([id, { file, name }]) => [id, { file, name }]));
-}
-
 
 function entryPlugin(code: string): Plugin {
   return {
@@ -165,37 +114,43 @@ export function stripDescriptions(code: string): string {
   return out;
 }
 
-function stripDescriptionsPlugin(): Plugin {
+/** Strips descriptions from rig and generator modules: the built-ins', the studio folder's and the projects'. */
+function stripDescriptionsPlugin(folder: StudioFolder): Plugin {
+  const code = (id: string) => {
+    const b = relative(folder.builtins, id).split(sep).join('/');
+    if (/^(rigs|audio)\//.test(b)) return true;
+    const f = relative(folder.root, id).split(sep).join('/');
+    return /^(rigs|audio)\//.test(f) || /^projects\/[^/]+\/rigs\//.test(f);
+  };
   return {
     name: 'frame-studio-strip-descriptions',
-    // After the TypeScript transform, so the parser sees plain JavaScript.
-    enforce: 'post',
-    transform: (code, id) =>
-      id.startsWith(join(ROOT, 'src/rigs/')) || id.startsWith(join(ROOT, 'src/audio/')) || /\/projects\/[^/]+\/rigs\//.test(id)
-        ? { code: stripDescriptions(code), map: null }
-        : null,
+    transform(source, id) {
+      if (!id.endsWith('.ts') || !code(id)) return null;
+      // Rolldown hands plugins TypeScript; turn it into JavaScript first, so the parser sees plain JavaScript.
+      const js = transformSync(id, source, { lang: 'ts', target: 'es2022' });
+      if (js.errors.length > 0) return null;
+      return { code: stripDescriptions(js.code), moduleType: 'js', map: null };
+    },
   };
 }
 
 /** Bundles `code` as a minified IIFE and returns its text. */
-async function bundle(code: string): Promise<string> {
-  const output = (await build({
-    configFile: false,
-    root: ROOT,
+async function bundle(code: string, folder: StudioFolder): Promise<string> {
+  const build = await rolldown({
+    input: ENTRY,
+    platform: 'browser',
     logLevel: 'silent',
-    publicDir: false,
-    plugins: [entryPlugin(code), stripDescriptionsPlugin()],
-    build: {
-      write: false,
-      minify: true,
-      target: 'es2022',
-      lib: { entry: ENTRY, formats: ['iife'], name: 'frameStudioEmbed', fileName: 'embed' },
-    },
-  })) as Rollup.RollupOutput[] | Rollup.RollupOutput;
-  const outputs = Array.isArray(output) ? output : [output];
-  const chunks = outputs.flatMap((o) => o.output).filter((o): o is Rollup.OutputChunk => o.type === 'chunk');
-  if (chunks.length !== 1) throw new Error(`expected one bundled chunk, got ${chunks.length}`);
-  return chunks[0].code;
+    plugins: [entryPlugin(code), stripDescriptionsPlugin(folder)],
+    resolve: { alias: { '@frame-studio': folder.builtins } },
+  });
+  try {
+    const { output } = await build.generate({ format: 'iife', name: 'frameStudioEmbed', minify: true, legalComments: 'none' });
+    const chunks = output.filter((o) => o.type === 'chunk');
+    if (chunks.length !== 1) throw new Error(`expected one bundled chunk, got ${chunks.length}`);
+    return chunks[0].code;
+  } finally {
+    await build.close();
+  }
 }
 
 const importPath = (file: string) => JSON.stringify(file);
@@ -267,75 +222,61 @@ html, body { margin: 0; height: 100%; background: transparent; }
 `;
 }
 
-export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions = {}): Promise<EmbedBuild> {
-  const server =
-    options.server ??
-    (await createServer({
-      configFile: false,
-      root: ROOT,
-      logLevel: 'error',
-      appType: 'custom',
-      server: { middlewareMode: true, hmr: false, watch: null },
-      optimizeDeps: { noDiscovery: true, include: [] },
-    }));
-  try {
-    const modules = await loadModules(server);
-    const { engine } = modules;
-    const projectsDir = options.projectsDir ?? PROJECTS_DIR;
-    const lib = await sceneLibrary(modules, options.scenesDir, projectsDir);
-    const entry = modules.library.findEntry(lib, sceneKey);
-    if (!entry) throw new Error(`No scene "${sceneKey}". Scenes: ${lib.entries.map((e) => e.key).join(', ')}`);
-    const project = entry.project !== null ? lib.projects.find((p) => p.id === entry.project) : undefined;
-    const problems = [...lib.errors, ...entry.errors, ...(project?.errors ?? []).map((e) => `${project!.file}: ${e}`)];
-    if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors, so it cannot be exported:\n${problems.join('\n')}`);
-    // A silent export drops the cues, the placed scenes' too, so the embed carries no audio code at all.
-    const quiet = (s: Scene): Scene => (options.silent ? { ...s, audio: undefined } : s);
-    const scene = quiet(entry.scene);
-    const placed = new Map([...placedScenes(entry.scene, entry.world)].map(([id, s]) => [id, quiet(s)] as const));
-    const world: World = { scenes: placed, cast: entry.world.cast };
-    const ids = engine.rigIdsUsed(scene, world);
-    const rigFiles = await definitions(server, join(ROOT, 'src/rigs'), isRig);
-    if (project) for (const [id, file] of await definitions(server, join(projectsDir, project.id, 'rigs'), isRig)) rigFiles.set(id, file);
-    const where = project ? `src/rigs or ${join(projectsDir, project.id, 'rigs').slice(ROOT.length + 1)}` : 'src/rigs';
-    const missing = ids.filter((id) => !rigFiles.has(id));
-    if (missing.length > 0) throw new Error(`No module under ${where} exports rig ${missing.map((m) => `"${m}"`).join(', ')} by name.`);
-    const generatorIds = [...new Set([scene, ...placed.values()].flatMap((s) => (s.audio ?? []).map((cue) => cue.generator)))].sort();
-    const generatorFiles = generatorIds.length > 0 ? await definitions(server, join(ROOT, 'src/audio'), isGenerator) : new Map();
-    const missingGenerators = generatorIds.filter((id) => !generatorFiles.has(id));
-    if (missingGenerators.length > 0) {
-      throw new Error(`No module under src/audio exports generator ${missingGenerators.map((m) => `"${m}"`).join(', ')} by name.`);
-    }
-
-    const player = join(ROOT, 'src/embed/player.ts');
-    const imports = [
-      ...ids.map((id, i) => `import { ${rigFiles.get(id)!.name} as rig${i} } from ${importPath(rigFiles.get(id)!.file)};`),
-      ...generatorIds.map((id, i) => `import { ${generatorFiles.get(id)!.name} as gen${i} } from ${importPath(generatorFiles.get(id)!.file)};`),
-    ];
-    const sound = generatorIds.length > 0 ? `embedSound([${generatorIds.map((_, i) => `gen${i}`).join(', ')}])` : 'undefined';
-    const cast = Object.fromEntries(Object.entries(entry.world.cast ?? {}).filter(([name]) => usesCast(name, [scene, ...placed.values()])));
-    const bundled = project ? { scenes: Object.fromEntries([...placed].sort(([a], [b]) => a.localeCompare(b))), cast } : null;
-    const code = [
-      `import { mountEmbed, optionsFromQuery } from ${importPath(player)};`,
-      ...(generatorIds.length > 0 ? [`import { embedSound } from ${importPath(join(ROOT, 'src/embed/sound.ts'))};`] : []),
-      ...imports,
-      `const scene = ${sceneLiteral(scene)};`,
-      `window.studio = mountEmbed(document.getElementById('frame-studio'), scene, [${ids.map((_, i) => `rig${i}`).join(', ')}], optionsFromQuery(location.search), ${sound}${bundled ? `, ${sceneLiteral(bundled)}` : ''});`,
-    ].join('\n');
-    const runtimeOnly = `import { mountEmbed, optionsFromQuery } from ${importPath(player)};\nwindow.studio = [mountEmbed, optionsFromQuery];`;
-
-    const script = inlineSafe(await bundle(code));
-    const html = page(scene, script);
-    const runtime = options.measureRuntime ? Buffer.byteLength(await bundle(runtimeOnly)) : undefined;
-    return {
-      html,
-      scene,
-      out: project ? `${project.id}/${scene.id}` : scene.id,
-      scenes: [...placed.keys()].sort(),
-      rigs: ids,
-      generators: generatorIds,
-      bytes: { total: Buffer.byteLength(html), script: Buffer.byteLength(script), runtime },
-    };
-  } finally {
-    if (!options.server) await server.close();
+export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): Promise<EmbedBuild> {
+  const { folder } = options;
+  const modules = await loadModules(options.code);
+  const { engine } = modules;
+  const lib = await sceneLibrary(modules, folder);
+  const entry = modules.library.findEntry(lib, sceneKey);
+  if (!entry) throw new Error(`No scene "${sceneKey}". Scenes: ${lib.entries.map((e) => e.key).join(', ')}`);
+  const project = entry.project !== null ? lib.projects.find((p) => p.id === entry.project) : undefined;
+  const problems = [...lib.errors, ...entry.errors, ...(project?.errors ?? []).map((e) => `${project!.file}: ${e}`)];
+  if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors, so it cannot be exported:\n${problems.join('\n')}`);
+  // A silent export drops the cues, the placed scenes' too, so the embed carries no audio code at all.
+  const quiet = (s: Scene): Scene => (options.silent ? { ...s, audio: undefined } : s);
+  const scene = quiet(entry.scene);
+  const placed = new Map([...placedScenes(entry.scene, entry.world)].map(([id, s]) => [id, quiet(s)] as const));
+  const world: World = { scenes: placed, cast: entry.world.cast };
+  const ids = engine.rigIdsUsed(scene, world);
+  const rigFiles = new Map(modules.rigDefinitions);
+  if (project) for (const [id, file] of modules.projectRigDefinitions[project.id] ?? []) rigFiles.set(id, file);
+  const where = project ? `the built-in rigs, rigs/ or projects/${project.id}/rigs/` : 'the built-in rigs or rigs/';
+  const missing = ids.filter((id) => !rigFiles.has(id));
+  if (missing.length > 0) throw new Error(`No module in ${where} exports rig ${missing.map((m) => `"${m}"`).join(', ')} by name.`);
+  const generatorIds = [...new Set([scene, ...placed.values()].flatMap((s) => (s.audio ?? []).map((cue) => cue.generator)))].sort();
+  const generatorFiles = modules.generatorDefinitions;
+  const missingGenerators = generatorIds.filter((id) => !generatorFiles.has(id));
+  if (missingGenerators.length > 0) {
+    throw new Error(`No module in the built-in generators or audio/ exports generator ${missingGenerators.map((m) => `"${m}"`).join(', ')} by name.`);
   }
+
+  const player = join(folder.builtins, 'embed/player.ts');
+  const imports = [
+    ...ids.map((id, i) => `import { ${rigFiles.get(id)!.name} as rig${i} } from ${importPath(rigFiles.get(id)!.file)};`),
+    ...generatorIds.map((id, i) => `import { ${generatorFiles.get(id)!.name} as gen${i} } from ${importPath(generatorFiles.get(id)!.file)};`),
+  ];
+  const sound = generatorIds.length > 0 ? `embedSound([${generatorIds.map((_, i) => `gen${i}`).join(', ')}])` : 'undefined';
+  const cast = Object.fromEntries(Object.entries(entry.world.cast ?? {}).filter(([name]) => usesCast(name, [scene, ...placed.values()])));
+  const bundled = project ? { scenes: Object.fromEntries([...placed].sort(([a], [b]) => a.localeCompare(b))), cast } : null;
+  const code = [
+    `import { mountEmbed, optionsFromQuery } from ${importPath(player)};`,
+    ...(generatorIds.length > 0 ? [`import { embedSound } from ${importPath(join(folder.builtins, 'embed/sound.ts'))};`] : []),
+    ...imports,
+    `const scene = ${sceneLiteral(scene)};`,
+    `window.studio = mountEmbed(document.getElementById('frame-studio'), scene, [${ids.map((_, i) => `rig${i}`).join(', ')}], optionsFromQuery(location.search), ${sound}${bundled ? `, ${sceneLiteral(bundled)}` : ''});`,
+  ].join('\n');
+  const runtimeOnly = `import { mountEmbed, optionsFromQuery } from ${importPath(player)};\nwindow.studio = [mountEmbed, optionsFromQuery];`;
+
+  const script = inlineSafe(await bundle(code, folder));
+  const html = page(scene, script);
+  const runtime = options.measureRuntime ? Buffer.byteLength(await bundle(runtimeOnly, folder)) : undefined;
+  return {
+    html,
+    scene,
+    out: project ? `${project.id}/${scene.id}` : scene.id,
+    scenes: [...placed.keys()].sort(),
+    rigs: ids,
+    generators: generatorIds,
+    bytes: { total: Buffer.byteLength(html), script: Buffer.byteLength(script), runtime },
+  };
 }

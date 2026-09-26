@@ -3,8 +3,9 @@
  * Chromium with the network off.
  *
  * - It plays from a file:// URL and makes no request but the file itself.
- * - Its frames match the headless renderer's (render.html) pixel for pixel,
- *   in the same browser launch (ticket 03).
+ * - Opened in Electron, its frames match the render worker's pixel for pixel
+ *   (ticket 03, ADR 0008). The rest runs in Playwright's Chromium, as any
+ *   browser would open the file.
  * - It plays on load, loops, and answers play, pause and seek from the page
  *   and from a cross-origin host page.
  * - The engine and player stay under 50 KB minified, and only the rigs the
@@ -13,7 +14,7 @@
  *   sound once the speaker button is clicked, and stays in step after a seek.
  *   A silent scene or export carries no audio code.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Scene } from '../../src/engine/types';
@@ -22,30 +23,39 @@ import type { Browser, BrowserContext, Page } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { EmbedApi, EmbedState } from '../../src/embed/player';
 import { buildEmbed, inlineSafe, sceneLiteral, stripDescriptions, type EmbedBuild } from '../../tools/bundle/embed';
-import { launchBrowser, openStudio, type Studio } from '../../tools/render/studio';
+import { type Studio } from '../../tools/render/studio';
+import { launchBrowser } from './browser';
+import { CodeHost } from '../../tools/studio/code';
+import { studioFolder } from '../../tools/studio/folder';
+import { electronPage } from './electron-page';
+import { renderClient, startStudio, type TestStudio } from './studio-server';
 
 let browser: Browser;
+let server: TestStudio;
 let studio: Studio;
 let dir: string;
 const embeds = new Map<string, { build: EmbedBuild; url: string }>();
 
 beforeAll(async () => {
   browser = await launchBrowser();
-  studio = await openStudio('bear-test', { browser });
+  server = await startStudio();
+  studio = await renderClient(server, 'bear-test');
   dir = mkdtempSync(join(tmpdir(), 'frame-studio-embed-'));
+  const built = { folder: server.server.folder, code: server.server.code };
   for (const key of ['bear-test', 'shapes-test', 'audio-test']) {
-    const build = await buildEmbed(key, { measureRuntime: true });
+    const build = await buildEmbed(key, { ...built, measureRuntime: true });
     const path = join(dir, `${key}.html`);
     writeFileSync(path, build.html);
     embeds.set(key, { build, url: pathToFileURL(path).href });
   }
-  const silent = await buildEmbed('audio-test', { silent: true, measureRuntime: true });
+  const silent = await buildEmbed('audio-test', { ...built, silent: true, measureRuntime: true });
   writeFileSync(join(dir, 'audio-test-silent.html'), silent.html);
   embeds.set('audio-test-silent', { build: silent, url: pathToFileURL(join(dir, 'audio-test-silent.html')).href });
 });
 
 afterAll(async () => {
   await studio?.close();
+  await server?.close();
   await browser?.close();
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
@@ -137,24 +147,27 @@ describe('the embed file', () => {
 });
 
 describe('building', () => {
-  function scenesDir(files: Record<string, unknown>): string {
-    const scenes = mkdtempSync(join(dir, 'scenes-'));
-    for (const [name, json] of Object.entries(files)) writeFileSync(join(scenes, name), typeof json === 'string' ? json : JSON.stringify(json));
-    return scenes;
+  /** A studio folder holding just these scene files, and a code host for it. */
+  function scenesDir(files: Record<string, unknown>): { folder: ReturnType<typeof studioFolder>; code: CodeHost } {
+    const root = mkdtempSync(join(dir, 'folder-'));
+    mkdirSync(join(root, 'scenes'));
+    for (const [name, json] of Object.entries(files)) writeFileSync(join(root, 'scenes', name), typeof json === 'string' ? json : JSON.stringify(json));
+    const folder = studioFolder(root);
+    return { folder, code: new CodeHost(folder) };
   }
   const hello = JSON.parse(readFileSync(join(import.meta.dirname, '../../scenes/hello.json'), 'utf8')) as Scene;
 
   it('refuses an invalid scene and prints the validator messages', async () => {
     const scenes = scenesDir({ 'broken.json': { ...hello, id: 'broken', fps: 0 } });
-    await expect(buildEmbed('broken', { scenesDir: scenes })).rejects.toThrow(/scenes\/broken\.json has errors[\s\S]*fps/);
-    await expect(buildEmbed('broken', { scenesDir: scenes })).rejects.not.toThrow(/undefined/);
+    await expect(buildEmbed('broken', scenes)).rejects.toThrow(/scenes\/broken\.json has errors[\s\S]*fps/);
+    await expect(buildEmbed('broken', scenes)).rejects.not.toThrow(/undefined/);
   });
 
   it('resolves a scene key the way the viewer does: the id first, then the file name', async () => {
     const scenes = scenesDir({ 'hero.json': { ...hello, id: 'villain' }, 'a.json': { ...hello, id: 'hero' } });
-    expect((await buildEmbed('hero', { scenesDir: scenes })).scene.id).toBe('hero');
-    expect((await buildEmbed('villain', { scenesDir: scenes })).scene.id).toBe('villain');
-    await expect(buildEmbed('nobody', { scenesDir: scenes })).rejects.toThrow(/No scene "nobody".*hero.*villain/s);
+    expect((await buildEmbed('hero', scenes)).scene.id).toBe('hero');
+    expect((await buildEmbed('villain', scenes)).scene.id).toBe('villain');
+    await expect(buildEmbed('nobody', scenes)).rejects.toThrow(/No scene "nobody".*hero.*villain/s);
   });
 
   it('strips rig and param descriptions, which the player never reads', () => {
@@ -183,17 +196,19 @@ describe('building', () => {
   });
 });
 
-describe('pixel parity with the headless renderer', () => {
+describe('pixel parity with the render worker, in Electron', () => {
   it.each([
     ['bear-test', [0, 12, 47, 48, 60, 71, 72, 95]],
     ['shapes-test', [0, 10, 11, 23, 35, 36, 47, 48, 71]],
-  ] as const)('%s frames match render.html byte for byte', async (key, frames) => {
+  ] as const)('%s frames match the render worker byte for byte', async (key, frames) => {
     await studio.load(key);
-    const { page, context } = await openEmbed(key, '?autoplay=0');
+    const electron = await electronPage();
     try {
-      for (const f of frames) expect(await embedHash(page, f), `${key} frame ${f}`).toBe(await studio.call('pixelHash', f));
+      await electron.page.goto(`${embeds.get(key)!.url}?autoplay=0`);
+      await electron.page.waitForFunction(() => 'studio' in window);
+      for (const f of frames) expect(await embedHash(electron.page, f), `${key} frame ${f}`).toBe(await studio.call('pixelHash', f));
     } finally {
-      await context.close();
+      await electron.close();
     }
   });
 });
@@ -249,7 +264,7 @@ describe('playback', () => {
       expect(await frameOf(page)).toBe(12);
       expect(await playingOf(page)).toBe(false);
       expect(await page.evaluate(() => (window as unknown as EmbedWindow).studio.seek(500))).toBe(95);
-      expect(await embedHash(page, 47)).toBe(await (async () => (await studio.load('bear-test'), studio.call('pixelHash', 47)))());
+      expect(await frameOf(page)).toBe(95);
     } finally {
       await context.close();
     }

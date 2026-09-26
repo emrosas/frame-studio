@@ -9,10 +9,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Browser, BrowserContext, Page } from 'playwright';
-import type { ViteDevServer } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { CurrentSelection } from '../../src/studio/protocol';
-import { launchBrowser, ROOT, startVite } from '../../tools/render/studio';
+import { ROOT } from '../../tools/render/studio';
+import { launchBrowser } from './browser';
+import { startStudio, type TestStudio } from './studio-server';
 import { StudioQueue } from '../../tools/studio/queue';
 
 const ID = `test-tmp-handoff-${process.pid}`;
@@ -21,7 +22,7 @@ const STUDIO = mkdtempSync(join(tmpdir(), 'frame-studio-viewer-handoff-'));
 const agent = new StudioQueue(STUDIO, async () => SCENE_FILE);
 const uploaded: string[] = [];
 
-let vite: ViteDevServer;
+let studio: TestStudio;
 let browser: Browser;
 let context: BrowserContext;
 let page: Page;
@@ -32,19 +33,19 @@ beforeAll(async () => {
   const scene = JSON.parse(readFileSync(join(ROOT, 'scenes/bear-test.json'), 'utf8'));
   original = `${JSON.stringify({ ...scene, id: ID }, null, 2)}\n`;
   writeFileSync(SCENE_FILE, original);
-  vite = await startVite({ watch: true, hmr: true });
+  studio = await startStudio({ hmr: true });
   browser = await launchBrowser();
   context = await browser.newContext({ viewport: { width: 1400, height: 860 }, deviceScaleFactor: 1 });
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   page = await context.newPage();
-  await page.goto(`${vite.resolvedUrls!.local[0]}?scene=${ID}&frame=60`);
+  await page.goto(studio.paired(`?scene=${ID}&frame=60`));
   await page.waitForFunction(() => (window as unknown as { studio?: { frameCount: number } }).studio?.frameCount === 96);
 });
 
 afterAll(async () => {
   await context?.close();
   await browser?.close();
-  await vite?.close();
+  await studio?.close();
   delete process.env.FRAME_STUDIO_DIR;
   rmSync(SCENE_FILE, { force: true });
   rmSync(STUDIO, { recursive: true, force: true });

@@ -1,6 +1,6 @@
 /**
- * M3 in a real browser: render.html in Playwright's headless Chromium, driven
- * through tools/render/studio.ts like the CLI.
+ * M3 in a real browser: the render worker (render.html in Electron, ADR 0008),
+ * driven through tools/render/studio.ts like the CLI.
  *
  * - Determinism: every frame of every scene hashes the same whether drawn in
  *   order from frame 0 or seeked to directly in a fresh page.
@@ -15,29 +15,29 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import { ALL_FORMATS, BufferSource, Input } from 'mediabunny';
-import type { Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readGifStructure } from '../../src/export/testing/gif-structure';
-import { launchBrowser, openStudio, ROOT, type Studio } from '../../tools/render/studio';
+import { ROOT, type Studio } from '../../tools/render/studio';
+import { renderClient, startStudio, type TestStudio } from './studio-server';
 
 const SCENES = readdirSync(join(ROOT, 'scenes'))
   .filter((f) => f.endsWith('.json'))
   .map((f) => f.slice(0, -'.json'.length))
   .sort();
 
-let browser: Browser;
+let server: TestStudio;
 let studio: Studio;
 let dir: string;
 
 beforeAll(async () => {
-  browser = await launchBrowser();
-  studio = await openStudio('bear-test', { browser });
+  server = await startStudio();
+  studio = await renderClient(server, 'bear-test');
   dir = mkdtempSync(join(tmpdir(), 'frame-studio-render-'));
 });
 
 afterAll(async () => {
   await studio?.close();
-  await browser?.close();
+  await server?.close();
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -70,7 +70,8 @@ describe('determinism: seeking to frame N draws the same pixels as playing from 
     const scene = await studio.load(key);
     const all = Array.from({ length: scene.frameCount }, (_, f) => f);
     const played = await hashes(all);
-    // A fresh page, then frames out of order: backwards, then every seventh.
+    // A fresh library and canvas, then frames out of order: backwards, then every seventh.
+    server.server.touch();
     await studio.load(key);
     const seekOrder = [...all].reverse().concat(all.filter((f) => f % 7 === 3));
     const seeked = await hashes(seekOrder);
@@ -80,12 +81,10 @@ describe('determinism: seeking to frame N draws the same pixels as playing from 
   });
 });
 
-describe('ticket 03 checks on the pinned Chromium', () => {
+describe("ticket 03 checks on Electron's Chromium", () => {
   it('rasterizes 2D canvas on the CPU', async () => {
-    const cdp = await browser.newBrowserCDPSession();
-    const info = (await cdp.send('SystemInfo.getInfo')) as { gpu: { featureStatus: Record<string, string> } };
-    await cdp.detach();
-    expect(info.gpu.featureStatus['2d_canvas']).toMatch(/_software$|^disabled/);
+    const gpu = (await server.server.pool.call('bear-test', 'gpu')) as Record<string, string> | null;
+    expect(gpu?.['2d_canvas']).toMatch(/_software$|^disabled/);
   });
 
   it('writes PNGs that decode to exactly the canvas pixels', async () => {
@@ -97,15 +96,16 @@ describe('ticket 03 checks on the pinned Chromium', () => {
     }
   });
 
-  it('draws identical pixels in a second browser launch', async () => {
+  it('draws identical pixels in a second Electron launch', async () => {
     await studio.load('bear-test');
     const frames = [0, 12, 47, 60, 95];
     const first = await hashes(frames);
-    const other = await openStudio('bear-test');
+    const second = await startStudio();
     try {
+      const other = await renderClient(second, 'bear-test');
       for (const f of frames) expect(await other.call('pixelHash', f), `frame ${f}`).toBe(first.get(f));
     } finally {
-      await other.close();
+      await second.close();
     }
   });
 });

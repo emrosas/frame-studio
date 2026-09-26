@@ -52,6 +52,17 @@ export interface SelectionState {
   notice: string | null;
 }
 
+/** The Export panel (ADR 0008): closed, set up, running, or finished. */
+export interface ExportState {
+  open: boolean;
+  /** The export running now, with its progress. */
+  running: { id: string; stage: string; done: number; total: number } | null;
+  /** How the last export ended. */
+  result: { file: string } | { error: string } | null;
+  /** True in the app, where the finished file can be shown in Finder. */
+  canReveal: boolean;
+}
+
 /** The scene's sound, for the mute button. Null for a silent scene. */
 export interface SoundState {
   /** rendering: the audio is being rendered. locked: the browser waits for a click or key first. */
@@ -81,6 +92,13 @@ export interface ViewerActions {
   openShot(layerId?: string): void;
   /** Back to the scene a shot was opened from. */
   back(): void;
+  /** Shows or hides the Export panel. */
+  toggleExport(open?: boolean): void;
+  /** Exports the scene on screen, or only the selected range. */
+  startExport(target: 'mp4' | 'gif' | 'html', options: { range: boolean; sound: boolean }): Promise<string | null>;
+  cancelExport(): void;
+  /** Shows the last export's file in Finder (the app only). */
+  revealExport(): void;
   clearLayer(): void;
   clearRange(): void;
   /** Applies a typed range end. Returns an error message and changes nothing when the text is invalid. */
@@ -153,6 +171,7 @@ export class ViewerUi {
   shots = $state<{ bands: ShotBand[]; lanes: number; frameCount: number } | null>(null);
   /** The scene a shot was opened from, for the link back. */
   back = $state<{ key: string; label: string } | null>(null);
+  exporting = $state<ExportState>({ open: false, running: null, result: null, canReveal: false });
   selection = $state<SelectionState>({ sceneId: null, layer: '', shot: null, range: null, rangeText: null, frameCount: 0, notice: null });
   errors = $state<ErrorBlock[]>([]);
   studio = $state<StudioState>({ available: false, requests: [], now: Date.now(), error: null, agents: [], open: null });

@@ -149,14 +149,24 @@ Acceptance:
 
 ## M10: Electron app
 
-The desktop shell from ADR 0001, reading the project layout M9 settles (ADR 0007).
+The desktop shell from ADR 0001, on studio folders and one studio server (ADR 0008).
 
-- Move the studio server out of Vite into a standalone Node server. Electron starts it as a child process and passes the page its address and a pairing token, as T3 Code does.
-- A file-backed scene store in place of `import.meta.glob` and Vite's hot reload.
-- Main and preload scripts that carry only native features and the server's address. The viewer stays web-only code.
-- The installed app leaves out the Claude Agent SDK's bundled Claude binary (about 220 MB), since the studio runs the user's installed `claude`. T3 Code excludes it the same way.
+- A standalone studio server: the built viewer, pairing, the request queue and agents, a file store and a module service for rigs and generators, an event stream, and the MCP endpoint. `npm run dev` runs it on the repo with Vite in front for the viewer's own code.
+- A render worker page that takes jobs from the server, in a hidden Electron window. The CLI and the pixel tests render through it.
+- An Export button in the viewer.
+- The `frame-studio-mcp` shim for external agents.
+- Main and preload scripts that carry only native features. The installed app leaves out the Claude Agent SDK's bundled Claude binary.
 
-Acceptance: settled in ticket 19 before the milestone starts.
+Acceptance:
+1. `npm run desktop:build` makes `Frame Studio.app` and a DMG for macOS arm64. A check after the build fails if the app is over 300 MB or holds anything named `claude-agent-sdk-`, and it passes.
+2. Opened from Finder, the app offers New studio folder and Open folder. New creates `~/Frame Studio/` with `hello` and `bears-story`, which open and play. The repo opens as a studio folder too, and the app reopens the last folder on the next launch.
+3. The studio server refuses every request without the pairing cookie or token. The page reaches native features only through the desktop bridge.
+4. Rigs and generators load through the module service in the app and in `npm run dev`. An edit to a rig in the studio folder shows in the viewer without a reload, and a render worker renders it the same. Runtime TypeScript is erasable, and typecheck says so. Project rigs import the built-ins as `@frame-studio/...`.
+5. An agent in the app, launched from Finder, finds `claude` and `codex`, and a test agent turn writes a rig into the studio folder's `rigs/` and uses it.
+6. The viewer exports MP4, GIF and HTML of the scene or the range, with or without sound, with progress and Cancel, into `out/`. The app reveals the file in Finder.
+7. The `frame-studio-mcp` shim works every MCP tool through a running app, and through a headless server when no app is open.
+8. `npm run render`, `export` and `contact-sheet` and the pixel tests render in Electron through the render worker, and the HTML embed matches the worker's pixels.
+9. Every earlier test passes on the new paths.
 
 ## Later
 

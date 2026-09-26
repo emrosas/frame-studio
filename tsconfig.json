@@ -15,11 +15,19 @@
     "noEmit": true,
     "types": [
       "vite/client"
-    ]
+    ],
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "paths": {
+      "@frame-studio/*": [
+        "./src/*"
+      ]
+    }
   },
   "include": [
     "src",
-    "tests"
+    "tests",
+    "projects"
   ],
   "exclude": [
     "tests/browser",

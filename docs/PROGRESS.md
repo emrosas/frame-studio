@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-25, after M9.
+Last updated 2026-09-26, after M10.
 
 ## Done
 
@@ -495,6 +495,99 @@ Two review agents read the M9 diff, one on the engine and tools and one on the v
 
 After the fixes the suites are at 1132 unit tests and 99 browser tests, all passing with the committed `bear-test.json`.
 
+### M10: Electron app
+
+M10 is built as the ticket 19 grill settled it (ADR 0008), and its nine acceptance criteria pass. You asked for the build to go ahead on sensible defaults after the grill, with an overview to review; the defaults I picked are listed at the end of this section.
+
+What M10 delivered:
+
+- **A standalone studio server** (`tools/studio/server.ts`), replacing the Vite plugin. It serves the viewer, pairs callers, and pushes the queue, turn events, library changes and export progress over one event stream. It also serves:
+  - the scene files, and rigs and generators through the module service
+  - the render worker's jobs, exports, and the request queue
+  - the agents in the studio and their MCP endpoint
+- **Pairing.** Whoever starts the server gives it a token. The page trades the token for an HttpOnly cookie, through the app's preload or the `#token=` link `npm run dev` prints. Tools send it as a bearer token. The server writes `.frame-studio/server.json`, readable only by you, so tools on the folder reuse it.
+- **The module service** (`tools/studio/modules.ts`). Node strips the types, and every import points to a URL carrying a hash of the file and everything it imports, so an edit reloads only that file and its importers. The Node side loads the same files through a resolve hook (`tools/studio/loader.ts`, `code.ts`). Runtime TypeScript is erasable: five constructors were rewritten, and typecheck enforces it. Rigs outside `src/` import the built-ins as `@frame-studio/...`.
+- **Studio folders.** The tools, the server and the app work on one: `scenes/`, `projects/`, `rigs/`, `audio/`, `references/`, `out/`. The repo is one, with `src/` as its built-ins. A folder rig with a built-in's id is an error.
+- **The render worker** (`render.html?worker`). It takes jobs over the event stream and posts results and bytes back. The app opens it in a hidden window. Any other server launches Electron in worker-only mode (`desktop/worker.ts`). The CLI, the MCP tools, exports and the pixel tests all render through it, so Electron's Chromium is the pixel reference. The CLI reuses a server already open on the folder, or starts a headless one.
+- **Export in the viewer.** A panel for MP4, GIF or HTML of the scene or its range, with or without sound. It has progress and Cancel, writes into `out/`, and offers Reveal in Finder in the app.
+- **The MCP shim.** `tools/mcp/server.ts` forwards every MCP message to the folder's studio server, or starts a headless one. External agents get their own session and the request queue's tools. The app ships the shim as `frame-studio-mcp`.
+- **HTML exports on Rolldown alone.** Vite doesn't ship in the app.
+- **The app** (`desktop/`):
+  - welcome screen with New studio folder and Open folder; New makes `~/Frame Studio/` with `hello` and `bears-story`, and a `tsconfig.json` that maps `@frame-studio/` to the app's built-ins
+  - reopens the last folder
+  - File menu with Open Recent and Reveal Output Folder
+  - the studio server in a utility process, restarted with backoff if it dies
+  - the hidden render worker
+  - PATH read from your login shell
+  - single-instance lock, saved window bounds, sandboxed pages, navigation guards, logs in `~/Library/Logs/Frame Studio/`
+- **Packaging** (`npm run desktop:build`, `tools/desktop/package.ts`).
+  - electron-builder makes an unsigned macOS arm64 app and DMG.
+  - Rolldown bundles the main process, the server and the shim into single files, so the only `node_modules` that ships is Rolldown's.
+  - The engine, rigs, generators and embed player ship as source under `Resources/builtins/`.
+  - A check (`tools/desktop/check.ts`) fails on any path named `claude-agent-sdk-` or an app over 300 MB.
+- **`npm run dev`** runs the studio server on the repo with Vite's dev middleware inside, and prints the paired link. The token lasts across restarts. `npm run desktop` runs the app from the repo.
+
+### How each M10 acceptance criterion was verified
+
+1. **The build.** `npm run desktop:build` takes about 25 s. The app is 261.7 MB, under the 300 MB ceiling, and the DMG is 124 MB. `app.asar` holds seven files: the main bundle, the two preloads, the welcome page and `package.json`. Nothing named `claude-agent-sdk-` is anywhere in the app, and the check says so.
+2. **Folders.** `tests/browser/desktop.test.ts` runs the app from source, and `tests/browser/packaged.test.ts` runs the built app. Both use a temporary settings folder and new folders in a temporary home.
+   - New studio folder makes the folder with both samples and a `tsconfig.json`, and the viewer opens on it with no errors.
+   - The next launch skips the welcome screen and reopens the folder.
+   - The repo opens as a folder under `npm run dev`, and every other test uses it that way.
+3. **Pairing.** A request without the cookie or token gets 401, and so does one with a wrong token. `server.json` has no group or other permissions. In the app, the page has only the three bridge functions, and no `require`.
+4. **Loading code.** `tests/browser/studio-folder.test.ts` rewrites a folder rig's colour while the viewer is open. The canvas changes without a page reload, and the render worker's pixels change too. A folder rig that reuses `paper`'s id is refused. `tests/node/studio-server.test.ts` checks the service's URLs, rewriting, error modules and refusals. Every rig, including `iris`, now imports the built-ins by name.
+5. **Agents from Finder.** Both app tests launch with launchd's short PATH. The server still finds `claude`, through the login shell. A test agent turn writes `rigs/twinkle.ts` into the folder, adds it to `hello` with `update_scene`, and the viewer shows the new layer.
+6. **Export.** `viewer.test.ts` exports a GIF of frames `[0, 12)` from the panel. `packaged.test.ts` exports an MP4 range from the packaged app and finds Reveal in Finder. I didn't click Reveal, to keep Finder windows off your screen.
+7. **The shim.** `mcp.test.ts` runs all its tools through `node tools/mcp/server.ts`, which starts a headless server. `packaged.test.ts` runs `frame-studio-mcp` with the app open, where it reuses the app's server, and again with the app closed, where it starts its own server and a worker from the app's files and renders and exports an HTML embed.
+8. **Electron as the reference.**
+   - `render.test.ts`: every frame of every scene hashes the same played or seeked; 2D canvas is on the CPU; and a second Electron launch draws identical pixels.
+   - `embed.test.ts` and `projects.test.ts` open the HTML embeds in Electron and match the worker pixel for pixel, with the network off.
+   - Timings: a CLI frame took 1.7 s through `npm run dev`'s server, an MP4 export of `audio-test` 0.8 s, and a contact sheet on a fresh folder 4.8 s including the headless start.
+9. **Earlier tests.** Every earlier browser test now runs on the new paths. The suites are at 1143 unit tests and 112 browser tests, all passing with the committed `bear-test.json`, after the review fixes below. Typecheck is clean.
+
+### M10 review
+
+Two review agents read the M10 diff, one on the server and tools, one on the shell and the page. Between them they found 23 problems, the worst of them found by both. All of these are fixed:
+
+- **A render job whose worker died never ended.** It also held up every later job, and with them every MCP tool, since tools run one at a time. The pool now sends an interrupted job to the next worker, starts a new Electron when the old one ended, and gives up on a job that takes down three workers. A page that stops responding (a rig looping forever) is crashed and reloaded. Cancel works with no worker connected, and before a job starts.
+- **One rig that wouldn't strip blanked the viewer and killed the render worker.** The module list failed as a whole, the boot guard couldn't show why (the page policy blocked its inline script), and the worker never retried. Now each bad file gets a URL that serves its error, the viewer says what failed and tries again when files change, the worker keeps retrying its first load, and the boot guard is a file of its own.
+- **`npm run dev` served the repo through Vite, the pairing token included**, at `/.frame-studio/dev-token`. Vite now gets only the pages, `src/` and its own paths, and denies `.frame-studio/` even through `/@fs/`. `server.json` is private from the moment it exists.
+- **The app:**
+  - Opening folders is one at a time now. A double click used to start two servers and leak one.
+  - A folder that fails to open leaves you where you were, and says why.
+  - A server that fails on restart is retried, and a restart never pulls you back to a folder you left.
+  - Closing the viewer quits the app; the hidden worker window kept it running before. The Dock icon and a second launch bring the window back.
+  - The login-shell PATH step really times out: interactive shells ignore SIGTERM, so it now uses SIGKILL.
+  - Run from the repo, the app keeps its settings and logs under "Frame Studio", not "Electron".
+  - The worker window stays on its page, opens nothing, and a pending reload can't hit a closed window.
+- **Long MCP calls through the shim timed out at five minutes**, and were then sent again. Answers now stream with keep-alives, the shim retries only when the server was unreachable, and calls that arrive together share one connection.
+- **Smaller ones:**
+  - A missing Electron binary crashed the server; now the render job fails with the reason.
+  - Edits to `src/rigs` went unnoticed on a server with a static viewer.
+  - Files that import each other now hash as one, so an edit to one reloads all of them.
+  - A malformed cookie from another local app broke every request.
+  - The session cookie is named after the server's port.
+  - The event stream sends the current state on connect, and the viewer says when the stream is gone for good.
+  - Export's Cancel works before encoding starts and for HTML.
+  - The Export panel keeps focus on one button through an export, announces progress, and closes with Escape.
+  - The welcome buttons wait while a folder opens.
+  - `FRAME_STUDIO_BUILTINS` reaches the shim.
+  - Vite starts before the server takes requests.
+
+### Defaults I picked for M10
+
+These are yours to change. Most are a line or two.
+
+- **Pushes use one Server-Sent Events stream**, not a WebSocket as ADR 0001 said. Every push is one-way, and it needs no library.
+- **`npm run dev` hosts Vite inside the studio server**, rather than Vite proxying to it, so dev has one origin like the app. It listens on port 5173 as before, now on 127.0.0.1. The first visit needs the printed link.
+- **Default port 4753** for the app's server, falling back to a free port when it's taken.
+- **One render worker per server**, running one job at a time.
+- **Built-in rigs load through the module service too**, not the viewer bundle, so there's one loading path. The first paint waits for them, a few hundred ms.
+- **The app's CPU canvas switches apply to its viewer as well**, since Chromium switches are process-wide. Preview uses CPU raster in the app.
+- **New studio folder uses `~/Frame Studio`**, or `~/Frame Studio 2` and so on when taken, without asking where.
+- **No app icon yet**; it uses Electron's.
+- **An external agent's session** is named `mcp-<pid of its shim>`, so two Claude Code sessions on one app keep their claims apart.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -506,8 +599,9 @@ After the fixes the suites are at 1132 unit tests and 99 browser tests, all pass
    Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
 2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
 3. Try the integrated AI: in the viewer, pick Claude or Codex in the Requests panel, select something, and ask for a change.
-4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film with `npm run export -- --scene bears-story/film --target mp4`.
-5. M10, ticket 19: the Electron app, reading the project layout.
+4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film from the Export panel.
+5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
+6. The roadmap has no M11 yet. Candidates from ADR 0008 and "Later": signing and notarization, updates, Windows and Linux builds, the timeline editor, selecting inside a shot from its parent.
 
 ## Open questions
 
@@ -524,7 +618,7 @@ After the fixes the suites are at 1132 unit tests and 99 browser tests, all pass
 - A rig that calls `save()` without a matching `restore()` leaks state on a real canvas, and `render` cannot detect it. The smoke tests catch this for the shipped rigs. New rigs need the same check, which they get by being added to `allRigs`.
 - The selection outline traces every gap where the ground shows through a layer, such as the small triangle between `bruno`'s left ear and his head. It follows the pixels correctly but reads as a stray mark.
 - A hover probe draws every layer in full, 5 to 11 ms on `bear-test`. Scenes with many layers or heavier rigs will feel it. A bounds cull would need rigs to declare bounds.
-- Browser tests need the headless shell downloaded once (`npx playwright install chromium-headless-shell`). Installing a newer Playwright deletes cached browsers that no installed Playwright uses. On 2026-09-23 that removed the Chromium 140 build ticket 03 used, which had to be reinstalled through Playwright 1.55 in `/tmp`.
+- The interface tests need Playwright's Chromium downloaded once (`npx playwright install chromium-headless-shell`); renders come from Electron, which `npm install` brings. This shell's environment sets `ELECTRON_RUN_AS_NODE=1`, which turns Electron into plain Node; the tools strip it, but run `electron` by hand with `env -u ELECTRON_RUN_AS_NODE`.
 - `apply_to_selection` can add or merge overrides, but not remove one. In the user's first MCP test on 2026-09-24 ("remove the plaster"), the agent removed bruno's `bear.bandaged` override through `update_scene`, sending the whole `layers` array. Both the agent and I flagged this as clunky. A small "remove override" option on `apply_to_selection` would fix it.
 - Opus plays 312 samples (6.5 ms) late in AVFoundation, which ignores the start delay Opus carries. It's the fallback only where there is no AAC encoder, such as Linux, and the error is well under a frame.
 - Windows AAC exports assume AudioToolbox's 2112 priming samples. Media Foundation's count is unmeasured, so audio in MP4s exported on Windows may be off by a few milliseconds until someone measures it on a Windows machine.
@@ -540,5 +634,13 @@ After the fixes the suites are at 1132 unit tests and 99 browser tests, all pass
 - Hit testing stops at the scene layer: a click on a shot selects the whole shot. Selecting inside a shot from its parent is left for later (ADR 0007). Open the shot to select inside it.
 - A hover probe on a scene that places shots draws each shot in full, so hovering a heavy film costs as much as rendering it.
 - The busy-rig check for a thread on a main scene counts every rig its shots draw with, so an agent on another scene of the project gets asked before editing any of them.
+- The app is unsigned. A copy downloaded from elsewhere needs right-click, Open the first time, and macOS may warn. Windows and Linux builds aren't made or tried.
+- Rig edits reload without a page reload, but the page and the server both keep old copies of the modules. A page with hundreds of edits behind it should be reloaded now and then (View, Reload in the app).
+- The code host reloads every rig and generator after any change, in the server process. Hot code and a loop at import time would hang the server rather than a worker. The research suggested a worker thread for this, which isn't built.
+- The render worker takes one job at a time, so a long export holds up the agents' renders until it ends.
+- Node's type stripping still prints an experimental warning; the loader hides it. If Node changes the API, `tools/studio/loader.ts` and `modules.ts` are the places to look.
+- Pixels match within Electron 44.4.5. Upgrading Electron may change them, and the pixel tests would say so.
+- Under `npm run dev`, an edit to `src/engine` reaches the viewer and the render worker, but the server's own validation keeps the old engine until you restart `npm run dev`.
+- The browser tests run their studio servers inside vitest, whose sandbox has no native `import()`. There the code host loads rigs through vitest's runner, which doesn't reload a rig's imports after an edit. The app and `npm run dev` use Node's loader, and the desktop tests cover that path.
 - The access rules aren't a sandbox. Rig and generator code an agent writes runs in the studio server and the browser.
 

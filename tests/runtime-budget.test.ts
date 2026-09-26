@@ -117,11 +117,22 @@ export function findViolations(file: string, source: string): string[] {
       problems.push(`${where}: dynamic import/require with a non-literal specifier; use a static relative import`);
       continue;
     }
-    if (!(spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..')) {
+    // Rigs and generators outside src/ reach the built-ins by name (ADR 0008); inside src/, imports stay relative.
+    const named = /^@frame-studio\/((?:engine|rigs|audio)(?:\/.*)?)$/.exec(spec);
+    if (spec.startsWith('@frame-studio/')) {
+      if (file.startsWith('/src/')) {
+        problems.push(`${where}: imports "${spec}"; inside src/, import by relative path`);
+        continue;
+      }
+      if (!named) {
+        problems.push(`${where}: imports "${spec}"; @frame-studio/ names only engine/, rigs/ and audio/`);
+        continue;
+      }
+    } else if (!(spec.startsWith('./') || spec.startsWith('../') || spec === '.' || spec === '..')) {
       problems.push(`${where}: imports "${spec}", which is not a relative path; runtime code takes no packages`);
       continue;
     }
-    const target = resolveSpecifier(file, spec);
+    const target = named ? `/src/${named[1]}` : resolveSpecifier(file, spec);
     const inside = (root: string) => `${target}/`.startsWith(root) || target.startsWith(root);
     const forbidden = FORBIDDEN_TARGETS.find(inside);
     const ownProject = /^\/projects\/([^/]+)\/rigs\//.exec(file)?.[1];
@@ -286,7 +297,10 @@ describe('runtime budget scanner (self-test)', () => {
 
   it("keeps projects' rigs to themselves", () => {
     const own = '/projects/story/rigs/hat.ts';
-    expect(check(`import { num } from '../../../src/rigs/parts/params';\nimport { brim } from './parts/brim';`, own)).toEqual([]);
+    expect(check(`import { num } from '@frame-studio/rigs/parts/params';\nimport { brim } from './parts/brim';`, own)).toEqual([]);
+    expect(check(`import type { Rig } from '@frame-studio/engine/types';`, own)).toEqual([]);
+    expect(check(`import { x } from '@frame-studio/viewer/app';`, own).join('\n')).toMatch(/names only engine/);
+    expect(check(`import { num } from '@frame-studio/rigs/parts/params';`, '/src/rigs/fly.ts').join('\n')).toMatch(/inside src\/, import by relative path/);
     expect(check(`import { x } from '../../other/rigs/x';`, own).join('\n')).toMatch(/another project's/);
     expect(check(`import { hat } from '../../projects/story/rigs/hat';`, '/src/rigs/index.ts').join('\n')).toMatch(/only that project's own rigs/);
     expect(check(`import { ui } from '../../../src/viewer/ui';`, own).join('\n')).toMatch(/src\/viewer/);

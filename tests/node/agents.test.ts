@@ -17,6 +17,9 @@ const verdict = (v: ReturnType<typeof judge>) => (v.allow ? 'allow' : v.ask ? 'a
 describe('access rules', () => {
   it('lets the studio access write scenes, rigs and generators, and asks for anything else', () => {
     expect(verdict(judge({ kind: 'write', paths: ['src/rigs/bear-wink.ts', 'src/audio/chime.ts'] }, ctx()))).toBe('allow');
+    // A studio folder's own rigs and generators (ADR 0008).
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/rigs/hat.ts', '/repo/audio/chime.ts'] }, ctx()))).toBe('allow');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/rigs/bear-hat.ts'] }, ctx({ access: 'full', busyScenes: ['bear-test'], busyRigs: ['bear'] })))).toBe('ask');
     expect(verdict(judge({ kind: 'write', paths: ['/repo/src/engine/render.ts'] }, ctx()))).toBe('ask');
     expect(verdict(judge({ kind: 'write', paths: ['/repo/src/rigs/x.ts', '/repo/package.json'] }, ctx()))).toBe('ask');
     expect(verdict(judge({ kind: 'write', paths: ['/etc/hosts'] }, ctx()))).toBe('ask');

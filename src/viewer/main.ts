@@ -1,9 +1,10 @@
-// Viewer entry. Boots the app, exposes window.studio, and wires hot reload:
+// Viewer entry. Pairs with the studio server, loads the scene library from it,
+// boots the app, exposes window.studio, and keeps the library current:
 //
-// - Scene JSON and rig edits: ./scenes is an accepted HMR dependency, so the
-//   new library swaps in place and the viewer keeps its scene, frame, and play
-//   state.
-// - Anything else (engine, viewer code): Vite falls back to a full reload.
+// - Scene, project, rig and generator edits: the studio server says so on its
+//   event stream, and the rebuilt library swaps in place, so the viewer keeps
+//   its scene, frame, and play state (ADR 0008).
+// - Viewer and engine code under npm run dev: Vite falls back to a full reload.
 //   The URL carries ?scene=&frame=&layer=&part=&from=&to= and play state goes
 //   through sessionStorage, so the reload lands on the same frame and selection.
 // - A manual reload: the URL write is throttled, so it can trail the screen.
@@ -15,7 +16,10 @@ import { flushSync, mount } from 'svelte';
 import { App, RESUME_KEY, type StudioApi } from './app';
 import Viewer from './components/Viewer.svelte';
 import { ViewerUi, type ViewerActions } from './ui.svelte';
-import { loadLibrary } from './scenes';
+import { pair } from './pairing';
+import { loadLibrary, type LoadedLibrary } from './scenes';
+import { LIBRARY_EVENT } from '../studio/protocol';
+import { studioEvents } from './studio-events';
 import { bootUrlState, readUrlState, RELOAD_KEY } from './url';
 
 declare global {
@@ -55,6 +59,34 @@ function navigationType(): string | undefined {
 const root = document.getElementById('app');
 if (!root) throw new Error('index.html is missing <div id="app">.');
 
+const paired = await pair();
+if (!paired.ok) {
+  root.textContent = paired.reason;
+  window.__studioBoot?.done();
+  throw new Error(paired.reason);
+}
+
+/** The library, loaded until it loads: after a failure, the page says why and tries again when files change. */
+async function firstLibrary(): Promise<LoadedLibrary> {
+  for (;;) {
+    try {
+      const library = await loadLibrary();
+      root!.textContent = '';
+      return library;
+    } catch (err) {
+      root!.textContent = `The studio could not load this folder's scenes and rigs: ${err instanceof Error ? err.message : String(err)}\nFix the file and save; this page tries again then.`;
+      window.__studioBoot?.done();
+      await new Promise<void>((resolve) => {
+        const stop = studioEvents.on(LIBRARY_EVENT, () => {
+          stop();
+          resolve();
+        });
+      });
+    }
+  }
+}
+let loaded = await firstLibrary();
+
 const url = bootUrlState(readUrlState(location.search), takeReloadRecord(), navigationType());
 
 // The layout mounts first, so the footer takes its height out of the stage
@@ -66,7 +98,7 @@ mount(Viewer, { target: root, props: { ui, actions } });
 flushSync();
 const app = new App(
   root,
-  loadLibrary(),
+  loaded.library,
   {
     scene: url.scene,
     frame: url.frame,
@@ -78,23 +110,35 @@ const app = new App(
 Object.assign(actions, app.actions);
 
 window.studio = app.api;
+studioEvents.onClosed(() => app.reportServerLost());
 window.addEventListener('error', (e) => app.reportRuntimeError(e.error ?? e.message));
 window.addEventListener('unhandledrejection', (e) => app.reportRuntimeError(e.reason));
 window.__studioBoot?.done();
 
-if (import.meta.hot) {
-  import.meta.hot.accept('./scenes', (mod) => {
-    if (!mod) {
-      app.reportHotFailure();
-      return;
+// Files changed: load the library again, one load at a time, skipping ones a newer change overtook.
+let reloading: Promise<void> | null = null;
+let wanted = 0;
+studioEvents.on<{ generation: number }>(LIBRARY_EVENT, ({ generation }) => {
+  wanted = Math.max(wanted, generation);
+  reloading ??= (async () => {
+    while (loaded.generation < wanted) {
+      try {
+        const next = await loadLibrary();
+        if (next.generation < loaded.generation) break;
+        loaded = next;
+        app.setLibrary(loaded.library);
+      } catch (err) {
+        // Reported as a hot-update failure, so the next good swap clears it.
+        app.reportHotFailure(err);
+        break;
+      }
     }
-    try {
-      app.setLibrary((mod as unknown as typeof import('./scenes')).loadLibrary());
-    } catch (err) {
-      // Reported as a hot-update failure, so the next good swap clears it.
-      app.reportHotFailure(err);
-    }
+  })().finally(() => {
+    reloading = null;
   });
+});
+
+if (import.meta.hot) {
   import.meta.hot.on('vite:beforeFullReload', () => app.prepareForReload());
   import.meta.hot.on('vite:error', (payload) => app.reportBuildError(payload.err));
   import.meta.hot.on('vite:afterUpdate', () => app.clearBuildError());

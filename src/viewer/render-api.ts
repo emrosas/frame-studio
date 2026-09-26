@@ -48,11 +48,6 @@ export interface ContactSheetResult {
  * exposeFunction). Each call carries a sink id, base64 data and a byte offset.
  * window.__studioClose(sinkId) follows the last write.
  */
-export interface RenderHostBindings {
-  __studioWrite?(sinkId: string, base64: string, position: number): Promise<void>;
-  __studioClose?(sinkId: string): Promise<void>;
-}
-
 export interface RenderStudioApi {
   /** Always true once the page has booted, even when the scene has errors. */
   readonly ready: true;
@@ -60,7 +55,7 @@ export interface RenderStudioApi {
   readonly scene: RenderSceneInfo | null;
   /** Every problem with the requested scene or the rigs, one per line. */
   readonly errors: readonly string[];
-  /** Keys of every scene in scenes/. */
+  /** Keys of every scene in the studio folder. */
   readonly scenes: readonly string[];
   readonly canvas: HTMLCanvasElement;
   /**
@@ -73,6 +68,11 @@ export interface RenderStudioApi {
   renderFrame(frame: number): number;
   /** SHA-256, as hex, of the scene's rendered audio (float32 samples, channel after channel). Null for a silent scene. */
   audioHash(): Promise<string | null>;
+  /**
+   * Renders the scene's audio again, counting connections into each node input, and returns the most any
+   * input got. Two at most keeps renders identical (ticket 04). For tests.
+   */
+  audioFanIn(): Promise<number>;
   /** SHA-256, as hex, of the canvas RGBA bytes after drawing frame n. */
   pixelHash(frame: number): Promise<string>;
   /**

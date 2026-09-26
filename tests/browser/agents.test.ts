@@ -10,9 +10,10 @@ import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Browser, BrowserContext, Page } from 'playwright';
-import type { ViteDevServer } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { launchBrowser, ROOT, startVite } from '../../tools/render/studio';
+import { ROOT } from '../../tools/render/studio';
+import { launchBrowser } from './browser';
+import { startStudio, type TestStudio } from './studio-server';
 import { StudioQueue } from '../../tools/studio/queue';
 import { readTurnEvents } from '../../tools/studio/agents/runner';
 
@@ -27,7 +28,7 @@ const queue = new StudioQueue(STUDIO, async (id) => sceneFile(id));
 const RIG_FILE = join(ROOT, 'src/rigs', `test-tmp-fake-rig-${process.pid}.ts`);
 const DOC_FILE = join(ROOT, 'docs', `test-tmp-fake-${process.pid}.md`);
 
-let vite: ViteDevServer;
+let vite: TestStudio;
 let browser: Browser;
 let context: BrowserContext;
 let page: Page;
@@ -94,12 +95,12 @@ function writeScripts(): void {
 }
 
 async function openViewer(): Promise<void> {
-  await page.goto(`${vite.resolvedUrls!.local[0]}?scene=${A}&frame=12`);
+  await page.goto(vite.paired(`?scene=${A}&frame=12`));
   await page.waitForFunction(() => (window as unknown as { studio?: { frameCount: number } }).studio?.frameCount === 72);
 }
 
 async function startServer(): Promise<void> {
-  vite = await startVite({ watch: true, hmr: true, agents: true });
+  vite = await startStudio({ hmr: true, agents: true });
 }
 
 beforeAll(async () => {
@@ -163,7 +164,7 @@ describe('an agent in the studio', () => {
     await expect
       .poll(async () => (await panel().getByRole('combobox', { name: 'Agent' }).locator('option').allTextContents()).join(' | '), { timeout: 30000 })
       .toContain('Test agent');
-    const { agents } = (await (await fetch(`${vite.resolvedUrls!.local[0]}__studio/agents`)).json()) as { agents: { id: string; ready: boolean }[] };
+    const { agents } = (await (await fetch(`${vite.base}__studio/agents`, { headers: vite.auth })).json()) as { agents: { id: string; ready: boolean }[] };
     // Claude and Codex are offered too; whether they are ready depends on this machine's CLIs.
     expect(agents.map((a) => a.id)).toEqual(['external', 'claude', 'codex', 'fake']);
     expect(agents.filter((a) => a.id === 'external' || a.id === 'fake').every((a) => a.ready)).toBe(true);
@@ -179,7 +180,7 @@ describe('an agent in the studio', () => {
     expect(scene.layers[0].overrides).toEqual([{ from: 12, to: 24, params: { fill: '#3355ff' } }]);
     // The thumbnail is the frame the agent rendered, served next to the thread.
     const src = await turn(1).getByRole('img', { name: 'Frame 12' }).getAttribute('src');
-    const png = await (await fetch(new URL(src!, vite.resolvedUrls!.local[0]))).arrayBuffer();
+    const png = await (await fetch(new URL(src!, vite.base), { headers: vite.auth })).arrayBuffer();
     expect(new Uint8Array(png).slice(1, 4)).toEqual(new Uint8Array([0x50, 0x4e, 0x47]));
 
     await thread().getByRole('textbox', { name: 'Reply' }).fill('a bit darker');

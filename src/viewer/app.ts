@@ -53,6 +53,7 @@ import {
   type TurnEvent,
   type TurnSettings,
 } from '../studio/protocol';
+import { desktop } from './desktop';
 import { StudioClient } from './studio-client';
 import type { SceneOption, ShotBand, ViewerActions, ViewerUi } from './ui.svelte';
 import { parseFrameParam, RELOAD_KEY, reloadRecord, UrlSync, type UrlPosition } from './url';
@@ -289,6 +290,18 @@ export class App {
       },
       openShot: (layerId) => this.say(this.openShot(layerId)),
       back: () => this.say(this.back()),
+      toggleExport: (open) => {
+        this.ui.exporting = { ...this.ui.exporting, open: open ?? !this.ui.exporting.open };
+      },
+      startExport: (target, options) => this.startExport(target, options),
+      cancelExport: () => {
+        const running = this.ui.exporting.running;
+        if (running) void this.studio.cancelExport(running.id).catch(() => {});
+      },
+      revealExport: () => {
+        const result = this.ui.exporting.result;
+        if (result && 'file' in result) void desktop()?.reveal(result.file);
+      },
       clearLayer: () => {
         this.userSetLayer(null, null);
         this.flushNow();
@@ -432,6 +445,14 @@ export class App {
 
   clearBuildError(): void {
     this.errors.set('build', null);
+  }
+
+  /** The studio server stopped answering this page's event stream for good: its pairing is gone. */
+  reportServerLost(): void {
+    this.errors.set('server', {
+      title: 'Lost the studio server',
+      lines: ['This page no longer hears from the studio server, so edits and agents won’t show up here. Reload the page; under npm run dev, open the link it printed.'],
+    });
   }
 
   reportRuntimeError(err: unknown): void {
@@ -643,6 +664,28 @@ export class App {
     this.invalidate();
     this.flushNow();
     return null;
+  }
+
+  // ---- export (ADR 0008) ----
+
+  /** Asks the studio server to export the scene on screen, or its selected range. Returns an error message, or null. */
+  private async startExport(target: 'mp4' | 'gif' | 'html', options: { range: boolean; sound: boolean }): Promise<string | null> {
+    const scene = this.validScene();
+    if (!scene || !this.entry) return 'There is no valid scene to export.';
+    if (this.ui.exporting.running) return 'An export is already running.';
+    const range = options.range && target !== 'html' && this.range ? this.range : null;
+    try {
+      const id = await this.studio.startExport({
+        scene: this.entry.key,
+        target,
+        ...(range ? { from: range.from, to: range.to } : {}),
+        ...(target !== 'gif' && !options.sound ? { silent: true } : {}),
+      });
+      this.ui.exporting = { ...this.ui.exporting, running: { id, stage: 'starting', done: 0, total: 1 }, result: null, canReveal: desktop() !== null };
+      return null;
+    } catch (err) {
+      return errorText(err).message;
+    }
   }
 
   /** Shows why a button did nothing, in the selection bar. */
@@ -1037,6 +1080,13 @@ export class App {
       apply(requests);
     });
     this.studio.onTurnEvent(({ id, turn, event }) => this.addEvents(id, turn, [event]));
+    this.studio.onExport((event) => {
+      const state = this.ui.exporting;
+      if (state.running?.id !== event.id) return;
+      if ('error' in event) this.ui.exporting = { ...state, running: null, result: { error: event.error } };
+      else if ('file' in event) this.ui.exporting = { ...state, running: null, result: { file: event.file } };
+      else this.ui.exporting = { ...state, running: { id: event.id, stage: event.stage, done: event.done, total: event.total } };
+    });
     this.refreshAgents(false);
     // Stalled requests are judged against the clock, and agents sign in and out, so check now and then.
     setInterval(() => (this.ui.studio.now = Date.now()), 30_000);

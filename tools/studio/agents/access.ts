@@ -1,6 +1,7 @@
 // What an agent in the studio may do without asking (ADR 0006). In the
-// default access it may read the repo, use the studio tools on its own
-// scene, and write in scenes/, src/rigs/, src/audio/ and projects' rigs/.
+// default access it may read the studio folder, use the studio tools on its
+// own scene, and write in scenes/, rigs/, audio/ and projects' rigs/, and in a
+// repo in src/rigs/ and src/audio/, the built-ins (ADR 0008).
 // Everything else asks the user first. Full access asks for nothing. In
 // either mode, a scene another thread is working on is off limits, since both
 // would write it, and an edit to a project's project.json, which touches
@@ -34,7 +35,7 @@ export interface AccessContext {
   busyRigs: readonly string[];
 }
 
-const WRITABLE = ['scenes', 'src/rigs', 'src/audio'];
+const WRITABLE = ['scenes', 'rigs', 'audio', 'src/rigs', 'src/audio'];
 /** Project rigs, and project files: a project scene's file or project.json, judged as scene or project edits first. */
 const PROJECT_WRITABLE = /^projects\/[^/]+\/(rigs(\/|$)|[^/]+\.json$)/;
 
@@ -46,7 +47,7 @@ function inRepo(root: string, path: string): string | null {
 
 /** A rig file that a busy scene may draw with: named after one of its rigs, or a shared part. Global or a project's. */
 function busyRigFile(rel: string, busyRigs: readonly string[]): boolean {
-  const dir = /^(src\/rigs|projects\/[^/]+\/rigs)\//.exec(rel)?.[0];
+  const dir = /^(src\/rigs|rigs|projects\/[^/]+\/rigs)\//.exec(rel)?.[0];
   if (!dir) return false;
   if (rel.startsWith(`${dir}parts/`)) return busyRigs.length > 0;
   const name = rel.slice(dir.length).split('/').pop() ?? '';
@@ -102,7 +103,7 @@ export function judge(action: Action, ctx: AccessContext): Verdict {
     if (busy.length > 0) {
       return { allow: false, ask: true, summary: `Edit ${names}`, detail: 'Another request is working on a scene that may draw with this rig.' };
     }
-    return { allow: false, ask: true, summary: `Edit ${names}`, detail: "Outside scenes/, src/rigs/, src/audio/ and projects' own files." };
+    return { allow: false, ask: true, summary: `Edit ${names}`, detail: "Outside scenes/, rigs/, audio/ and projects' own files." };
   }
   if (ctx.access === 'full') return { allow: true };
   switch (action.kind) {

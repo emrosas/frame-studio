@@ -447,6 +447,102 @@ body {
   fill: currentColor;
 }
 
+/* ---- export (ADR 0008) ---- */
+
+.export-button {
+  font: inherit;
+  color: var(--text);
+  background: #222427;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 10px;
+  cursor: pointer;
+}
+
+.export-button[aria-expanded='true'] {
+  border-color: var(--pick);
+  color: var(--pick);
+}
+
+.export-panel {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 5;
+  width: 300px;
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--bar);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.export-panel header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.export-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.export-choice {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.export-choice.is-disabled {
+  color: var(--faint);
+}
+
+.export-go,
+.export-panel button:not(.sel-clear) {
+  font: inherit;
+  color: var(--pick-ink);
+  background: var(--pick);
+  border: 0;
+  border-radius: 5px;
+  padding: 4px 12px;
+  cursor: pointer;
+}
+
+.export-progress {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px 8px;
+  align-items: center;
+}
+
+.export-progress progress {
+  width: 100%;
+}
+
+.export-stage {
+  grid-column: 1;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.export-done,
+.export-error {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.export-error {
+  color: var(--error-text);
+}
+
+.export-file {
+  font-family: var(--mono);
+}
+
 /* ---- info row ---- */
 
 .scene-picker {

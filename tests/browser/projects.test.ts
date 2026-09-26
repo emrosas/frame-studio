@@ -15,29 +15,30 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { EmbedApi } from '../../src/embed/player';
 import { readGifStructure } from '../../src/export/testing/gif-structure';
 import { buildEmbed } from '../../tools/bundle/embed';
-import { launchBrowser, openStudio, type Studio } from '../../tools/render/studio';
+import type { Studio } from '../../tools/render/studio';
+import { electronPage } from './electron-page';
+import { renderClient, startStudio, type TestStudio } from './studio-server';
 
 const FILM = 'bears-story/film';
 const SPF = 48000 / 12;
 
-let browser: Browser;
+let server: TestStudio;
 let studio: Studio;
 let dir: string;
 
 beforeAll(async () => {
-  browser = await launchBrowser();
-  studio = await openStudio(FILM, { browser });
+  server = await startStudio();
+  studio = await renderClient(server, FILM);
   dir = mkdtempSync(join(tmpdir(), 'frame-studio-projects-'));
 });
 
 afterAll(async () => {
   await studio?.close();
-  await browser?.close();
+  await server?.close();
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -89,6 +90,7 @@ describe('the film', () => {
       const hash = await studio.call('pixelHash', f);
       if (frames.includes(f)) played.push(hash);
     }
+    server.server.touch();
     await studio.load(FILM);
     const seeked: string[] = [];
     for (const f of [...frames].reverse()) seeked.unshift(await studio.call('pixelHash', f));
@@ -143,7 +145,7 @@ describe('the film MP4', () => {
 
 describe('the film embed', () => {
   it('carries the shots, the iris rig and the cast, makes no requests, and matches the render page', async () => {
-    const build = await buildEmbed(FILM);
+    const build = await buildEmbed(FILM, { folder: server.server.folder, code: server.server.code });
     expect(build.out).toBe('bears-story/film');
     expect(build.scenes).toEqual(['meet', 'pip', 'together']);
     expect(build.rigs).toEqual(['bear', 'iris', 'paper']);
@@ -152,10 +154,10 @@ describe('the film embed', () => {
     const file = join(dir, 'film.html');
     writeFileSync(file, build.html);
 
-    const context = await browser.newContext({ deviceScaleFactor: 1, viewport: { width: 960, height: 540 } });
-    await context.setOffline(true);
+    const electron = await electronPage();
+    await electron.app.context().setOffline(true);
     try {
-      const page = await context.newPage();
+      const { page } = electron;
       const requests: string[] = [];
       const problems: string[] = [];
       page.on('request', (r) => requests.push(r.url()));
@@ -178,7 +180,7 @@ describe('the film embed', () => {
       expect(requests).toEqual([url]);
       expect(problems).toEqual([]);
     } finally {
-      await context.close();
+      await electron.close();
     }
   });
 });

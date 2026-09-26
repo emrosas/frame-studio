@@ -6,31 +6,32 @@
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Browser, Page } from 'playwright';
-import type { ViteDevServer } from 'vite';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { launchBrowser, ROOT, startVite } from '../../tools/render/studio';
+import { ROOT } from '../../tools/render/studio';
+import { launchBrowser } from './browser';
+import { startStudio, type TestStudio } from './studio-server';
 
 let browser: Browser;
-let vite: ViteDevServer;
+let studio: TestStudio;
 let base: string;
 const BROKEN = join(ROOT, 'scenes', 'test-tmp-broken.json');
 
 beforeAll(async () => {
   rmSync(BROKEN, { force: true });
-  vite = await startVite({ watch: true, hmr: true });
-  base = vite.resolvedUrls!.local[0];
+  studio = await startStudio({ hmr: true });
+  base = studio.base;
   browser = await launchBrowser();
 });
 
 afterAll(async () => {
   rmSync(BROKEN, { force: true });
   await browser?.close();
-  await vite?.close();
+  await studio?.close();
 });
 
 async function open(query: string): Promise<Page> {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
-  await page.goto(`${base}${query}`);
+  await page.goto(`${base}${query}#token=${studio.token}`);
   await page.waitForFunction(() => (window as unknown as { studio?: { frameCount: number } }).studio?.frameCount !== undefined);
   return page;
 }
@@ -307,5 +308,38 @@ describe('projects (ADR 0007)', () => {
     // "again" places meet from its 1 s mark: meet's frame 12.
     await expect.poll(() => readout(page)).toBe('frame 12 of 48');
     await page.close();
+  });
+});
+
+describe('export (ADR 0008)', () => {
+  it('exports the selected range as a GIF from the Export panel, with progress, into out/', async () => {
+    const page = await open('?scene=shapes-test&frame=0');
+    await expect.poll(() => readout(page)).toBe('frame 0 of 72');
+    await page.evaluate(() => (window as unknown as { studio: { setRange(a: number, b: number): void } }).studio.setRange(0, 12));
+    const file = join(ROOT, 'out/shapes-test/shapes-test-00000-00012.gif');
+    rmSync(file, { force: true });
+    await page.getByRole('button', { name: 'Export', exact: true }).click();
+    const panel = page.getByRole('region', { name: 'Export' });
+    await panel.getByRole('radio', { name: 'GIF' }).check();
+    await panel.getByRole('checkbox', { name: /Only frames \[0, 12\)/ }).check();
+    await expect.poll(() => panel.getByRole('checkbox', { name: 'GIFs are silent' }).isDisabled()).toBe(true);
+    await panel.getByRole('button', { name: 'Export', exact: true }).click();
+    await expect.poll(() => panel.getByRole('status').textContent(), { timeout: 60_000 }).toMatch(/Saved shapes-test-00000-00012\.gif/);
+    const gif = readFileSync(file);
+    expect(gif.subarray(0, 6).toString()).toBe('GIF89a');
+    rmSync(file, { force: true });
+    await page.close();
+  });
+});
+
+describe('what the dev server serves (ADR 0008)', () => {
+  it("serves the viewer's code, and nothing else of the repo: no tokens, no queue", async () => {
+    const status = async (path: string) => (await fetch(`${base}${path.replace(/^\//, '')}`)).status;
+    expect(await status('/')).toBe(200);
+    expect(await status('/src/viewer/main.ts')).toBe(200);
+    expect(await status('/boot-guard.js')).toBe(200);
+    for (const path of ['/.frame-studio/selection.json', '/.git/HEAD', '/scenes/hello.json', '/package.json', `/@fs${ROOT}/.frame-studio/selection.json`]) {
+      expect(await status(path), path).toBeGreaterThanOrEqual(400);
+    }
   });
 });

@@ -1,10 +1,11 @@
 // The viewer's side of the studio server protocol (ADR 0001, ADR 0003, ADR
-// 0006): HTTP calls to /__studio/, and what the server pushes over Vite's
-// websocket, the queue and the live events of turns. Under a build with no
-// studio server (the static viewer), `available` is false and the panel says
-// why.
+// 0006, ADR 0008): HTTP calls to /__studio/, and what the server pushes on its
+// event stream, the queue and the live events of turns. The viewer always
+// comes from a studio server, and pairs with it before it boots.
 
+import { studioEvents } from './studio-events';
 import {
+  EXPORT_EVENT,
   QUEUE_EVENT,
   TURN_EVENT,
   type AgentStatus,
@@ -20,6 +21,21 @@ import {
 const BASE = '/__studio';
 
 export type RequestAction = 'cancel' | 'requeue' | 'settle' | 'stop';
+
+/** What the viewer asks the studio server to export (ADR 0008). */
+export interface ExportInput {
+  scene: string;
+  target: 'mp4' | 'gif' | 'html';
+  from?: number;
+  to?: number;
+  silent?: boolean;
+}
+
+/** An export's progress, or its end: the file written, or why it failed. */
+export type ExportEvent =
+  | { id: string; stage: string; done: number; total: number }
+  | { id: string; done: true; file: string }
+  | { id: string; error: string };
 
 /** A turn's event as pushed: which thread and turn it belongs to. */
 export interface PushedTurnEvent {
@@ -38,8 +54,8 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<T> {
 const jsonBody = (value: unknown): RequestInit => ({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) });
 
 export class StudioClient {
-  /** The studio server exists only under the dev server, which is also what provides import.meta.hot. */
-  readonly available = import.meta.hot !== undefined;
+  /** The viewer is served by the studio server and paired before it boots, so the server is there. */
+  readonly available = true;
 
   async queue(): Promise<StudioRequest[]> {
     return (await call<{ requests: StudioRequest[] }>('/queue')).requests;
@@ -56,10 +72,7 @@ export class StudioClient {
   }
 
   private on<T>(event: string, handler: (data: T) => void): () => void {
-    const hot = import.meta.hot;
-    if (!hot) return () => {};
-    hot.on(event, handler);
-    return () => hot.off(event, handler);
+    return studioEvents.on(event, handler);
   }
 
   /** The agents a thread can go to, with whether each is ready. `fresh` skips the server's short cache. */
@@ -107,6 +120,20 @@ export class StudioClient {
 
   async setSelection(selection: Omit<CurrentSelection, 'updatedAt'> | null): Promise<void> {
     await call('/selection', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(selection) });
+  }
+
+  /** Starts an export on the studio server; progress and the outcome come as export events. Returns its id. */
+  async startExport(input: ExportInput): Promise<string> {
+    return (await call<{ id: string }>('/export', jsonBody(input))).id;
+  }
+
+  async cancelExport(id: string): Promise<void> {
+    await call(`/export/${encodeURIComponent(id)}/cancel`, jsonBody({}));
+  }
+
+  /** Calls `listener` with every export event: progress, then done with the file, or an error. */
+  onExport(listener: (event: ExportEvent) => void): () => void {
+    return this.on(EXPORT_EVENT, listener);
   }
 
   /** Copies an image into references/ and returns its repo-relative path. */

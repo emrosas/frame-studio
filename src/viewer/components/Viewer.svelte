@@ -8,6 +8,7 @@
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Controls from './Controls.svelte';
   import ErrorPanel from './ErrorPanel.svelte';
+  import ExportPanel from './ExportPanel.svelte';
   import SelectionBar from './SelectionBar.svelte';
   import StudioPanel from './StudioPanel.svelte';
   import Toast from './Toast.svelte';
@@ -23,6 +24,7 @@
       <div class="stage-frame"></div>
       <ErrorPanel errors={ui.errors} />
       <Toast toast={ui.toast} {actions} />
+      <ExportPanel {ui} {actions} />
     </div>
   </div>
   <footer class="controls" class:is-playing={ui.playing}>

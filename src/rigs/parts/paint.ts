@@ -275,7 +275,13 @@ function inView(v: Bounds, minX: number, minY: number, maxX: number, maxY: numbe
 export class Brush {
   private buckets = new Map<string, StrokeBucket>();
 
-  constructor(private readonly view: Bounds, private readonly stableOrder = false) {}
+  private readonly view: Bounds;
+  private readonly stableOrder: boolean;
+
+  constructor(view: Bounds, stableOrder = false) {
+    this.view = view;
+    this.stableOrder = stableOrder;
+  }
 
   private bucket(color: string, alpha: number, width: number, comp: GlobalCompositeOperation): StrokeBucket | null {
     const a = Math.round(Math.min(1, alpha) * ALPHA_STEPS) / ALPHA_STEPS;
@@ -537,7 +543,13 @@ interface FillBucket {
 export class Marks {
   private buckets = new Map<string, FillBucket>();
 
-  constructor(private readonly view: Bounds, private readonly stableOrder = false) {}
+  private readonly view: Bounds;
+  private readonly stableOrder: boolean;
+
+  constructor(view: Bounds, stableOrder = false) {
+    this.view = view;
+    this.stableOrder = stableOrder;
+  }
 
   private bucket(color: string, a: number, comp: GlobalCompositeOperation): FillBucket {
     const key = `${color}|${a}|${comp}`;

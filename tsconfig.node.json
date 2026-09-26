@@ -10,6 +10,7 @@
   },
   "include": [
     "tools",
+    "desktop",
     "tests/browser",
     "tests/node",
     "vite.config.ts",

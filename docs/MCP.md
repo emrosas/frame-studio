@@ -1,29 +1,34 @@
 # The MCP server
 
-Frame Studio's MCP server is the coding agent's API to the studio. It lists and edits scenes, shows the agent rendered frames, finds what is under a pixel, writes scoped edits, and exports. It runs on your machine over stdio, next to your agent.
+Frame Studio's MCP server is the coding agent's API to the studio. It lists and edits scenes, shows the agent rendered frames, finds what is under a pixel, writes scoped edits, and exports. It runs on your machine over stdio, next to your agent, and works on a studio folder: the one the agent starts it in, or `--folder <path>`.
+
+It's a small shim (ADR 0008). When the app, or `npm run dev`, has the folder open, the shim forwards every call to that studio server, so the agent's renders come from the same render worker as your viewer, and its request threads are yours. Otherwise it starts a headless studio server of its own for the session, with a render worker in Electron, and stops it when the agent disconnects.
 
 ## Setup
 
-Once per checkout:
+### With the app
+
+The app ships the command as `Frame Studio.app/Contents/Resources/bin/frame-studio-mcp`. In a terminal in your studio folder, register it with Claude Code:
 
 ```sh
-npm install
-npx playwright install chromium-headless-shell   # the headless browser that renders frames
+claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"
 ```
 
-### Claude Code
+Start Claude Code in the folder, and check with `/mcp`.
 
-The repo's `.mcp.json` registers the server for this project, so Claude Code offers to enable `frame-studio` the first time you start it in the repo root. Approve it, then check with `/mcp`.
+### From the repo
 
-To register it yourself instead, for example to use it from another folder:
+Once per checkout, `npm install`. It brings Electron, which renders the frames.
+
+The repo's `.mcp.json` registers the shim for this project, so Claude Code offers to enable `frame-studio` the first time you start it in the repo root. Approve it, then check with `/mcp`. To register it yourself instead, for example for a studio folder elsewhere:
 
 ```sh
-claude mcp add frame-studio -- node /absolute/path/to/animation-tool/tools/mcp/server.ts
+claude mcp add frame-studio -- node /absolute/path/to/animation-tool/tools/mcp/server.ts --folder /path/to/studio-folder
 ```
 
 ### Other agents
 
-Any MCP client that can start a stdio server can use it. The command is `node`, with the argument `tools/mcp/server.ts`, run from the repo root, or with an absolute path to that file from anywhere. It needs Node 26 or later, which runs the TypeScript directly.
+Any MCP client that can start a stdio server can use it: `frame-studio-mcp` from the app, or `node tools/mcp/server.ts` from the repo, which needs Node 26 or later to run the TypeScript directly.
 
 ## Tools
 
@@ -69,12 +74,12 @@ Pick **Claude** or **Codex** and the studio runs the agent itself, on your machi
 
 The thread streams what the agent does: its reply, one line per step, and thumbnails of the frames it rendered, which you can click to see on the canvas. Each thread has its own model, effort and access, and you can change them between turns.
 
-- **Access.** By default the agent uses the studio's tools (the same operations as this MCP server) on its own scene, reads the repo, and writes in `scenes/`, `src/rigs/`, `src/audio/` and any project's `rigs/`. Another scene's file, like another scene through the tools, asks first. So does anything else, such as another file, a shell command or the network: an approval card shows in the thread. **Full access** turns the cards off. Either way, a scene another request is working on is off limits, and editing a rig that scene draws with asks first.
+- **Access.** By default the agent uses the studio's tools (the same operations as this MCP server) on its own scene, reads the studio folder, and writes in `scenes/`, `rigs/`, `audio/`, any project's `rigs/`, and in the repo `src/rigs/` and `src/audio/`. Another scene's file, like another scene through the tools, asks first. So does anything else, such as another file, a shell command or the network: an approval card shows in the thread. **Full access** turns the cards off. Either way, a scene another request is working on is off limits, and editing a rig that scene draws with asks first.
 - **Projects.** An edit to a project's `project.json`, through `update_project` or to the file, touches every scene in the project. It waits until no other request in the project is working, for up to about 50 s, and then gives up with the reason, so two threads never change a project under each other. A turn on a project scene also saves `project.json`, and **Revert to here** on a turn that changed it restores both files. It's offered only when nothing else in the project is working and no other request has changed `project.json` since. Rig code stays with git.
-- **Stop** ends the agent's turn and keeps what it changed so far. If the dev server stops mid-turn, the turn shows as interrupted, and your next reply resumes the agent's session.
-- Claude gets the studio tools in the studio server's own process. Codex reaches them at `/__studio/mcp` on the dev server, with a token per turn passed in its environment. Transcripts and thumbnails live next to the request in `.frame-studio/requests/`.
+- **Stop** ends the agent's turn and keeps what it changed so far. If the studio server stops mid-turn (the app quits, say), the turn shows as interrupted, and your next reply resumes the agent's session.
+- Claude gets the studio tools in the studio server's own process. Codex reaches them at `/__studio/mcp` on the studio server, with a token per turn passed in its environment. Transcripts and thumbnails live next to the request in `.frame-studio/requests/`.
 - The access rules keep a well-meaning agent inside the lines; they are not a sandbox. Rig and generator code an agent writes runs in the studio server and the browser.
-- The studio server answers only this computer, even when Vite listens on the network. Programs on this computer are trusted, as they are by any dev server.
+- The studio server listens on 127.0.0.1 only, and every caller pairs with it (see the notes below). Programs on this computer that can read your files are trusted, as they are by any dev server.
 
 ## A typical loop
 
@@ -86,10 +91,10 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 
 ## Notes
 
-- The first tool that renders starts Vite and a headless Chromium, which takes about 3 seconds. Later calls reuse them.
-- Tools run one at a time, even when the agent calls several at once, because they share one page and the scene files.
+- Without an app or `npm run dev` open on the folder, the first tool call starts a studio server, and the first render starts Electron's render worker, a few seconds in all. Later calls reuse them.
+- Tools run one at a time, even when the agent calls several at once, because they share one render worker and the scene files.
 - Writes go through the scene validator first, and scene files are written in the studio's format: two-space indents, with short objects and arrays on one line.
-- The server watches `src/`, `scenes/` and `projects/`. Edits the agent makes to those files directly, without the tools, show up in the next render.
+- The server watches the studio folder's `scenes/`, `projects/`, `rigs/` and `audio/`, and in the repo `src/`. Edits the agent makes to those files directly, without the tools, show up in the next render, and in the open viewer without a reload.
 - Renders and exports go to `out/`, which git ignores.
-- The viewer's studio server (`/__studio/` on the dev server) takes requests only from the viewer's own page. It refuses other sites, takes JSON only, and checks every request. Reference paths must be images directly in `references/`.
+- The studio server answers only this computer, and only callers paired with it: the viewer, through a cookie it trades its pairing token for, and tools, with the token as a bearer token. It writes its address and token to `.frame-studio/server.json`, readable only by you, which is how the shim finds it. It refuses other sites, takes JSON only, and checks every request. Reference paths must be images directly in `references/`.
 - `FRAME_STUDIO_DIR` moves the handoff folder. The tests use it, so they never touch a real queue.

@@ -9,7 +9,7 @@
 import { relative } from 'node:path';
 import { query, type CanUseTool, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { TurnUsage } from '../../../src/studio/protocol.ts';
-import { findExecutable, run } from './exec.ts';
+import { agentEnv, findExecutable, run } from './exec.ts';
 import type { Action, AgentProvider, TurnCallbacks, TurnHandle, TurnInput, TurnOutcome } from './types.ts';
 
 const MODELS = [
@@ -128,6 +128,7 @@ async function runTurn(input: TurnInput, cb: TurnCallbacks, abort: AbortControll
     options: {
       pathToClaudeCodeExecutable: bin,
       cwd,
+      env: agentEnv(),
       abortController: abort,
       ...(input.session ? { resume: input.session } : {}),
       ...(settings.model && settings.model !== 'default' ? { model: settings.model } : {}),

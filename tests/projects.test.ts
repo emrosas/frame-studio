@@ -24,9 +24,9 @@ import { createRecordingContext, type LogEntry } from '../src/engine/testing/rec
 import { createDefaultGenerators } from '../src/audio';
 import { createDefaultRegistry } from '../src/rigs';
 import { findEntry, type SceneEntry } from '../src/viewer/library';
-import { loadLibrary } from '../src/viewer/scenes';
+import { diskLibrary } from './disk-library';
 
-const library = loadLibrary();
+const library = diskLibrary();
 const entry = (key: string): SceneEntry => {
   const found = findEntry(library, key);
   if (!found?.scene || !found.registry) throw new Error(`${key} is missing or invalid: ${found?.errors.join('\n')}`);

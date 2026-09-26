@@ -5,10 +5,10 @@
  * shot, or down to 0 to close on one. A rig of this project only, so it lives
  * in projects/bears-story/rigs/ rather than src/rigs/.
  */
-import type { Rig } from '../../../src/engine/types';
-import { TAU } from '../../../src/rigs/parts/math';
-import { sampleCircle, traceSmoothLoop, wobbleOutline } from '../../../src/rigs/parts/outline';
-import { col, num, readParams } from '../../../src/rigs/parts/params';
+import type { Rig } from '@frame-studio/engine/types';
+import { TAU } from '@frame-studio/rigs/parts/math';
+import { sampleCircle, traceSmoothLoop, wobbleOutline } from '@frame-studio/rigs/parts/outline';
+import { col, num, readParams } from '@frame-studio/rigs/parts/params';
 
 const params = {
   x: num(960, -10000, 10000, 'Centre x in scene pixels.'),

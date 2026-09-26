@@ -125,7 +125,11 @@ export class UrlSync {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private lastWrite = -Infinity;
 
-  constructor(private readonly minIntervalMs = 400) {}
+  private readonly minIntervalMs: number;
+
+  constructor(minIntervalMs = 400) {
+    this.minIntervalMs = minIntervalMs;
+  }
 
   request(pos: UrlPosition): void {
     this.pending = pos;

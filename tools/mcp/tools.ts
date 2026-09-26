@@ -46,6 +46,8 @@ export interface ToolHooks {
   active?(): boolean;
   /** The thread whose turn makes these calls, so a project edit doesn't wait for its own caller. */
   thread?: number;
+  /** An external agent's session, which names its claims on the request queue. */
+  session?: string;
 }
 
 export interface StudioToolsOptions {
@@ -65,6 +67,7 @@ export interface StudioToolsOptions {
 export function registerStudioTools(server: McpServer, options: StudioToolsOptions): void {
   const { serial, hooks } = options;
   const ws = options.workspace;
+  const caller = { ...(hooks?.thread !== undefined ? { thread: hooks.thread } : {}), ...(hooks?.session ? { session: hooks.session } : {}) };
 
   /**
    * Runs a tool body in turn, turning any error into a readable tool error instead of a protocol error.
@@ -159,8 +162,8 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     },
     tool(
       'update_project',
-      async (w, { id, patch }: { id: string; patch: Record<string, unknown> }) => text(await w.updateProject(id, patch, hooks?.thread)),
-      (w, { id }) => w.waitForProject(id, hooks?.thread, PROJECT_WAIT_MS),
+      async (w, { id, patch }: { id: string; patch: Record<string, unknown> }) => text(await w.updateProject(id, patch, caller)),
+      (w, { id }) => w.waitForProject(id, caller, PROJECT_WAIT_MS),
     ),
   );
 
@@ -312,7 +315,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
         "Claims the oldest request waiting for an agent in the viewer's queue and returns it. A request is a thread: the user asks, you work one turn and complete it, and the user may reply, which puts the request back in the queue as the next turn. You get the whole thread, then the ask for this turn: the prompt, the selection (scene, layer, part, frame range), the frame on screen, where the user clicked, and reference image paths. The scene is saved first so the user can revert your turn. Call complete_request when you finish the turn.",
     },
     tool('next_request', async (w) => {
-      const request = await w.nextRequest();
+      const request = await w.nextRequest(hooks?.session);
       return text(request ? `${await w.describeRequest(request)}\n\n${JSON.stringify(request, null, 2)}` : noneWaiting);
     }),
   );
@@ -326,7 +329,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
       inputSchema: { id: z.number().int().min(1).describe('The request number') },
     },
     tool('get_request', async (w, { id }: { id: number }) => {
-      const request = await w.getRequest(id);
+      const request = await w.getRequest(id, hooks?.session);
       return text(`${await w.describeRequest(request)}\n\n${JSON.stringify(request, null, 2)}`);
     }),
   );
@@ -373,7 +376,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
       serial(async () => {
         try {
           const w = await ws();
-          const request = await w.nextRequest();
+          const request = await w.nextRequest(hooks?.session);
           const body = request ? `Please work on this Frame Studio request.\n\n${await w.describeRequest(request)}` : noneWaiting;
           return { messages: [{ role: 'user' as const, content: { type: 'text' as const, text: body } }] };
         } catch (err) {

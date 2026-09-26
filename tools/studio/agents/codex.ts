@@ -12,7 +12,7 @@ import { relative } from 'node:path';
 import { createInterface } from 'node:readline';
 import type { TurnUsage } from '../../../src/studio/protocol.ts';
 import { summaryOf } from './claude.ts';
-import { findExecutable, run } from './exec.ts';
+import { agentEnv, findExecutable, run } from './exec.ts';
 import type { AgentProvider, TurnCallbacks, TurnHandle, TurnInput, TurnOutcome } from './types.ts';
 
 /** The studio tools' server name in Codex, apart from any frame-studio entry in the user's own Codex config. */
@@ -115,7 +115,7 @@ export function codexProvider(): AgentProvider {
 
   async function listModels(bin: string): Promise<{ list: { id: string; label: string }[]; efforts: string[] }> {
     if (models && Date.now() - models.at < MODELS_TTL_MS) return models;
-    const server = new AppServer(bin, [], process.env, process.cwd());
+    const server = new AppServer(bin, [], agentEnv(), process.cwd());
     const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('codex model/list took too long')), MODELS_TIMEOUT_MS).unref?.());
     try {
       await Promise.race([server.open(), timeout]);
@@ -183,7 +183,7 @@ async function runTurn(input: TurnInput, cb: TurnCallbacks, signal: AbortSignal)
   const server = new AppServer(
     bin,
     ['-c', `mcp_servers.${STUDIO}.url=${JSON.stringify(input.mcp.url)}`, '-c', `mcp_servers.${STUDIO}.bearer_token_env_var=${JSON.stringify(TOKEN_ENV)}`],
-    { ...process.env, [TOKEN_ENV]: input.mcp.token },
+    agentEnv({ [TOKEN_ENV]: input.mcp.token }),
     cwd,
   );
   const items = new Map<string, ItemView>();

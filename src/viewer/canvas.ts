@@ -64,11 +64,12 @@ export class CanvasView {
   private watchedDpr = 0;
   private readonly onDprChange = () => this.refit();
 
-  constructor(
-    private readonly stage: HTMLElement,
-    private readonly onResize: () => void,
-    host: HTMLElement = stage,
-  ) {
+  private readonly stage: HTMLElement;
+  private readonly onResize: () => void;
+
+  constructor(stage: HTMLElement, onResize: () => void, host: HTMLElement = stage) {
+    this.stage = stage;
+    this.onResize = onResize;
     this.canvas = document.createElement('canvas');
     this.canvas.className = 'stage-canvas';
     this.canvas.width = 0;

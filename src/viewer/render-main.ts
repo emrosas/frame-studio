@@ -1,8 +1,12 @@
-// Render mode (render.html?scene=<id>): no UI, one canvas at scene size, and
-// window.studio for the headless tools. The canvas follows ticket 03: CPU
-// raster ({ willReadFrequently: true }), sRGB, no devicePixelRatio transform.
-// Exports encode here, in the page that draws the frames (ticket 14). The
-// scene's audio renders once, offline, and exports slice it (M7).
+// The render worker (render.html?worker, ADR 0008): no UI, a canvas at scene
+// size per scene, taking jobs from the studio server over its event stream.
+// Each job runs one method of the scene's render API below and posts the
+// result back; bytes it makes go back to the server's sinks in chunks. The
+// canvas follows ticket 03: CPU raster ({ willReadFrequently: true }), sRGB,
+// no devicePixelRatio transform. Exports encode here, in the page that draws
+// the frames (ticket 14). A scene's audio renders once, offline, and exports
+// slice it (M7). render.html?scene=<id> opens one scene as window.studio, for
+// looking at by hand.
 
 import { hasAudio, renderSceneAudio, SAMPLE_RATE, samplesPerFrame } from '../audio';
 import { formatTimecode, frameCount, hitTest, render, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
@@ -17,15 +21,16 @@ import {
   type ExportProgress,
   type FrameSource,
 } from '../export';
-import { findEntry } from './library';
-import type { ContactSheetResult, ExportTarget, RenderExportResult, RenderHostBindings, RenderStudioApi } from './render-api';
+import { findEntry, type SceneLibrary } from './library';
+import { pair } from './pairing';
+import type { ContactSheetResult, ExportTarget, RenderExportResult, RenderStudioApi } from './render-api';
 import { loadLibrary } from './scenes';
 import { parseFrameText, rangeError } from './selection';
 
-declare global {
-  interface Window extends RenderHostBindings {
-    __studioProgress?(stage: string, done: number, total: number): void;
-  }
+/** Where a render API sends its bytes and progress: the studio server, in worker mode. */
+interface RenderHost {
+  sink(sinkId: string): ByteSink;
+  progress(p: ExportProgress): void;
 }
 
 /** The one way this page makes a 2D context (ticket 03, recommendation 3). */
@@ -35,27 +40,29 @@ function context2d(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
   return ctx;
 }
 
-function toBase64(bytes: Uint8Array): string {
-  const native = (bytes as Uint8Array & { toBase64?: () => string }).toBase64;
-  if (native) return native.call(bytes);
-  let text = '';
-  for (let i = 0; i < bytes.length; i += 0x8000) text += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(text);
+async function post(path: string, init: RequestInit): Promise<unknown> {
+  const res = await fetch(path, { method: 'POST', ...init });
+  const data = (await res.json().catch(() => ({}))) as { error?: string };
+  if (!res.ok) throw new Error(data.error ?? `The studio server answered ${res.status}.`);
+  return data;
 }
 
-/** A sink that hands bytes to the host through window.__studioWrite. */
-function hostSink(sinkId: string): ByteSink {
-  const write = window.__studioWrite;
-  if (!write) throw new Error('No host is listening for bytes: window.__studioWrite is missing. Run exports through the render tools.');
+/** A sink whose bytes go to the studio server, which writes them into the file it opened for them. */
+function serverSink(sinkId: string): ByteSink {
+  const at = `/__studio/worker/sinks/${encodeURIComponent(sinkId)}`;
   return {
-    write: (data, position) => write(sinkId, toBase64(data), position),
-    close: () => window.__studioClose?.(sinkId),
+    write: async (data, position) => void (await post(`${at}?position=${position}`, { headers: { 'Content-Type': 'application/octet-stream' }, body: data.slice() })),
+    close: async () => void (await post(`${at}/close`, { headers: { 'Content-Type': 'application/json' }, body: '{}' })),
   };
 }
 
-function progress(p: ExportProgress): void {
-  window.__studioProgress?.(p.stage, p.done, p.total);
-}
+/** A host for looking at a scene by hand: it has nowhere to put bytes. */
+const NO_HOST: RenderHost = {
+  sink: () => {
+    throw new Error('Open render.html as a worker (?worker) to write files; it writes through the studio server.');
+  },
+  progress: () => {},
+};
 
 async function blobBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
@@ -68,9 +75,10 @@ async function hex(data: BufferSource): Promise<string> {
   return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
-function boot(): RenderStudioApi {
-  const library = loadLibrary();
-  const requested = new URLSearchParams(location.search).get('scene');
+/** The render API for scene `requested` in `library`, drawing on a canvas of its own that it adds to the page. */
+function boot(library: SceneLibrary, requested: string | null, host: RenderHost): RenderStudioApi {
+  const hostSink = (sinkId: string) => host.sink(sinkId);
+  const progress = (p: ExportProgress) => host.progress(p);
   const entry = requested ? findEntry(library, requested) : (library.entries[0] ?? null);
   const errors: string[] = [...library.errors];
   if (!entry) errors.push(requested ? `No scene "${requested}". Scenes: ${library.entries.map((e) => e.key).join(', ')}` : 'There are no scenes.');
@@ -157,6 +165,29 @@ function boot(): RenderStudioApi {
         bytes.set(new Uint8Array(buffer.getChannelData(c).slice().buffer), c * buffer.length * 4);
       }
       return hex(bytes);
+    },
+    async audioFanIn() {
+      const { scene: s } = need();
+      if (!library.generators) throw new Error('The audio generators failed to load.');
+      const counts = new Map<unknown, Map<number, number>>();
+      let max = 0;
+      const proto = AudioNode.prototype as unknown as { connect: (...a: unknown[]) => unknown };
+      const connect = proto.connect;
+      proto.connect = function (this: unknown, ...args: unknown[]) {
+        const [destination, , input = 0] = args as [unknown, number?, number?];
+        const inputs = counts.get(destination) ?? new Map<number, number>();
+        counts.set(destination, inputs);
+        const n = (inputs.get(input) ?? 0) + 1;
+        inputs.set(input, n);
+        max = Math.max(max, n);
+        return connect.apply(this, args);
+      };
+      try {
+        await renderSceneAudio(s, library.generators, world);
+      } finally {
+        proto.connect = connect;
+      }
+      return max;
     },
     async pixelHash(frame) {
       draw(frame);
@@ -249,5 +280,117 @@ function boot(): RenderStudioApi {
   };
 }
 
-const api = boot();
-Object.assign(window, { studio: api });
+/** One job from the studio server. */
+interface Job {
+  id: string;
+  scene: string;
+  method: string;
+  args: unknown[];
+  /** The server's file generation when the job was made; an older library loads again first. */
+  generation: number;
+}
+
+/**
+ * Worker mode: takes jobs from the server one at a time, each on the render API of its scene, and posts back
+ * what it returns. The library loads again when files changed, and each scene's API is made on first use.
+ */
+async function runWorker(): Promise<void> {
+  // The first load has to succeed before jobs can run; a folder mid-edit may fail it, so keep trying.
+  let loaded: Awaited<ReturnType<typeof loadLibrary>>;
+  for (;;) {
+    try {
+      loaded = await loadLibrary();
+      break;
+    } catch (err) {
+      document.title = `render worker: ${err instanceof Error ? err.message : String(err)}`;
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+  }
+  const apis = new Map<string, RenderStudioApi>();
+  const cancelled = new Set<string>();
+  let current: Job | null = null;
+  let lastProgress = 0;
+  const host: RenderHost = {
+    sink: serverSink,
+    progress(p) {
+      const job = current;
+      if (!job) return;
+      if (cancelled.has(job.id)) throw new Error('Cancelled.');
+      // A few reports a second is plenty, but the last one always goes.
+      const now = performance.now();
+      if (p.done !== p.total && now - lastProgress < 100) return;
+      lastProgress = now;
+      // The server answers go: false once the export is cancelled; the next report stops it.
+      void post(`/__studio/worker/jobs/${job.id}/progress`, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(p) })
+        .then((answer) => {
+          if ((answer as { go?: boolean }).go === false) cancelled.add(job.id);
+        })
+        .catch(() => {});
+    },
+  };
+  const queue: Job[] = [];
+  let running = false;
+  const answer = (id: string, value: unknown) =>
+    post(`/__studio/worker/jobs/${id}`, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(value) }).catch(() => {});
+
+  async function run(job: Job): Promise<void> {
+    current = job;
+    try {
+      if (job.generation > loaded.generation) {
+        loaded = await loadLibrary();
+        for (const api of apis.values()) api.canvas.remove();
+        apis.clear();
+      }
+      let api = apis.get(job.scene);
+      if (!api) {
+        api = boot(loaded.library, job.scene, host);
+        apis.set(job.scene, api);
+      }
+      const value =
+        job.method === 'info'
+          ? { scene: api.scene, errors: [...api.errors] }
+          : job.method === 'gpu'
+            ? ((window as unknown as { frameStudioGpu?: Record<string, string> }).frameStudioGpu ?? null)
+            : // JSON turns an argument left out into null; the API's defaults want undefined.
+              await (api as unknown as Record<string, (...a: unknown[]) => unknown>)[job.method](...job.args.map((a) => (a === null ? undefined : a)));
+      await answer(job.id, { ok: true, value: value ?? null });
+    } catch (err) {
+      await answer(job.id, { ok: false, error: err instanceof Error ? err.message : String(err) });
+    } finally {
+      cancelled.delete(job.id);
+      current = null;
+    }
+  }
+
+  async function drain(): Promise<void> {
+    if (running) return;
+    running = true;
+    try {
+      while (queue.length > 0) await run(queue.shift()!);
+    } finally {
+      running = false;
+    }
+  }
+
+  const stream = new EventSource('/__studio/worker/stream');
+  stream.addEventListener('job', (e) => {
+    queue.push(JSON.parse((e as MessageEvent<string>).data) as Job);
+    void drain();
+  });
+  stream.addEventListener('cancel', (e) => cancelled.add((JSON.parse((e as MessageEvent<string>).data) as { id: string }).id));
+  document.title = 'render worker · Frame Studio';
+}
+
+async function start(): Promise<void> {
+  const paired = await pair();
+  if (!paired.ok) {
+    document.body.textContent = paired.reason;
+    return;
+  }
+  const params = new URLSearchParams(location.search);
+  if (params.has('worker')) return runWorker();
+  const { library } = await loadLibrary();
+  Object.assign(window, { studio: boot(library, params.get('scene'), NO_HOST) });
+}
+
+void start();

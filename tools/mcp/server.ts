@@ -1,46 +1,22 @@
-// Frame Studio's MCP server, over stdio: the coding agent's API to the studio
-// (CLAUDE.md, "MCP server"). Register it with your agent as
+// Frame Studio's MCP server for external agents, over stdio (CLAUDE.md, "MCP
+// server"; ADR 0008). Register it with your agent as
 //   node tools/mcp/server.ts
-// from the repo root. docs/MCP.md has setup and the tool list. The tools
-// themselves are in tools.ts, shared with the studio server's own agents.
+// from a studio folder (the repo is one), or pass --folder. docs/MCP.md has
+// setup and the tool list. The app ships the same shim as frame-studio-mcp.
+//
+// It's a shim. The tools run in a studio server: the one the app or npm run
+// dev runs on the folder, when there is one, so your renders and the viewer
+// share it; otherwise a headless one it starts for the session. Every message
+// goes through unchanged, to the server's MCP endpoint.
 //
 // stdout carries the protocol, so nothing here may print to it; diagnostics
 // go to stderr.
 
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { STUDIO_DIR } from '../studio/paths.ts';
-import { StudioQueue } from '../studio/queue.ts';
-import { createSerial, registerStudioTools } from './tools.ts';
-import { Workspace } from './workspace.ts';
+import { join } from 'node:path';
+import { REPO } from '../studio/folder.ts';
+import { installLoader } from '../studio/loader.ts';
 
-let workspace: Promise<Workspace> | null = null;
-/** The workspace, started on first use. A failed start is forgotten, so the next call tries again. */
-const ws = () =>
-  (workspace ??= Workspace.open().catch((err) => {
-    workspace = null;
-    throw err;
-  }));
-
-/** Reads the viewer's current selection straight from its file, without starting Vite or a browser. */
-const selections = new StudioQueue(STUDIO_DIR, async () => {
-  throw new Error('reading the selection needs no scene file');
-});
-
-const server = new McpServer({ name: 'frame-studio', version: '0.1.0' });
-// The SDK runs requests concurrently, but the /next prompt claims requests and copies scenes too, so everything takes turns.
-registerStudioTools(server, { workspace: ws, serial: createSerial(), requests: { selections } });
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
-
-const shutdown = async () => {
-  try {
-    await (await workspace)?.close();
-  } finally {
-    process.exit(0);
-  }
-};
-process.stdin.on('close', shutdown);
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);
+const builtins = process.env.FRAME_STUDIO_BUILTINS ?? join(REPO, 'src');
+installLoader(builtins);
+const { runShim } = await import('./shim.ts');
+await runShim({ builtins });

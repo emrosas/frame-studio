@@ -1,6 +1,7 @@
 /**
- * M7 in a real browser: the render page renders scenes/audio-test.json's
- * audio with OfflineAudioContext and exports it into the MP4.
+ * M7 in a real browser: the render worker (Electron) renders
+ * scenes/audio-test.json's audio with OfflineAudioContext and exports it into
+ * the MP4.
  *
  * - The same scene renders identical audio in two browser launches.
  * - No input in the graph gets more than two connections (ticket 04: Chromium
@@ -13,27 +14,27 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ALL_FORMATS, BufferSource, Input } from 'mediabunny';
-import type { Browser } from 'playwright';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { launchBrowser, openStudio, type Studio } from '../../tools/render/studio';
+import type { Studio } from '../../tools/render/studio';
+import { renderClient, startStudio, type TestStudio } from './studio-server';
 
 const SCENE = 'audio-test'; // 30 fps; blips at 0.5, 1.0 and 1.5 s, then a buzz and a pad from 2 s
 const SPF = 48000 / 30;
 const BLIPS = [0.5, 1, 1.5].map((t) => t * 48000);
 
-let browser: Browser;
+let server: TestStudio;
 let studio: Studio;
 let dir: string;
 
 beforeAll(async () => {
-  browser = await launchBrowser();
-  studio = await openStudio(SCENE, { browser });
+  server = await startStudio();
+  studio = await renderClient(server, SCENE);
   dir = mkdtempSync(join(tmpdir(), 'frame-studio-audio-'));
 });
 
 afterAll(async () => {
   await studio?.close();
-  await browser?.close();
+  await server?.close();
   if (dir) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -59,40 +60,21 @@ function onsetAfter(samples: Float32Array, from: number): number {
 }
 
 describe('audio determinism', () => {
-  it('renders identical audio in a second browser launch', async () => {
+  it('renders identical audio in a second Electron launch', async () => {
     await studio.load(SCENE);
     const first = await studio.call('audioHash');
     expect(first).toMatch(/^[0-9a-f]{64}$/);
-    const other = await openStudio(SCENE);
+    const second = await startStudio();
     try {
-      expect(await other.call('audioHash')).toBe(first);
+      expect(await (await renderClient(second, SCENE)).call('audioHash')).toBe(first);
     } finally {
-      await other.close();
+      await second.close();
     }
   });
 
   it('never connects more than two nodes into one input', async () => {
-    await studio.page.addInitScript(() => {
-      const counts = new Map<unknown, Map<number, number>>();
-      let max = 0;
-      const wrap = (proto: { connect: (...a: unknown[]) => unknown }) => {
-        const connect = proto.connect;
-        proto.connect = function (this: unknown, ...args: unknown[]) {
-          const [destination, , input = 0] = args as [unknown, number?, number?];
-          const inputs = counts.get(destination) ?? new Map<number, number>();
-          counts.set(destination, inputs);
-          const n = (inputs.get(input) ?? 0) + 1;
-          inputs.set(input, n);
-          max = Math.max(max, n);
-          return connect.apply(this, args);
-        };
-      };
-      wrap(AudioNode.prototype as unknown as { connect: (...a: unknown[]) => unknown });
-      (window as unknown as { __maxFanIn: () => number }).__maxFanIn = () => max;
-    });
     await studio.load(SCENE);
-    await studio.call('audioHash');
-    const max = await studio.page.evaluate(() => (window as unknown as { __maxFanIn: () => number }).__maxFanIn());
+    const max = await studio.call('audioFanIn');
     expect(max).toBeGreaterThan(0);
     expect(max).toBeLessThanOrEqual(2);
   });

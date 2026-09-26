@@ -168,6 +168,12 @@ export const QUEUE_EVENT = 'frame-studio:queue';
 /** The event the studio server pushes a turn's live events on (ADR 0006). */
 export const TURN_EVENT = 'frame-studio:turn';
 
+/** Pushed when scene, project, rig or generator files change: the page loads its library again. */
+export const LIBRARY_EVENT = 'frame-studio:library';
+
+/** Pushed as a viewer export goes: progress, then done with the file, or an error. */
+export const EXPORT_EVENT = 'frame-studio:export';
+
 /** Reference image types the studio accepts, with the extension each is saved under. */
 export const REFERENCE_TYPES: Readonly<Record<string, string>> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
 export const MAX_REFERENCE_BYTES = 20 * 1024 * 1024;
