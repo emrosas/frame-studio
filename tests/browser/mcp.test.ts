@@ -4,9 +4,11 @@
  *
  * The scene is a copy of bear-test written to scenes/mcp-test-<pid>.json
  * (gitignored) and removed afterwards, so the real scenes are never edited.
+ * The project tools (M9) work on a copy of projects/bears-story in
+ * projects/mcp-test-<pid>/, likewise.
  */
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
@@ -21,6 +23,7 @@ import { StudioQueue } from '../../tools/studio/queue';
 const ID = `mcp-test-${process.pid}`;
 const SCENE_FILE = join(ROOT, 'scenes', `${ID}.json`);
 const OUT_DIR = join(ROOT, 'out', ID);
+const PROJECT_DIR = join(ROOT, 'projects', ID);
 /** A throwaway handoff folder, so the tests never see or touch a real queue. */
 const STUDIO = mkdtempSync(join(tmpdir(), 'frame-studio-handoff-'));
 /** The viewer's side of the queue, as its studio server would use it. */
@@ -31,6 +34,7 @@ let client: Client;
 beforeAll(async () => {
   const scene = JSON.parse(readFileSync(join(ROOT, 'scenes/bear-test.json'), 'utf8'));
   writeFileSync(SCENE_FILE, `${JSON.stringify({ ...scene, id: ID }, null, 2)}\n`);
+  cpSync(join(ROOT, 'projects/bears-story'), PROJECT_DIR, { recursive: true });
   client = new Client({ name: 'frame-studio-test', version: '0.0.0' });
   await client.connect(
     new StdioClientTransport({
@@ -46,6 +50,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await client?.close();
   rmSync(SCENE_FILE, { force: true });
+  rmSync(PROJECT_DIR, { recursive: true, force: true });
   rmSync(OUT_DIR, { recursive: true, force: true });
   rmSync(STUDIO, { recursive: true, force: true });
 });
@@ -85,16 +90,19 @@ describe('an agent session', () => {
         'apply_to_selection',
         'complete_request',
         'export',
+        'get_project',
         'get_request',
         'get_scene',
         'get_selection',
         'hit_test',
         'list_generators',
+        'list_projects',
         'list_rigs',
         'list_scenes',
         'next_request',
         'render_contact_sheet',
         'render_frame',
+        'update_project',
         'update_scene',
       ].sort(),
     );
@@ -307,3 +315,84 @@ describe('the request queue (M6, threads from M8)', () => {
   });
 });
 
+
+describe('projects (M9)', () => {
+  const P = ID;
+  const scene = (id: string) => `${P}/${id}`;
+  const projectFile = join(PROJECT_DIR, 'project.json');
+  const shotFile = (id: string) => join(PROJECT_DIR, `${id}.json`);
+
+  it("lists projects with their scenes by qualified id, their cast and their own rigs, and marks those rigs in list_rigs", async () => {
+    const projects = json<{ id: string; name: string; main: string; scenes: string[]; rigs: string[]; cast: Record<string, unknown>; errors: string[] }[]>(
+      await call('list_projects'),
+    );
+    const mine = projects.find((p) => p.id === P);
+    expect(mine).toMatchObject({ name: "Bears' story", main: scene('film'), rigs: ['iris'], errors: [] });
+    expect(mine?.scenes).toEqual(['film', 'meet', 'pip', 'together'].map(scene));
+    expect(Object.keys(mine?.cast ?? {})).toEqual(['bruno', 'pip']);
+    const scenes = json<{ id: string; project: string | null; layers?: { id: string; scene?: string; cast?: string }[] }[]>(await call('list_scenes'));
+    const film = scenes.find((x) => x.id === scene('film'));
+    expect(film?.project).toBe(P);
+    expect(film?.layers?.find((l) => l.id === 'pip')).toEqual({ id: 'pip', scene: scene('pip') });
+    expect(scenes.find((x) => x.id === scene('meet'))?.layers?.find((l) => l.id === 'bruno')).toEqual({ id: 'bruno', cast: 'bruno' });
+    const rigs = json<{ id: string; project?: string }[]>(await call('list_rigs'));
+    expect(rigs.filter((r) => r.id === 'iris').map((r) => r.project).sort()).toEqual(['bears-story', P].sort());
+    expect(rigs.find((r) => r.id === 'bear')?.project).toBeUndefined();
+    const got = json<{ file: string; project: { main: string } }>(await call('get_project', { id: P }));
+    expect(got).toMatchObject({ file: `projects/${P}/project.json`, project: { main: 'film' } });
+  });
+
+  it('takes qualified ids in every scene tool, and writes outputs under the project', async () => {
+    const frame = await call('render_frame', { sceneId: scene('film'), frame: 50, maxWidth: 480 });
+    expect(textOf(frame)).toContain(`out/${P}/film/frame-00050.png`);
+    const hit = json<{ layerId: string }>(await call('hit_test', { sceneId: scene('film'), frame: 50, x: 960, y: 900 }));
+    expect(hit.layerId).toBe('pip');
+    const edit = json<{ file: string }>(
+      await call('apply_to_selection', { selection: { sceneId: scene('film'), layerId: 'pip', from: 40, to: 44 }, patch: { params: { x: 40 } } }),
+    );
+    expect(edit.file).toBe(`projects/${P}/film.json`);
+    expect(JSON.parse(readFileSync(shotFile('film'), 'utf8')).layers[1].overrides).toEqual([{ from: 40, to: 44, params: { x: 40 } }]);
+    const html = json<{ file: string; rigs: string[] }>(await call('export', { sceneId: scene('film'), target: 'html' }));
+    expect(html.file).toBe(`out/${P}/film/film.html`);
+    expect(html.rigs).toContain('iris');
+    const bad = await call('update_scene', { id: scene('meet'), patch: { layers: [{ id: 'x', cast: 'nobody' }] } });
+    expect(bad.isError).toBe(true);
+    expect(textOf(bad)).toMatch(/no cast member "nobody"/);
+    const loop = await call('update_scene', { id: scene('meet'), patch: { layers: [{ id: 'f', scene: 'film' }] } });
+    expect(textOf(loop)).toMatch(/in a loop/);
+    // Shortening a shot the film trims at 3 s would break the film, so the shot's edit is refused.
+    const shorter = await call('update_scene', { id: scene('meet'), patch: { duration: 2.5 } });
+    expect(textOf(shorter)).toMatch(/would break scenes in the project[\s\S]*film\.json: /);
+    expect(JSON.parse(readFileSync(shotFile('meet'), 'utf8')).duration).toBe(4);
+  });
+
+  it('changes the cast in every shot with update_project, and refuses a patch that would break a scene', async () => {
+    const before = await imageHash(await call('render_frame', { sceneId: scene('meet'), frame: 24, maxWidth: 480 }));
+    const saved = await call('update_project', { id: P, patch: { cast: { bruno: { params: { body: '#c9a27e' } } } } });
+    expect(saved.isError, textOf(saved)).toBeFalsy();
+    expect(JSON.parse(readFileSync(projectFile, 'utf8')).cast.bruno.params.body).toBe('#c9a27e');
+    expect(await imageHash(await call('render_frame', { sceneId: scene('meet'), frame: 24, maxWidth: 480 }))).not.toBe(before);
+
+    const text = readFileSync(projectFile, 'utf8');
+    const invalid = await call('update_project', { id: P, patch: { fps: 0 } });
+    expect(textOf(invalid)).toMatch(/would break the project, so nothing was saved:\n.*project\.json.*fps/);
+    const breaking = await call('update_project', { id: P, patch: { cast: { pip: null } } });
+    expect(textOf(breaking)).toMatch(/would break the project[\s\S]*pip\.json: [^\n]*no cast member "pip"/);
+    expect(readFileSync(projectFile, 'utf8')).toBe(text);
+  });
+
+  it("waits to change project.json while another agent's request in the project works, then goes ahead", async () => {
+    const queue = new StudioQueue(STUDIO, async (id) => (id.startsWith(`${P}/`) ? shotFile(id.slice(P.length + 1)) : SCENE_FILE));
+    const { id } = await queue.create({ selection: { sceneId: scene('pip'), from: 0, to: 12 }, frame: 0, prompt: 'make pip wave sooner', references: [] });
+    expect((await queue.claim(id, 'someone-else')).status).toBe('working');
+    const started = Date.now();
+    const update = call('update_project', { id: P, patch: { cast: { pip: { params: { tonal: 0.3 } } } } });
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    expect(JSON.parse(readFileSync(projectFile, 'utf8')).cast.pip.params.tonal).not.toBe(0.3);
+    await queue.complete(id, 'done', 'waved sooner');
+    const result = await update;
+    expect(result.isError, textOf(result)).toBeFalsy();
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1500);
+    expect(JSON.parse(readFileSync(projectFile, 'utf8')).cast.pip.params.tonal).toBe(0.3);
+  });
+});

@@ -10,13 +10,13 @@ import { readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import type { ViteDevServer } from 'vite';
-import type { Params, Rig, Scene } from '../../src/engine/types.ts';
-import type { SceneLibrary } from '../../src/viewer/library.ts';
+import type { Layer, Params, Rig, RigRegistry, Scene } from '../../src/engine/types.ts';
+import type { SceneEntry, SceneLibrary } from '../../src/viewer/library.ts';
 import type { ContactSheetResult, RenderExportResult, RenderHit } from '../../src/viewer/render-api.ts';
 import { buildEmbed } from '../bundle/embed.ts';
 import { openStudio, startVite, writeViaSink, type Studio } from '../render/studio.ts';
-import { entryPath, loadModules, ROOT, SCENES_DIR, sceneLibrary, writeFileAtomic, type LoadedModules } from '../scene-files.ts';
-import type { StudioRequest } from '../../src/studio/protocol.ts';
+import { entryPath, libraryFrom, loadModules, PROJECTS_DIR, readSceneFiles, ROOT, SCENES_DIR, sceneLibrary, writeFileAtomic, type LoadedModules } from '../scene-files.ts';
+import { projectOf, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { STUDIO_DIR } from '../studio/paths.ts';
 import { StudioQueue } from '../studio/queue.ts';
@@ -34,6 +34,8 @@ export interface SelectionInput {
 
 export interface RigInfo {
   id: string;
+  /** Set for a project's own rig: only that project's scenes can draw with it. */
+  project?: string;
   description?: string;
   /** The base rig of a variant, or null for a base rig. */
   base: string | null;
@@ -56,10 +58,10 @@ const pad = (n: number) => String(n).padStart(5, '0');
 export class Workspace {
   private studio: Studio | null = null;
   private studioScene: string | null = null;
-  /** Bumped on every change under src/ or scenes/; the studio reloads when it moves. */
+  /** Bumped on every change under src/, scenes/ or projects/; the studio reloads when it moves. */
   private generation = 0;
   private loadedGeneration = -1;
-  /** Each scene file's mtime and size when last seen, so an edit is caught even before the watcher reports it. */
+  /** The mtimes and sizes of each scene's files when last seen, by scene key, so an edit is caught even before the watcher reports it. */
   private readonly stamps = new Map<string, string>();
 
   private readonly vite: ViteDevServer;
@@ -72,7 +74,7 @@ export class Workspace {
     this.vite = vite;
     this.queue = new StudioQueue(STUDIO_DIR, async (sceneId) => entryPath((await this.entry(sceneId)).entry));
     vite.watcher.on('all', (_event, path) => {
-      if (path.startsWith(join(ROOT, 'src')) || path.startsWith(SCENES_DIR)) this.generation++;
+      if (path.startsWith(join(ROOT, 'src')) || path.startsWith(SCENES_DIR) || path.startsWith(PROJECTS_DIR)) this.generation++;
     });
   }
 
@@ -102,21 +104,69 @@ export class Workspace {
     return { modules, lib, entry };
   }
 
-  /** A valid scene by key, or an error listing what is wrong with it. */
-  private async validScene(key: string): Promise<{ modules: LoadedModules; scene: Scene; file: string }> {
+  /**
+   * A valid scene by key, or an error listing what is wrong with it. `files` are what its pixels depend on:
+   * its own file, and for a project scene every file of the project.
+   */
+  private async validScene(key: string): Promise<{ modules: LoadedModules; scene: Scene; file: string; entry: SceneEntry; files: string[] }> {
     const { modules, lib, entry } = await this.entry(key);
-    const problems = [...lib.errors, ...entry.errors];
+    const project = entry.project !== null ? lib.projects.find((p) => p.id === entry.project) : undefined;
+    const problems = [...lib.errors, ...entry.errors, ...(project?.errors ?? []).map((e) => `${project!.file}: ${e}`)];
     if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors:\n${problems.join('\n')}`);
-    return { modules, scene: entry.scene, file: entryPath(entry) };
+    const file = entryPath(entry);
+    const files = project
+      ? [join(PROJECTS_DIR, project.id, 'project.json'), ...lib.entries.filter((e) => e.project === project.id).map((e) => entryPath(e))]
+      : [file];
+    return { modules, scene: entry.scene, file, entry, files };
   }
 
-  /** The render page on `key`, freshly loaded if anything changed since it last loaded. */
-  /** The render page on `key`, whose file is `file`, freshly loaded if anything changed since it last loaded. */
-  private async page(key: string, file: string): Promise<Studio> {
-    const info = await stat(file);
-    const stamp = `${info.mtimeMs}:${info.size}`;
-    const seen = this.stamps.get(file);
-    this.stamps.set(file, stamp);
+  /**
+   * What would go wrong in project `project` if the file at module path `path` ("/projects/<id>/<file>.json")
+   * held `json`: the project rebuilt as the viewer would build it. Every error of that file, and of every
+   * other file of the project that is fine now, each "file: message". Empty when nothing breaks.
+   */
+  private async projectBreaks(modules: LoadedModules, lib: SceneLibrary, project: string, path: string, json: unknown): Promise<string[]> {
+    const prefix = `/projects/${project}/`;
+    const files = Object.fromEntries(Object.entries(await readSceneFiles(SCENES_DIR, PROJECTS_DIR)).filter(([k]) => k.startsWith(prefix)));
+    files[path] = JSON.stringify(json);
+    const after = await libraryFrom(modules, files);
+    const errors: string[] = [];
+    const before = lib.projects.find((p) => p.id === project);
+    const now = after.projects.find((p) => p.id === project);
+    if (now && now.errors.length > 0 && (path.endsWith('/project.json') || (before?.errors.length ?? 0) === 0)) {
+      errors.push(...now.errors.map((e) => `${now.file}: ${e}`));
+    }
+    for (const e of after.entries) {
+      const wasFine = lib.entries.find((b) => b.key === e.key)?.scene != null;
+      if (e.errors.length > 0 && (e.path === path || wasFine)) errors.push(...e.errors.map((x) => `${e.file}: ${x}`));
+    }
+    return errors;
+  }
+
+  /**
+   * Checks an edited scene the way the viewer will: against its rigs, and for a project scene against its
+   * project and every scene that places it, however deep. Throws with every problem.
+   */
+  private async checkEdit(modules: LoadedModules, entry: SceneEntry, scene: unknown, action: string): Promise<void> {
+    if (entry.project !== null) {
+      const broken = await this.projectBreaks(modules, (await this.library()).lib, entry.project, entry.path, scene);
+      if (broken.length > 0) throw new Error(`${action} would break scenes in the project, so nothing was saved:\n${broken.join('\n')}`);
+      return;
+    }
+    const result = modules.validate(scene, entry.registry ?? modules.createRegistry(), entry.context ?? undefined);
+    if (!result.ok) throw new Error(`${action} would make the scene invalid, so nothing was saved:\n${result.errors.join('\n')}`);
+  }
+
+  /** The render page on `key`, whose pixels depend on `files`, freshly loaded if anything changed since it last loaded. */
+  private async page(key: string, files: string[]): Promise<Studio> {
+    const stamps: string[] = [];
+    for (const file of files) {
+      const info = await stat(file).catch(() => null);
+      stamps.push(info ? `${file}:${info.mtimeMs}:${info.size}` : `${file}:gone`);
+    }
+    const stamp = stamps.join('|');
+    const seen = this.stamps.get(key);
+    this.stamps.set(key, stamp);
     if (seen !== undefined && seen !== stamp) {
       // Changed on disk, maybe by the viewer's Revert, and the watcher may not have said so yet.
       this.vite.moduleGraph.invalidateAll();
@@ -156,10 +206,12 @@ export class Workspace {
     return range;
   }
 
+  /** Loose scenes first, then each project's, with their project; ids are qualified in projects (ADR 0007). */
   async listScenes() {
     const { modules, lib } = await this.library();
     return lib.entries.map((e) => ({
       id: e.key,
+      project: e.project,
       file: e.file,
       ...(e.scene
         ? {
@@ -167,11 +219,88 @@ export class Workspace {
             duration: e.scene.duration,
             frameCount: modules.engine.frameCount(e.scene),
             size: e.scene.size,
-            layers: modules.engine.sceneLayers(e.scene).map((l) => ({ id: l.id, rig: l.rig })),
+            layers: modules.engine.sceneLayers(e.scene).map((l) => ({
+              id: l.id,
+              ...(l.rig !== undefined ? { rig: l.rig } : {}),
+              ...(l.cast !== undefined ? { cast: l.cast } : {}),
+              ...(l.scene !== undefined ? { scene: `${e.project}/${l.scene}` } : {}),
+            })),
           }
         : {}),
       errors: [...lib.errors, ...e.errors],
     }));
+  }
+
+  /** Every project: its settings, scenes by qualified id, own rigs, and any errors in project.json. */
+  async listProjects() {
+    const { lib } = await this.library();
+    const rigs = await (await this.modules()).projectRigs();
+    return lib.projects.map((p) => ({
+      id: p.id,
+      name: p.name,
+      file: p.file,
+      ...(p.project ? { fps: p.project.fps, size: p.project.size, main: p.main, cast: p.project.cast ?? {} } : {}),
+      scenes: lib.entries.filter((e) => e.project === p.id).map((e) => e.key),
+      rigs: (rigs[p.id] ?? []).map((r) => r.id),
+      errors: p.errors,
+    }));
+  }
+
+  private async project(id: string) {
+    const { modules, lib } = await this.library();
+    const project = lib.projects.find((p) => p.id === id);
+    if (!project) throw new Error(`No project "${id}". Projects: ${lib.projects.map((p) => p.id).join(', ') || 'none yet'}`);
+    return { modules, lib, project, path: join(PROJECTS_DIR, id, 'project.json') };
+  }
+
+  /** project.json exactly as it is in its file, plus the project's scenes and any errors. */
+  async getProject(id: string): Promise<{ file: string; project: unknown; scenes: string[]; errors: readonly string[] }> {
+    const { lib, project, path } = await this.project(id);
+    return {
+      file: project.file,
+      project: JSON.parse(await readFile(path, 'utf8')),
+      scenes: lib.entries.filter((e) => e.project === id).map((e) => e.key),
+      errors: project.errors,
+    };
+  }
+
+  /**
+   * Working threads in the project, except `mine`: the caller's own thread, or for an external agent every
+   * thread this session has claimed.
+   */
+  private async projectWork(id: string, mine?: number): Promise<StudioRequest[]> {
+    const working = (await this.queue.list()).filter((r) => r.status === 'working' && projectOf(r.sceneId) === id);
+    if (mine !== undefined) return working.filter((r) => r.id !== mine);
+    // An external session doesn't say which of its threads a call is for, so it gets a pass only with one.
+    const own = working.filter((r) => r.turns.at(-1)?.claimedBy === this.session);
+    return own.length > 1 ? working : working.filter((r) => !own.includes(r));
+  }
+
+  /** Waits until no other thread in the project works, up to `ms`. Runs outside the tool queue, so other calls go on. */
+  async waitForProject(id: string, mine: number | undefined, ms: number): Promise<void> {
+    const until = Date.now() + ms;
+    while ((await this.projectWork(id, mine)).length > 0 && Date.now() < until) await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  /**
+   * A merge patch to project.json (ADR 0007). It touches every scene in the project, so it goes ahead only
+   * while no other thread there works. The result is checked as a project, and every scene in the project
+   * that is valid now must stay valid under it (fps, size, cast).
+   */
+  async updateProject(id: string, patch: unknown, mine?: number): Promise<{ file: string; project: unknown }> {
+    const { modules, lib, project, path } = await this.project(id);
+    const busy = await this.projectWork(id, mine);
+    if (busy.length > 0) {
+      throw new Error(
+        `project.json touches every scene in "${id}", so it can't change while ${busy.map((r) => `request #${r.id} on "${r.sceneId}"`).join(', ')} ${busy.length === 1 ? 'is' : 'are'} working. Try again when that turn ends.`,
+      );
+    }
+    const current = JSON.parse(await readFile(path, 'utf8')) as unknown;
+    const next = modules.engine.mergePatch(current, patch);
+    const broken = await this.projectBreaks(modules, lib, id, `/projects/${id}/project.json`, next);
+    if (broken.length > 0) throw new Error(`That patch would break the project, so nothing was saved:\n${broken.join('\n')}`);
+    await this.writeScene(path, next, modules);
+    return { file: project.file, project: next };
   }
 
   async getScene(key: string): Promise<{ file: string; scene: unknown; errors: readonly string[] }> {
@@ -185,26 +314,38 @@ export class Workspace {
     const current = JSON.parse(await readFile(path, 'utf8')) as { id?: unknown };
     const next = modules.engine.mergePatch(current, patch) as { id?: unknown };
     if (next?.id !== current.id) throw new Error(`update_scene cannot change a scene's id ("${String(current.id)}"); its file is named after it`);
-    const result = modules.validate(next, modules.createRegistry());
-    if (!result.ok) throw new Error(`The patched scene is invalid, so nothing was saved:\n${result.errors.join('\n')}`);
+    await this.checkEdit(modules, entry, next, 'That patch');
     await this.writeScene(path, next, modules);
     return { file: show(path), scene: next };
   }
 
+  /** Every rig: the global library, then each project's own, marked with its project (ADR 0007). */
   async listRigs(): Promise<RigInfo[]> {
     const modules = await this.modules();
-    const registry = modules.createRegistry();
-    return [...registry.values()].map((rig) => {
+    const describe = (rig: Rig, registry: RigRegistry, project?: string): RigInfo => {
       const base = modules.engine.baseRigId(rig.id);
       return {
         id: rig.id,
+        ...(project ? { project } : {}),
         ...(rig.description ? { description: rig.description } : {}),
         base: base === rig.id ? null : base,
         variants: modules.engine.variantsOf(registry, rig.id).map((v) => v.id),
         parts: [...(rig.parts ?? [])],
         params: rig.params,
       };
-    });
+    };
+    const global = modules.createRegistry();
+    const out = [...global.values()].map((rig) => describe(rig, global));
+    for (const [project, rigs] of Object.entries(await modules.projectRigs())) {
+      let registry: RigRegistry;
+      try {
+        registry = modules.createProjectRegistry(rigs);
+      } catch {
+        continue; // list_projects reports a project whose rigs fail to register
+      }
+      out.push(...rigs.map((rig) => describe(rig, registry, project)));
+    }
+    return out;
   }
 
   private async resolveFrame(studio: Studio, value: FrameInput, end = false): Promise<number> {
@@ -213,11 +354,11 @@ export class Workspace {
 
   /** Renders a frame: the full-size PNG goes to out/, and a preview at most maxWidth wide comes back. */
   async renderFrame(key: string, frame: FrameInput, maxWidth: number): Promise<{ file: string; frame: number; png: Buffer; width: number; height: number }> {
-    const { file } = await this.validScene(key);
-    const studio = await this.page(key, file);
+    const { files } = await this.validScene(key);
+    const studio = await this.page(key, files);
     const n = await this.resolveFrame(studio, frame);
     const { width, height } = studio.scene;
-    const path = join(ROOT, `out/${studio.scene.id}/frame-${pad(n)}.png`);
+    const path = join(ROOT, `out/${studio.scene.out}/frame-${pad(n)}.png`);
     await writeViaSink(studio, path, (sink) => studio.call('writePng', n, sink));
     if (maxWidth >= width) return { file: show(path), frame: n, png: await readFile(path), width, height };
     // Only a scaled preview needs a second pass.
@@ -235,19 +376,18 @@ export class Workspace {
     key: string,
     options: { from?: FrameInput; to?: FrameInput; every?: number; columns?: number },
   ): Promise<{ file: string; png: Buffer; sheet: ContactSheetResult }> {
-    const { file } = await this.validScene(key);
-    const studio = await this.page(key, file);
+    const { files } = await this.validScene(key);
+    const studio = await this.page(key, files);
     const from = options.from === undefined ? undefined : await this.resolveFrame(studio, options.from);
     const to = options.to === undefined ? undefined : await this.resolveFrame(studio, options.to, true);
-    const id = studio.scene.id;
-    const path = join(ROOT, `out/${id}/contact-sheet-${pad(from ?? 0)}-${pad(to ?? studio.scene.frameCount)}${options.every ? `-every${options.every}` : ''}.png`);
+    const path = join(ROOT, `out/${studio.scene.out}/contact-sheet-${pad(from ?? 0)}-${pad(to ?? studio.scene.frameCount)}${options.every ? `-every${options.every}` : ''}.png`);
     const sheet = await writeViaSink(studio, path, (sink) => studio.call('contactSheet', sink, { from, to, every: options.every, columns: options.columns }));
     return { file: show(path), png: await readFile(path), sheet };
   }
 
   async hitTest(key: string, frame: FrameInput, x: number, y: number): Promise<RenderHit & { frame: number }> {
-    const { file } = await this.validScene(key);
-    const studio = await this.page(key, file);
+    const { files } = await this.validScene(key);
+    const studio = await this.page(key, files);
     const n = await this.resolveFrame(studio, frame);
     return { frame: n, ...(await studio.call('hitTest', n, x, y, { parts: true })) };
   }
@@ -258,7 +398,7 @@ export class Workspace {
    * layer whose rig takes all of them, and a rig swap needs a layer.
    */
   async applyToSelection(selection: SelectionInput, patch: { rig?: string; params?: Params }) {
-    const { modules, scene, file } = await this.validScene(selection.sceneId);
+    const { modules, scene, file, entry } = await this.validScene(selection.sceneId);
     const { from, to } = this.toRange(selection.from, selection.to, scene, modules);
     const layers = modules.engine.sceneLayers(scene);
     let targets: string[];
@@ -267,8 +407,10 @@ export class Workspace {
     } else {
       if (patch.rig !== undefined) throw new Error('a rig swap needs a layerId; without one the selection covers every layer');
       const names = Object.keys(patch.params ?? {});
-      const registry = modules.createRegistry();
-      targets = layers.filter((l) => names.every((name) => name in (registry.get(l.rig)?.params ?? {}))).map((l) => l.id);
+      const registry = entry.registry ?? modules.createRegistry();
+      const paramsOf = (l: Layer) =>
+        l.scene !== undefined ? modules.engine.SCENE_LAYER_PARAMS : (registry.get(l.rig ?? entry.world.cast?.[l.cast ?? '']?.rig ?? '')?.params ?? {});
+      targets = layers.filter((l) => names.every((name) => name in paramsOf(l))).map((l) => l.id);
       if (targets.length === 0) throw new Error(`no layer's rig takes all of ${names.join(', ')}; give a layerId, or params one rig takes`);
     }
     let edited = scene;
@@ -282,8 +424,7 @@ export class Workspace {
       if (!target) throw new Error(`no layer "${layerId}" in ${show(file)}`);
       target.overrides = layerIn(edited, layerId)?.overrides;
     }
-    const result = modules.validate(raw, modules.createRegistry());
-    if (!result.ok) throw new Error(`That edit would make the scene invalid, so nothing was saved:\n${result.errors.join('\n')}`);
+    await this.checkEdit(modules, entry, raw, 'That edit');
     await this.writeScene(file, raw, modules);
     return {
       file: show(file),
@@ -310,20 +451,20 @@ export class Workspace {
     target: ExportTarget,
     options: { from?: FrameInput; to?: FrameInput; silent?: boolean } = {},
   ): Promise<{ file: string } & Partial<RenderExportResult> & { bytes?: number; rigs?: string[]; generators?: string[] }> {
-    const { scene, file } = await this.validScene(key);
+    const { scene, files } = await this.validScene(key);
     if (target === 'html') {
       if (options.from !== undefined || options.to !== undefined) throw new Error('html exports the whole scene; leave out from and to');
       const embed = await buildEmbed(key, { server: this.vite, silent: options.silent });
-      const path = join(ROOT, `out/${scene.id}/${scene.id}.html`);
+      const path = join(ROOT, `out/${embed.out}/${scene.id}.html`);
       await writeFileAtomic(path, embed.html);
       return { file: show(path), bytes: embed.bytes.total, rigs: embed.rigs, generators: embed.generators };
     }
     if (target === 'gif' && options.silent !== undefined) throw new Error('gif is always silent; leave out silent');
-    const studio = await this.page(key, file);
+    const studio = await this.page(key, files);
     const from = options.from === undefined ? undefined : await this.resolveFrame(studio, options.from);
     const to = options.to === undefined ? undefined : await this.resolveFrame(studio, options.to, true);
     const suffix = from !== undefined || to !== undefined ? `-${pad(from ?? 0)}-${pad(to ?? studio.scene.frameCount)}` : '';
-    const path = join(ROOT, `out/${scene.id}/${scene.id}${suffix}.${target}`);
+    const path = join(ROOT, `out/${studio.scene.out}/${scene.id}${suffix}.${target}`);
     const result = await writeViaSink(studio, path, (sink) => studio.call('exportVideo', target, sink, { from, to, silent: options.silent }));
     return { file: show(path), ...result };
   }

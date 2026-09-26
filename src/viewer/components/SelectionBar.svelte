@@ -87,6 +87,9 @@
     <button type="button" class="sel-clear" aria-label="Clear layer (Esc)" title="Clear layer (Esc)" disabled={sel.layer === ''} onclick={(e) => clear(actions.clearLayer, e)}>
       {@render clearIcon()}
     </button>
+    {#if sel.shot}
+      <button type="button" class="open-shot" title="Open {sel.shot} at the matching frame" onclick={(e) => clear(() => actions.openShot(), e)}>Open shot</button>
+    {/if}
   </span>
   <span class="sel-group">
     <span class="label">Range</span>

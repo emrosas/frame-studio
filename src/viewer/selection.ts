@@ -3,7 +3,7 @@
 // Pure, so it is unit tested without a browser.
 
 import { formatTimecode, parseTimecode, sceneLayers } from '../engine';
-import type { RigRegistry, Scene } from '../engine/types';
+import type { RigRegistry, Scene, World } from '../engine/types';
 import { clampFrame } from './clock';
 
 /** A frame range [from, to): from is included, to is not. */
@@ -163,10 +163,12 @@ export interface SceneShape {
  * Layer ids in draw order, each with the parts declared by its rig and by any
  * rig its overrides swap in (a variant may add parts to its base's).
  */
-export function sceneShape(scene: Scene, registry: RigRegistry, frameCount: number): SceneShape {
+export function sceneShape(scene: Scene, registry: RigRegistry, frameCount: number, world: World = {}): SceneShape {
   const layers = new Map<string, readonly string[]>();
   for (const layer of sceneLayers(scene)) {
-    const rigIds = [layer.rig, ...(layer.overrides ?? []).flatMap((o) => (o.rig ? [o.rig] : []))];
+    // A scene layer has no parts of its own; open the shot to pick inside it.
+    const own = layer.rig ?? (layer.cast !== undefined ? world.cast?.[layer.cast]?.rig : undefined);
+    const rigIds = [...(own ? [own] : []), ...(layer.overrides ?? []).flatMap((o) => (o.rig ? [o.rig] : []))];
     const parts = new Set<string>();
     for (const id of rigIds) for (const part of registry.get(id)?.parts ?? []) parts.add(part);
     layers.set(layer.id, [...parts]);

@@ -21,8 +21,9 @@ import { createRegistry } from '../engine/registry';
 import { render } from '../engine/render';
 import { frameCount } from '../engine/time';
 import { PlaybackClock } from '../engine/playback';
-import type { Ctx2D, Rig, Scene } from '../engine/types';
+import type { Cast, Ctx2D, Rig, Scene, World } from '../engine/types';
 import type { EmbedSound, EmbedSoundFactory, EmbedSoundState } from './sound';
+import { createSurfaces } from './surfaces';
 
 export interface EmbedOptions {
   /** Start playing on load. Default true. */
@@ -90,12 +91,32 @@ function soundButton(root: HTMLElement, onClick: () => void): (muted: boolean) =
   };
 }
 
+/** What a project scene brings along (ADR 0007): the scenes it places, however deep, and the project's cast. */
+export interface EmbedProject {
+  scenes?: Readonly<Record<string, Scene>>;
+  cast?: Cast;
+}
+
 /**
  * Mounts the player in `root`. `sound` comes from the generated entry for a
- * scene with audio (sound.ts); a silent embed passes nothing.
+ * scene with audio (sound.ts); a silent embed passes nothing. A project
+ * scene passes the scenes it places and its cast as `project`.
  */
-export function mountEmbed(root: HTMLElement, scene: Scene, rigs: readonly Rig[], options: EmbedOptions = {}, sound?: EmbedSoundFactory): EmbedApi {
+export function mountEmbed(
+  root: HTMLElement,
+  scene: Scene,
+  rigs: readonly Rig[],
+  options: EmbedOptions = {},
+  sound?: EmbedSoundFactory,
+  project: EmbedProject = {},
+): EmbedApi {
   const registry = createRegistry(rigs);
+  // Surfaces rasterize on the CPU like the canvas below, for masks and fades.
+  const world: World = {
+    scenes: new Map(Object.entries(project.scenes ?? {})),
+    cast: project.cast ?? {},
+    surfaces: createSurfaces({ willReadFrequently: true, colorSpace: 'srgb' }),
+  };
   const [width, height] = scene.size;
   const total = frameCount(scene);
 
@@ -118,7 +139,7 @@ export function mountEmbed(root: HTMLElement, scene: Scene, rigs: readonly Rig[]
   const draw = () => {
     if (failed) return;
     try {
-      render(ctx as unknown as Ctx2D, scene, clock.frame, registry);
+      render(ctx as unknown as Ctx2D, scene, clock.frame, registry, world);
     } catch (err) {
       failed = `This animation could not draw frame ${clock.frame}: ${err instanceof Error ? err.message : String(err)}`;
       clock.pause();
@@ -146,10 +167,14 @@ export function mountEmbed(root: HTMLElement, scene: Scene, rigs: readonly Rig[]
     });
   };
   if (sound) {
-    audio = sound(scene, () => {
-      syncSound();
-      showMuted?.(soundOff());
-    });
+    audio = sound(
+      scene,
+      () => {
+        syncSound();
+        showMuted?.(soundOff());
+      },
+      world,
+    );
     // While the browser still holds sound back, a click asks for it again rather than muting.
     showMuted = soundButton(root, () => void audio?.setMuted(!soundOff()));
     showMuted(true);

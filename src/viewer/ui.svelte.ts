@@ -11,6 +11,24 @@ export interface SceneOption {
   label: string;
   file: string;
   invalid: boolean;
+  /** The project's id for a project scene; null for a loose scene. Options group by it. */
+  project: string | null;
+  /** The project's name, shown as the option's group; null for a loose scene. */
+  group: string | null;
+  /** The project's main scene. */
+  main: boolean;
+}
+
+/** A shot on the scrubber: a scene layer's span in the scene on screen (ADR 0007). */
+export interface ShotBand {
+  layerId: string;
+  /** The placed scene's id. */
+  label: string;
+  from: number;
+  to: number;
+  /** Row under the track, so overlapping shots (a crossfade) both show. */
+  lane: number;
+  selected: boolean;
 }
 
 export interface TimelineReadout {
@@ -25,6 +43,8 @@ export interface SelectionState {
   sceneId: string | null;
   /** "bear › nose", or empty for no layer. */
   layer: string;
+  /** The placed scene's id when the layer is a scene layer, for Open shot; null otherwise. */
+  shot: string | null;
   range: FrameRange | null;
   rangeText: RangeText | null;
   frameCount: number;
@@ -55,6 +75,12 @@ export interface ViewerActions {
   scrub(frame: number): void;
   scrubEnd(): void;
   selectScene(key: string): void;
+  /** Selects a shot's scene layer and its span, from its band on the scrubber. */
+  selectShot(layerId: string): void;
+  /** Opens a shot (the selected one by default) at the matching frame. */
+  openShot(layerId?: string): void;
+  /** Back to the scene a shot was opened from. */
+  back(): void;
   clearLayer(): void;
   clearRange(): void;
   /** Applies a typed range end. Returns an error message and changes nothing when the text is invalid. */
@@ -123,7 +149,11 @@ export class ViewerUi {
   selectedScene = $state<string | null>(null);
   /** The frame range band on the scrubber. */
   band = $state<{ range: FrameRange; frameCount: number } | null>(null);
-  selection = $state<SelectionState>({ sceneId: null, layer: '', range: null, rangeText: null, frameCount: 0, notice: null });
+  /** Shot bands under the scrubber, on a scene that places shots. */
+  shots = $state<{ bands: ShotBand[]; lanes: number; frameCount: number } | null>(null);
+  /** The scene a shot was opened from, for the link back. */
+  back = $state<{ key: string; label: string } | null>(null);
+  selection = $state<SelectionState>({ sceneId: null, layer: '', shot: null, range: null, rangeText: null, frameCount: 0, notice: null });
   errors = $state<ErrorBlock[]>([]);
   studio = $state<StudioState>({ available: false, requests: [], now: Date.now(), error: null, agents: [], open: null });
   /**

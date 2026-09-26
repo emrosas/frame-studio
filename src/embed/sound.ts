@@ -7,7 +7,7 @@
 import { LivePlayback, type Playhead } from '../audio/live';
 import { renderSceneAudio } from '../audio/render';
 import type { AudioGenerator } from '../audio/types';
-import type { Scene } from '../engine/types';
+import type { Scene, World } from '../engine/types';
 
 export interface EmbedSoundState {
   /** False until the scene's audio has rendered. */
@@ -29,16 +29,16 @@ export interface EmbedSound {
   setMuted(muted: boolean): Promise<void>;
 }
 
-/** What the generated embed entry passes to mountEmbed for a scene with audio. */
-export type EmbedSoundFactory = (scene: Scene, onChange: () => void) => EmbedSound;
+/** What the generated embed entry passes to mountEmbed for a scene with audio. `world` holds the scenes it places. */
+export type EmbedSoundFactory = (scene: Scene, onChange: () => void, world?: World) => EmbedSound;
 
 export function embedSound(generators: readonly AudioGenerator[]): EmbedSoundFactory {
-  return (scene, onChange) => {
+  return (scene, onChange, world = {}) => {
     const live = new LivePlayback(() => new AudioContext({ latencyHint: 'interactive' }));
     live.setMuted(true); // until the person turns it on
     let ready = false;
     let error: string | undefined;
-    renderSceneAudio(scene, new Map(generators.map((g) => [g.id, g]))).then(
+    renderSceneAudio(scene, new Map(generators.map((g) => [g.id, g])), world).then(
       (buffer) => {
         live.setBuffer(buffer);
         ready = true;

@@ -3,7 +3,7 @@
  * accessible name, so these tests describe behaviour rather than markup. They
  * pin down what the viewer does, and the Svelte port (ADR 0002) must keep it.
  */
-import { rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Browser, Page } from 'playwright';
 import type { ViteDevServer } from 'vite';
@@ -208,6 +208,104 @@ describe('sound (M7)', () => {
     await expect.poll(async () => (await sound(page)).heard).toBeNull();
     await expect.poll(() => page.getByRole('button', { name: 'Unmute' }).isVisible()).toBe(true);
     await page.keyboard.press('Space');
+    await page.close();
+  });
+});
+
+describe('projects (ADR 0007)', () => {
+  type Shots = { layerId: string; scene: string; from: number; to: number }[];
+  const shots = (page: Page) => page.evaluate(() => (window as unknown as { studio: { shots: Shots } }).studio.shots);
+  const url = (page: Page) => new URL(page.url()).searchParams;
+
+  it('lists projects in the picker under their names, and opens a project scene by its qualified id', async () => {
+    const page = await open(`?scene=${encodeURIComponent('bears-story/pip')}&frame=12`);
+    await expect.poll(() => readout(page)).toBe('frame 12 of 48');
+    const picker = page.getByRole('combobox', { name: 'Scene' });
+    expect(await picker.inputValue()).toBe('bears-story/pip');
+    expect(await picker.locator('optgroup').getAttribute('label')).toBe("Bears' story");
+    expect(await picker.locator('optgroup option').allTextContents()).toEqual(['film (main)', 'meet', 'pip', 'together']);
+    // Loose scenes stay outside the group.
+    expect(await picker.locator(':scope > option', { hasText: 'bear-test' }).count()).toBe(1);
+    expect(await page.title()).toBe('bears-story/pip · Frame Studio');
+    await page.close();
+  });
+
+  it("shows each shot's span on the film's scrubber, and a click selects the shot", async () => {
+    const page = await open(`?scene=${encodeURIComponent('bears-story/film')}&frame=0`);
+    await expect.poll(() => readout(page)).toBe('frame 0 of 144');
+    expect(await shots(page)).toEqual([
+      { layerId: 'meet', scene: 'bears-story/meet', from: 0, to: 36 },
+      { layerId: 'pip', scene: 'bears-story/pip', from: 36, to: 84 },
+      { layerId: 'together', scene: 'bears-story/together', from: 72, to: 132 },
+      { layerId: 'again', scene: 'bears-story/meet', from: 120, to: 144 },
+    ]);
+    const bands = page.getByRole('group', { name: 'Shots' }).getByRole('button');
+    expect((await bands.allTextContents()).map((t) => t.trim())).toEqual(['meet', 'pip', 'together', 'meet']);
+    expect(await bands.nth(3).getAttribute('aria-label')).toBe('meet (layer again)');
+    await bands.nth(1).click();
+    expect(await bands.nth(1).getAttribute('aria-pressed')).toBe('true');
+    await expect.poll(() => layer(page)).toBe('pip');
+    await expect.poll(() => range(page)).toBe('[36, 84)');
+    await expect.poll(() => page.getByRole('button', { name: 'Open shot' }).isVisible()).toBe(true);
+    await page.close();
+  });
+
+  it('opens a shot at the matching frame from a double-click, and the link goes back to the same moment', async () => {
+    const page = await open(`?scene=${encodeURIComponent('bears-story/film')}&frame=50`);
+    await expect.poll(() => readout(page)).toBe('frame 50 of 144');
+    // Film frame 50 is pip's frame 14 (pip starts at film frame 36).
+    const at = await scenePoint(page, 960, 900);
+    await page.mouse.dblclick(at.x, at.y);
+    await expect.poll(() => url(page).get('scene')).toBe('bears-story/pip');
+    await expect.poll(() => readout(page)).toBe('frame 14 of 48');
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => readout(page)).toBe('frame 15 of 48');
+    await page.getByRole('button', { name: 'Back to bears-story/film' }).click();
+    await expect.poll(() => url(page).get('scene')).toBe('bears-story/film');
+    await expect.poll(() => readout(page)).toBe('frame 51 of 144');
+    await expect.poll(() => layer(page)).toBe('pip');
+    await page.close();
+  });
+
+  it('opens a shot from a double-click on its band, even though the first click reflows the controls', async () => {
+    const page = await open(`?scene=${encodeURIComponent('bears-story/film')}&frame=0`);
+    await expect.poll(() => readout(page)).toBe('frame 0 of 144');
+    await page.getByRole('group', { name: 'Shots' }).getByRole('button', { name: 'meet (layer again)' }).dblclick();
+    await expect.poll(() => url(page).get('scene')).toBe('bears-story/meet');
+    await expect.poll(() => readout(page)).toBe('frame 12 of 48');
+    await page.close();
+  });
+
+  it('goes back through the cut as it is now, if it moved while the shot was open', async () => {
+    const film = join(ROOT, 'projects/bears-story/film.json');
+    const original = readFileSync(film, 'utf8');
+    const page = await open(`?scene=${encodeURIComponent('bears-story/film')}&frame=50`);
+    try {
+      await expect.poll(() => readout(page)).toBe('frame 50 of 144');
+      await page.evaluate(() => (window as unknown as { studio: { openShot(id: string): void } }).studio.openShot('pip'));
+      await expect.poll(() => readout(page)).toBe('frame 14 of 48');
+      // pip now starts at 4 s rather than 3 s.
+      const moved = JSON.parse(original) as { layers: { id: string; start?: number }[] };
+      moved.layers.find((l) => l.id === 'pip')!.start = 4;
+      writeFileSync(film, `${JSON.stringify(moved, null, 2)}\n`);
+      await expect.poll(() => page.evaluate(() => (window as unknown as { studio: { errors: string[] } }).studio.errors.length)).toBe(0);
+      await page.waitForTimeout(500);
+      await page.getByRole('button', { name: 'Back to bears-story/film' }).click();
+      await expect.poll(() => readout(page)).toBe('frame 62 of 144');
+    } finally {
+      writeFileSync(film, original);
+      await page.close();
+    }
+  });
+
+  it('opens the selected shot with Open shot, at its first frame shown when the playhead is outside it', async () => {
+    const page = await open(`?scene=${encodeURIComponent('bears-story/film')}&frame=10`);
+    await expect.poll(() => readout(page)).toBe('frame 10 of 144');
+    await page.getByRole('group', { name: 'Shots' }).getByRole('button').nth(3).click();
+    await page.getByRole('button', { name: 'Open shot' }).click();
+    await expect.poll(() => url(page).get('scene')).toBe('bears-story/meet');
+    // "again" places meet from its 1 s mark: meet's frame 12.
+    await expect.poll(() => readout(page)).toBe('frame 12 of 48');
     await page.close();
   });
 });

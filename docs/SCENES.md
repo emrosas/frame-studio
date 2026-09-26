@@ -2,6 +2,8 @@
 
 A scene is one JSON file in `scenes/` at the repo root, named after its id: `scenes/shapes-test.json` holds the scene with `"id": "shapes-test"`. The viewer picks up every file in that folder. `scenes/hello.json` is the smallest working scene and a good one to copy. Give the copy its own id. While two files share an id, the file named after the id keeps it and the other file shows as invalid.
 
+A longer piece is a project: a folder in `projects/` whose scenes share a frame rate, a size and a cast, and can place each other. See [Projects](#projects).
+
 The image at any frame depends only on the scene file and the frame number. Nothing carries over from the previous frame, so a scene renders the same whether you play to frame 40 or jump straight to it.
 
 ## Scene fields
@@ -25,12 +27,15 @@ Any field not listed here is an error. The same goes for layers, tracks, keys an
 | --- | --- |
 | `id` | Unique within the scene. `background` is taken, and `/` is not allowed. |
 | `rig` | Which rig draws this layer, for example `circle`. |
+| `cast` | In a project, instead of `rig`: a cast member, such as `bruno`. See [Projects](#projects). |
+| `scene` | In a project, instead of `rig`: another scene of the project to show here, with `start`, `in` and `out`. See [Scene layers](#scene-layers). |
 | `params` | Fixed param values. Anything you leave out uses the rig default. |
 | `tracks` | Animated params, see below. |
 | `stepFps` | Optional. Holds the layer's time on a slower clock, see below. |
 | `overrides` | Optional. Frame ranges where the layer changes rig or params, see below. |
+| `mask` | Optional. A rig whose drawing cuts the layer, see [Masks](#masks). |
 
-For each frame the engine builds a layer's params in this order, and later entries win:
+A layer has exactly one of `rig`, `cast` and `scene`. For each frame the engine builds a layer's params in this order, and later entries win:
 
 1. rig defaults
 2. `params`
@@ -350,7 +355,16 @@ A scene's sound is a list of audio cues. Each cue names a generator, which is co
 | `start`, `end` | seconds | The cue plays over `[start, end)`, from 0 up to the scene duration. Both snap to the frame they fall in, so a sound starts exactly when its frame appears. |
 | `params` | object | The generator's params. Missing ones take their defaults. |
 
-Sound renders at 48 kHz, so a scene with audio needs an fps that divides 48000: 12, 24, 25, 30, 48 or 60 all do. The validator says so if not. Cues mix together; there is no volume field beyond each generator's `gain`.
+Sound renders at 48 kHz, so a scene with audio needs an fps that divides 48000: 12, 24, 25, 30, 48 or 60 all do. The validator says so if not. Cues mix together.
+
+A cue's generator params hold for the whole cue, but its loudness can have keys. `tracks` on a cue animates `volume`, from 0 to 4, where 1 is the sound as the generator makes it. Key times are in scene seconds, like a layer's. This bed ducks to 30% between 3.5 s and 6.5 s:
+
+```json
+{ "id": "bed", "generator": "pad", "start": 0, "end": 12,
+  "tracks": [ { "param": "volume", "keys": [ { "t": 3, "v": 1 }, { "t": 3.5, "v": 0.3 }, { "t": 6.5, "v": 0.3 }, { "t": 7, "v": 1 } ] } ] }
+```
+
+Volume ramps from one frame to the next wherever it changes, so a step in the keys comes out as a one-frame fade rather than a click. `volume` is the only param a cue track takes.
 
 ### pad
 
@@ -391,13 +405,91 @@ A short beep for UI moments and hits. Each blip starts exactly on a frame.
 | `every` | number | 0 | 0 to 60 | Seconds between blips. 0 plays one blip at the cue start. Repeats snap to frames and are at least a frame apart. |
 | `gain` | number | 0.3 | 0 to 1 | Loudness. |
 
+## Projects
+
+A project is a folder, `projects/<id>/`, for a piece made of several scenes (ADR 0007). It holds `project.json`, its scenes, and optionally a `rigs/` folder. `projects/bears-story/` is the sample: three shots and a main scene, `film`, that cuts, crossfades and irises between them.
+
+```json
+{
+  "name": "Bears' story",
+  "fps": 12,
+  "size": [1920, 1080],
+  "main": "film",
+  "cast": {
+    "bruno": { "rig": "bear", "params": { "body": "#ffffff", "shade": "#b8c2de" } },
+    "pip": { "rig": "bear", "params": { "body": "#f34921", "shade": "#e03515" } }
+  }
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Optional. Shown in the viewer's picker; the folder name is the id. |
+| `fps`, `size` | Every scene in the project must use these. |
+| `main` | Optional. The scene that places the shots. Exporting it exports the whole video. |
+| `cast` | Optional. Named characters, each a rig and params, that layers use by name. |
+
+Each scene is `projects/<id>/<scene>.json`, named after its id like a loose scene. Inside the project a scene names a sibling by its bare id, such as `"scene": "pip"`. Everywhere else, including the viewer's URL, threads, the render commands and every MCP tool, a project scene has a qualified id: `bears-story/pip`.
+
+### The cast
+
+A layer with `"cast": "bruno"` draws the cast member's rig with its params. The layer can still set params, tracks and overrides of its own, and those win. Params build up in this order, later entries winning: rig defaults, the cast member's params, the layer's `params`, tracks, then the active override. Change a character's colours in `project.json` and every shot that uses the character changes with it, which keeps the character consistent across shots. A layer's own params, such as its position and pose, stay its own.
+
+### Scene layers
+
+A scene layer shows another scene of the project, called a shot here, inside this one.
+
+```json
+{ "id": "pip", "scene": "pip", "start": 3, "in": 0, "out": 4,
+  "tracks": [ { "param": "opacity", "keys": [ { "t": 3, "v": 0 }, { "t": 4, "v": 1 } ] } ] }
+```
+
+| Field | Meaning |
+| --- | --- |
+| `scene` | The shot's id, a sibling in the same project. |
+| `start` | Seconds into this scene where the shot begins. Default 0. |
+| `in`, `out` | The part of the shot to show, `[in, out)` in the shot's own seconds. Defaults: 0 and the shot's end. |
+
+All three snap to frames. Frame `f` of this scene shows frame `f - start + in` of the shot, and the shot shows until its `out` or this scene's end, whichever comes first. There is no retiming. A scene layer takes these params, all trackable and overridable:
+
+| Param | Default | Meaning |
+| --- | --- | --- |
+| `x`, `y` | 0 | Moves the shot by this many scene pixels. |
+| `scale` | 1 | Size of the shot about the stage centre. |
+| `rotation` | 0 | Turn about the stage centre, in degrees clockwise. |
+| `opacity` | 1 | 0 to 1. Keys make fades and crossfades. |
+| `volume` | 1 | 0 to 4. Loudness of the shot's sound. Keys make ducks and fades. |
+| `mute` | false | Leaves the shot's sound out. |
+
+A cut is two scene layers back to back. A crossfade is two that overlap, with the upper one's `opacity` going from 0 to 1. With the defaults the shot draws exactly as it draws alone, pixel for pixel, and its layers keep their own seeds, so a shot looks the same in the film as on its own. Moved, scaled or turned, the shot is clipped to its own stage, so a character walking in from off-stage stays hidden until it crosses the shot's edge. A scene can't place itself, however indirectly, and scene layers nest at most 4 deep. A scene layer takes no `stepFps` and no `rig` in its overrides.
+
+The shot's audio comes along: its cues, shifted by `start` and cut to `[in, out)`, sample for sample, through the layer's `volume` and `mute`. The main scene can add cues of its own across cuts, such as a music bed with volume keys that duck under a shot.
+
+### Masks
+
+Any layer can take a `mask`: a rig with params and tracks. The layer then shows only where the mask rig paints, and the mask's own colours don't show. An iris is a round mask with a growing radius; a wipe is a rect that slides.
+
+```json
+{ "id": "again", "scene": "meet", "start": 10, "in": 1,
+  "mask": { "rig": "iris", "params": { "radius": 0 },
+            "tracks": [ { "param": "radius", "keys": [ { "t": 10, "v": 0 }, { "t": 11, "v": 1200, "ease": "inOutSine" } ] } ] } }
+```
+
+Mask tracks use the same clock as the layer's tracks. A mask takes no overrides.
+
+### Project rigs
+
+A rig that only one project needs goes in `projects/<id>/rigs/`, as a module that exports it, the way `projects/bears-story/rigs/iris.ts` exports `iris`. Only that project's scenes can use it, and it bundles into their HTML exports. Import the shared parts by relative path, such as `../../../src/rigs/parts/params`. A project rig may not share an id with a rig in `src/rigs/`, and no other project's rigs or scenes can import it. The rig rules below apply the same.
+
 ## Opening a scene in the viewer
 
-Run `npm run dev` and open the URL it prints. Add `?scene=<id>&frame=<n>` to land on a scene and frame, for example `http://localhost:5173/?scene=shapes-test&frame=36`. `frame` also takes a timecode such as `00:03:00`, and `scene` also takes the file name without `.json`. If `scene` matches nothing, the viewer shows the first scene with an error and opens the requested one as soon as its file exists. The URL follows along as you scrub, so a reload returns to the same place. Space plays and pauses, the arrow keys step one frame, Shift with an arrow steps one second, and Home and End jump to the ends.
+Run `npm run dev` and open the URL it prints. Add `?scene=<id>&frame=<n>` to land on a scene and frame, for example `http://localhost:5173/?scene=shapes-test&frame=36`. A project scene takes its qualified id, `?scene=bears-story/film`. The scene picker lists loose scenes first, then each project's scenes under the project's name, with its main scene first. `frame` also takes a timecode such as `00:03:00`, and `scene` also takes the file name without `.json`. If `scene` matches nothing, the viewer shows the first scene with an error and opens the requested one as soon as its file exists. The URL follows along as you scrub, so a reload returns to the same place. Space plays and pauses, the arrow keys step one frame, Shift with an arrow steps one second, and Home and End jump to the ends.
 
 Click the canvas to select the layer under the pointer. The viewer outlines it and shows its id in a tag above it. Clicking the same spot again steps down through the layers painted there and wraps back to the top. Alt with a click picks the part of the layer, such as `bruno › nose`. While paused, hovering shows a fainter outline on the layer the pointer is over. The selection is hidden during playback, since redrawing it costs several times the render, and it comes back on pause. I marks the frame on screen as the start of the frame range and O marks it as the last frame. You can also type a frame number or a timecode into the from and to fields. Ranges are `[from, to)`, so O on frame 30 stores `to: 31`. Escape clears the hover, then the layer, then the range. The URL carries the selection as `layer`, `part`, `from` and `to`.
 
 While a frame range is set, playback loops inside it, the way in and out points work in an editor. Clear the range to play the whole scene.
+
+On a scene that places shots, each shot's span shows as a band under the scrubber, with overlapping shots in separate rows. Clicking a band selects that scene layer and its span. Double-click a band, or the shot on the canvas, or press **Open shot** with the scene layer selected, to open the shot at the matching frame, or at the first frame it shows when the playhead is outside it. A link next to the picker then goes back to the scene you came from, at the frame matching where you are in the shot, with the shot's layer selected. A click on a shot selects the scene layer, not a layer inside the shot; open the shot to select inside it.
 
 A scene with audio gets a speaker button next to play. The viewer renders the scene's sound once when it opens the scene, and again when an edit changes the cues, then plays it in step with the picture, looping with the range and following seeks. Browsers only allow sound after a click or key press on the page, so the button stays grey until then. M or the button mutes, and the setting sticks across reloads.
 
@@ -405,7 +497,7 @@ The Requests panel on the left sends asks to an agent (`docs/MCP.md`, "Requests 
 
 If a scene has mistakes, the viewer lists every error with its path, such as `layers[1].tracks[0].keys[2].t`. `npm test` validates every file in `scenes/` against the rigs and renders each frame, so it catches the same errors without a browser.
 
-Scripts and agents can drive the page through `window.studio`. `studio.renderFrame(n)` pauses and draws frame `n` straight away, and `studio.canvas` is the canvas to capture. `seek(n)`, `play()`, `pause()` and `selectScene(id)` move around, and `scene`, `frame`, `frameCount`, `scenes` and `errors` report state. `studio.errors` holds the same list as the error panel and updates about 200 ms after a file save, so it is the quickest check after an edit. `studio.hitTest(x, y, { parts })` returns the layer, and optionally the part, at a scene pixel on the frame on screen without changing the selection. `select(layerId, partId?)`, `setRange(from, to)` and `clearRange()` set the selection, and `selection` and `range` read it back.
+Scripts and agents can drive the page through `window.studio`. `studio.shots` lists the shots of the scene on screen, and `openShot(layerId?)` and `back()` do what the buttons do. `studio.renderFrame(n)` pauses and draws frame `n` straight away, and `studio.canvas` is the canvas to capture. `seek(n)`, `play()`, `pause()` and `selectScene(id)` move around, and `scene`, `frame`, `frameCount`, `scenes` and `errors` report state. `studio.errors` holds the same list as the error panel and updates about 200 ms after a file save, so it is the quickest check after an edit. `studio.hitTest(x, y, { parts })` returns the layer, and optionally the part, at a scene pixel on the frame on screen without changing the selection. `select(layerId, partId?)`, `setRange(from, to)` and `clearRange()` set the selection, and `selection` and `range` read it back.
 
 ## Rendering and exporting
 
@@ -419,7 +511,7 @@ npm run contact-sheet -- --scene bear-test --every 6      # out/bear-test/contac
 npm run export -- --scene bear-test --target html         # out/bear-test/bear-test.html
 ```
 
-`--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
+A project scene takes its qualified id, `--scene bears-story/film`, and its files go to `out/bears-story/film/`. `--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
 
 MP4 is H.264 at the scene's fps. It is tagged sRGB, so QuickTime, browsers and ffmpeg all show the scene's colours. A range export starts at 0 s. GIF loops, keeps a 255-colour palette that holds the scene's most common colours exactly, and refuses scenes above 50 fps, which GIF can't play. H.264 needs an even width and height.
 
@@ -428,6 +520,8 @@ A scene with audio exports its sound into the MP4: AAC at 128 kb/s where the bro
 ### The HTML embed
 
 `npm run export -- --scene bear-test --target html` writes `out/bear-test/bear-test.html`, a single file that draws the scene live. It holds the engine, a small player, only the rigs the scene uses and the scene itself. It makes no network requests, so it works opened from disk, dropped into a website or loaded in an iframe. The scene is validated when you export, so the file doesn't carry the validator, and rig and param descriptions are stripped since the player never reads them. `bear-test` comes to about 54 KB and `shapes-test` to 19 KB. The engine and player are about 8.5 KB of that. This export needs no browser and takes under a second.
+
+A project scene's embed also carries every scene it places, however deep, the cast members they use, and the project rigs they draw with. `bears-story/film` comes to about 70 KB with its three shots.
 
 A scene with audio also bundles the generators its cues use, about 7 KB more for `audio-test`. The embed renders the sound when it loads, but starts muted, because browsers only allow sound after a click in the page. A speaker button in the corner turns it on and off, and the sound follows play, pause and seeks. `--silent` exports the embed without sound, and then it carries no audio code at all.
 
@@ -458,6 +552,8 @@ The browser needs downloading once, with `npx playwright install chromium-headle
 `bear-test` is the M2 character scene, 1920 by 1080 at 12 fps for 8 seconds on the orange of `bears`. `bruno`, a big white bear, eases in from the left over the first 2 seconds, then waves at 2 s, cheers at 5 s and rests at 7 s, going neutral, happy, surprised and neutral with it. An override swaps him to `bear.bandaged` over frames `[48, 72)`. `pip`, a smaller red bear in front of him with `stepFps: 6`, starts shy and sad and waves happily from 4 s. Both blink. The paper around them is left clear, so a click on empty paper has room to land.
 
 `audio-test` is the M7 sound scene: 640 by 360 at 30 fps for 4 seconds. A circle swells on the three blips at 0.5, 1 and 1.5 s, a star spins while a buzz plays from 2.2 s to 3.2 s, and a minor pad fades in under it from 2 s. The browser tests use the blips to check audio alignment.
+
+`bears-story` is the sample project, at 12 fps and 1920 by 1080. Its cast is `bruno` and `pip` from `bear-test`. Three shots each open with a blip: `meet` (4 s, bruno walks in and waves), `pip` (4 s, pip goes from shy to waving) and `together` (5 s, both wave, then cheer). The main scene, `film`, runs 12 s. It cuts from `meet` to `pip` at 3 s, crossfades to `together` from 6 s to 7 s, and at 10 s opens the project's `iris` rig onto `meet` again, trimmed to start 1 s in, so meet's first blip stays out. A pad under the whole film ducks while `pip` plays. The tests check that a shot showing in full draws the same pixels in `film` as alone, and that the blips at the cuts land within a frame in the MP4.
 
 `bears` is a single 1080 by 1920 frame with four `bear` layers on a flat orange `paper` ground. It recreates a painted illustration, with the white bear at the back, then the red, blue and yellow ones.
 

@@ -4,7 +4,7 @@
  * per-turn checkpoints, Revert to here, Try again, settling, old request
  * files, and the current selection.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -235,6 +235,93 @@ describe('undo', () => {
     expect(retry.status).toBe('pending');
     expect(retry.turns.map((t) => t.status)).toEqual(['reverted', 'pending']);
     expect(retry.turns[1]).toMatchObject({ attempt: 2, ask: { prompt: 'sadder, but keep the eyes open', frame: 30, references: ['references/sad.png'] } });
+  });
+});
+
+describe('projects (ADR 0007)', () => {
+  let project: string;
+  beforeEach(() => {
+    const folder = join(dir, 'projects/story');
+    mkdirSync(folder, { recursive: true });
+    project = join(folder, 'project.json');
+    writeFileSync(project, '{"cast":1}\n');
+    for (const id of ['one', 'two']) {
+      writeFileSync(join(folder, `${id}.json`), '{"v":1}\n');
+      scenes.set(`story/${id}`, join(folder, `${id}.json`));
+    }
+  });
+
+  /** Works a turn on a project scene, changing project.json too when `cast` is given. */
+  async function workProject(id: number, v: string, cast?: string, session = 'a'): Promise<void> {
+    const claimed = await queue.claim(id, session);
+    expect(claimed.status, `claim #${id}`).toBe('working');
+    writeFileSync(scene(claimed.sceneId), `{"v":"${v}"}\n`);
+    if (cast !== undefined) writeFileSync(project, `{"cast":"${cast}"}\n`);
+    await queue.complete(id, 'done', `set v to ${v}`);
+  }
+
+  it("keeps project.json with a project scene's checkpoint, and marks the turns that changed it", async () => {
+    await queue.create(ask('one', 'story/one'));
+    await workProject(1, 'one');
+    expect(readFileSync(join(requests(), '0001.project.before.json'), 'utf8')).toBe('{"cast":1}\n');
+    await queue.reply(1, ask('recast', 'story/one'));
+    await workProject(1, 'two', 'bruno');
+    expect(readFileSync(join(requests(), '0001.1.project.before.json'), 'utf8')).toBe('{"cast":1}\n');
+    expect((await queue.get(1)).turns.map((t) => t.projectChanged ?? false)).toEqual([false, true]);
+    // A loose scene's turn keeps no project copy.
+    await queue.create(ask('loose', 'hello'));
+    await work(2, 'x');
+    expect(existsSync(join(requests(), '0002.project.before.json'))).toBe(false);
+  });
+
+  it('reverts project.json with the scene when the turns undone changed it, and only then', async () => {
+    await queue.create(ask('recast', 'story/one'));
+    await workProject(1, 'one', 'bruno');
+    await queue.reply(1, ask('scene only', 'story/one'));
+    await workProject(1, 'two');
+    await queue.revertTo(1, 1);
+    expect(readFileSync(scene('story/one'), 'utf8')).toBe('{"v":"one"}\n');
+    expect(readFileSync(project, 'utf8')).toBe('{"cast":"bruno"}\n');
+    await queue.revertTo(1, 0);
+    expect(readFileSync(scene('story/one'), 'utf8')).toBe('{"v":1}\n');
+    expect(readFileSync(project, 'utf8')).toBe('{"cast":1}\n');
+  });
+
+  it("won't restore project.json while another thread in the project works, or over its later change", async () => {
+    await queue.create(ask('recast', 'story/one'));
+    await workProject(1, 'one', 'bruno');
+    await queue.create(ask('shot two', 'story/two'));
+    await queue.claim(2, 'b');
+    await expect(queue.revertTo(1, 0)).rejects.toThrow(/cannot be reverted/);
+    writeFileSync(project, '{"cast":"pip"}\n');
+    await queue.complete(2, 'done', 'recast again');
+    expect((await queue.get(2)).turns[0].projectChanged).toBe(true);
+    await expect(queue.revertTo(1, 0)).rejects.toThrow(/cannot be reverted/);
+    await queue.revertTo(2, 0);
+    expect(readFileSync(project, 'utf8')).toBe('{"cast":"bruno"}\n');
+    await queue.revertTo(1, 0);
+    expect(readFileSync(project, 'utf8')).toBe('{"cast":1}\n');
+  });
+
+  it('remembers a project.json change by a turn cancelled while it worked, and holds back reverts over it', async () => {
+    await queue.create(ask('one', 'story/one'));
+    await workProject(1, 'one');
+    await queue.create(ask('recast', 'story/two'));
+    await queue.claim(2, 'b');
+    writeFileSync(project, '{"cast":"pip"}\n');
+    const cancelled = await queue.cancel(2);
+    expect(cancelled.turns[0]).toMatchObject({ status: 'cancelled', projectChanged: true });
+    // Thread 1's revert leaves project.json alone, so thread 2's change doesn't stop it.
+    await queue.revertTo(1, 0);
+    expect(readFileSync(project, 'utf8')).toBe('{"cast":"pip"}\n');
+  });
+
+  it("archives a thread's project.json copies with it", async () => {
+    await queue.create(ask('recast', 'story/one'));
+    await workProject(1, 'one', 'bruno');
+    await queue.settle(1);
+    await queue.clearFinished();
+    expect(existsSync(join(requests(), 'archive/0001.project.before.json'))).toBe(true);
   });
 });
 

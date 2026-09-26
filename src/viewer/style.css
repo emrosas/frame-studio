@@ -373,6 +373,80 @@ body {
   border-left: none;
 }
 
+/*
+ * Shots a scene places (ADR 0007), under the track on the range band's scale,
+ * one lane per overlap. They hang below the scrubber into the row's bottom
+ * padding, so the track stays level with the other controls.
+ */
+.controls-row.transport.has-shots {
+  padding-bottom: calc(var(--lanes) * 16px + 2px);
+}
+
+.shots {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(50% + 9px);
+  height: calc(var(--lanes) * 16px);
+}
+
+.shot-band {
+  --in: 0;
+  --out: 1;
+  --lane: 0;
+  position: absolute;
+  top: calc(var(--lane) * 16px);
+  height: 14px;
+  left: clamp(0px, calc(6px + (100% - 12px) * var(--in)), 100%);
+  right: clamp(0px, calc(6px + (100% - 12px) * (1 - var(--out))), 100%);
+  padding: 0 4px;
+  overflow: hidden;
+  font: 10px/14px var(--mono);
+  text-align: left;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--muted);
+  background: #26292d;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.shot-band:hover {
+  color: var(--text);
+}
+
+.shot-band.is-selected {
+  color: var(--pick-ink);
+  background: var(--pick);
+  border-color: var(--pick);
+}
+
+.back-link,
+.open-shot {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font: inherit;
+  color: var(--pick);
+  background: none;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 2px 8px 2px 4px;
+  cursor: pointer;
+}
+
+.open-shot {
+  padding-left: 8px;
+  margin-left: 4px;
+}
+
+.back-link svg {
+  width: 14px;
+  height: 14px;
+  fill: currentColor;
+}
+
 /* ---- info row ---- */
 
 .scene-picker {

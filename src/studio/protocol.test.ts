@@ -8,6 +8,8 @@ import {
   displayStatus,
   firstRevertableTurn,
   normalizeRequest,
+  projectCheckpointFileName,
+  projectOf,
   requestFileName,
   STALL_MS,
   type StudioRequest,
@@ -38,6 +40,21 @@ describe('file names', () => {
   it("keeps turn 0's checkpoint under the name requests had before threads", () => {
     expect(checkpointFileName(7, 0)).toBe('0007.before.json');
     expect(checkpointFileName(7, 2)).toBe('0007.2.before.json');
+  });
+
+  it("names a project scene's copy of project.json beside its checkpoint", () => {
+    expect(projectCheckpointFileName(7, 0)).toBe('0007.project.before.json');
+    expect(projectCheckpointFileName(7, 2)).toBe('0007.2.project.before.json');
+  });
+});
+
+describe('projectOf', () => {
+  it('reads the project from a qualified scene id, and none from a loose one', () => {
+    expect(projectOf('bears-story/film')).toBe('bears-story');
+    expect(projectOf('bear-test')).toBeNull();
+    // A loose scene keyed by its file, when its id clashes with another's.
+    expect(projectOf('scenes/copy.json')).toBeNull();
+    expect(projectOf('a/b/c')).toBeNull();
   });
 });
 
@@ -102,6 +119,23 @@ describe('canRevert', () => {
     const t = thread({ status: 'your_turn' }, [done(0), done(2), done(4)]);
     expect([0, 1, 2].map((k) => canRevert(t, k, [t]))).toEqual([true, true, true]);
     expect(canRevert(t, 3, [t])).toBe(false);
+  });
+
+  it('restores project.json only when nothing else in the project works, or changed it since (ADR 0007)', () => {
+    const cast = one(1, done(0, { projectChanged: true }), { sceneId: 'story/one' });
+    const plain = one(1, done(0), { sceneId: 'story/one' });
+    const working = one(2, turn({ status: 'working', claimedAt: at(5) }), { status: 'working', sceneId: 'story/two' });
+    const laterCast = one(3, done(5, { projectChanged: true }), { sceneId: 'story/two' });
+    const laterScene = one(3, done(5), { sceneId: 'story/two' });
+    const elsewhere = one(4, turn({ status: 'working', claimedAt: at(5) }), { status: 'working', sceneId: 'other/one' });
+    expect(canRevert(cast, 0, [cast, working])).toBe(false);
+    expect(canRevert(cast, 0, [cast, laterCast])).toBe(false);
+    expect(canRevert(cast, 0, [cast, laterScene, elsewhere])).toBe(true);
+    // A turn that left project.json alone reverts only its scene, so the project's other work doesn't matter.
+    expect(canRevert(plain, 0, [plain, working, laterCast])).toBe(true);
+    // A turn cancelled while it worked keeps its edits, a change to project.json included.
+    const cancelledCast = one(3, done(5, { status: 'cancelled', projectChanged: true }), { sceneId: 'story/two' });
+    expect(canRevert(cast, 0, [cast, cancelledCast])).toBe(false);
   });
 
   it('refuses while a turn of the thread is pending or working', () => {

@@ -5,6 +5,8 @@ export type ExportTarget = 'mp4' | 'gif';
 
 export interface RenderSceneInfo {
   id: string;
+  /** The folder under out/ its files go to: the id, or "<project>/<id>" for a project scene. */
+  out: string;
   fps: number;
   frameCount: number;
   width: number;

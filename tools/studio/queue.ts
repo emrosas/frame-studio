@@ -22,7 +22,7 @@
 // Node only; runs as TypeScript through type stripping.
 
 import { copyFile, link, mkdir, readdir, readFile, rename, rm, stat, constants } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   canRevert,
   checkpointFileName,
@@ -30,6 +30,8 @@ import {
   firstRevertableTurn,
   isFinished,
   normalizeRequest,
+  projectCheckpointFileName,
+  projectOf,
   requestFileName,
   threadDirName,
   type AgentId,
@@ -86,6 +88,25 @@ export class StudioQueue {
 
   checkpointPath(id: number, turn: number): string {
     return join(this.requestsDir, checkpointFileName(id, turn));
+  }
+
+  /** A project scene's turn keeps project.json here too (ADR 0007). */
+  projectCheckpointPath(id: number, turn: number): string {
+    return join(this.requestsDir, projectCheckpointFileName(id, turn));
+  }
+
+  /** The project.json beside a project scene's file, or null for a loose scene. */
+  private async projectFile(sceneId: string): Promise<string | null> {
+    return projectOf(sceneId) === null ? null : join(dirname(await this.sceneFile(sceneId)), 'project.json');
+  }
+
+  /** Whether the project's project.json differs from turn `turn`'s copy of it, made at claim time. */
+  private async projectChanged(thread: StudioRequest, turn: number): Promise<boolean> {
+    const file = await this.projectFile(thread.sceneId).catch(() => null);
+    if (!file) return false;
+    const read = (path: string) => readFile(path, 'utf8').catch(() => null);
+    const before = await read(this.projectCheckpointPath(thread.id, turn));
+    return before !== null && before !== (await read(file));
   }
 
   /** The folder with a thread's turn logs and frame thumbnails. */
@@ -321,6 +342,12 @@ export class StudioQueue {
         await copyFile(await this.sceneFile(current.sceneId), this.checkpointPath(current.id, k), constants.COPYFILE_EXCL).catch((err) => {
           if (!isCode(err, 'EEXIST')) throw err;
         });
+        const project = await this.projectFile(current.sceneId);
+        if (project) {
+          await copyFile(project, this.projectCheckpointPath(current.id, k), constants.COPYFILE_EXCL).catch((err) => {
+            if (!isCode(err, 'EEXIST') && !isCode(err, 'ENOENT')) throw err;
+          });
+        }
         checkpointAt = at;
       }
       const turns = [...current.turns];
@@ -408,7 +435,8 @@ export class StudioQueue {
     }
     const { turn, thread: patch } = change(thread.turns[k], thread);
     const turns = [...thread.turns];
-    turns[k] = turn;
+    // A turn that ends having changed project.json says so, so its revert restores that too.
+    turns[k] = turn.status !== 'working' && (await this.projectChanged(thread, k)) ? { ...turn, projectChanged: true } : turn;
     const next: StudioRequest = { ...thread, ...patch, turns };
     await this.write(next);
     if (next.status !== 'working') await this.release(next);
@@ -461,7 +489,9 @@ export class StudioQueue {
       throw new Error(`Request #${id} has no waiting or working turn to cancel.`);
     }
     const turns = [...thread.turns];
-    turns[k] = { ...turn, status: 'cancelled', completedAt: now() };
+    // A turn cancelled while it worked keeps its edits, so it says whether project.json was among them.
+    const changed = turn.status === 'working' && (await this.projectChanged(thread, k));
+    turns[k] = { ...turn, status: 'cancelled', completedAt: now(), ...(changed ? { projectChanged: true } : {}) };
     const next: StudioRequest = { ...thread, turns, status: turns.every((t) => t.status === 'cancelled') ? 'cancelled' : 'your_turn' };
     await this.write(next);
     await this.release(next);
@@ -511,6 +541,11 @@ export class StudioQueue {
     }
     const before = await readFile(this.checkpointPath(id, turn));
     await writeFileAtomic(await this.sceneFile(thread.sceneId), before);
+    const project = await this.projectFile(thread.sceneId);
+    if (project && thread.turns.slice(turn).some((t) => t.projectChanged && t.status !== 'reverted')) {
+      const projectBefore = await readFile(this.projectCheckpointPath(id, turn)).catch(() => null);
+      if (projectBefore) await writeFileAtomic(project, projectBefore);
+    }
     const turns = thread.turns.map((t, k) => (k >= turn && t.status !== 'cancelled' ? { ...t, status: 'reverted' as const } : t));
     const next: StudioRequest = { ...thread, turns, status: 'your_turn' };
     delete next.settledAt;
@@ -572,7 +607,11 @@ export class StudioQueue {
     for (const r of await this.list()) {
       if (r.status !== 'settled' && r.status !== 'cancelled') continue;
       await mkdir(this.archiveDir, { recursive: true });
-      const names = [requestFileName(r.id), threadDirName(r.id), ...r.turns.map((_, k) => checkpointFileName(r.id, k))];
+      const names = [
+        requestFileName(r.id),
+        threadDirName(r.id),
+        ...r.turns.flatMap((_, k) => [checkpointFileName(r.id, k), projectCheckpointFileName(r.id, k)]),
+      ];
       for (const name of names) {
         await rename(join(this.requestsDir, name), join(this.archiveDir, name)).catch((err) => {
           if (!isCode(err, 'ENOENT')) throw err;

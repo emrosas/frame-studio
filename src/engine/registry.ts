@@ -1,4 +1,10 @@
-import type { Params, Rig, RigRegistry, Scene } from './types';
+import type { LayerSpec, Params, Rig, RigRegistry, Scene, World } from './types';
+
+/** True for a value shaped like a rig: an id, a param schema and a draw function. For finding rigs among a module's exports. */
+export function isRig(value: unknown): value is Rig {
+  const v = value as Partial<Rig> | null;
+  return typeof v === 'object' && v !== null && typeof v.id === 'string' && typeof v.draw === 'function' && typeof v.params === 'object';
+}
 
 /**
  * Build a registry from a list of rigs. Throws on a duplicate id, and on a
@@ -67,20 +73,34 @@ export function variantsOf(registry: RigRegistry, baseId: string): Rig[] {
 }
 
 /**
- * Every rig id a scene draws with: the background, each layer, each override,
- * and the base of every variant among them, since the registry needs a
- * variant's base. Sorted, each once. The single-file embed bundles exactly these.
+ * Every rig id a scene draws with: the background, each layer, its cast
+ * member's rig, its mask, each override, the rigs of every shot its scene
+ * layers place (given the project's world), and the base of every variant
+ * among them, since the registry needs a variant's base. Sorted, each once.
+ * The single-file embed bundles exactly these.
  */
-export function rigIdsUsed(scene: Scene): string[] {
+export function rigIdsUsed(scene: Scene, world: World = {}): string[] {
   const ids = new Set<string>();
-  const add = (id: string) => {
+  const add = (id: string | undefined) => {
+    if (id === undefined) return;
     ids.add(id);
     ids.add(baseRigId(id));
   };
-  if (scene.background) add(scene.background.rig);
-  for (const layer of scene.layers) {
-    add(layer.rig);
-    for (const o of layer.overrides ?? []) if (o.rig !== undefined) add(o.rig);
-  }
+  // Shots placed through scene layers count too, however deep; each is visited once.
+  const seen = new Set<Scene>();
+  const visit = (s: Scene) => {
+    if (seen.has(s)) return;
+    seen.add(s);
+    const layers: LayerSpec[] = [...(s.background ? [s.background] : []), ...s.layers];
+    for (const layer of layers) {
+      add(layer.rig);
+      if (layer.cast !== undefined) add(world.cast?.[layer.cast]?.rig);
+      add(layer.mask?.rig);
+      for (const o of layer.overrides ?? []) add(o.rig);
+      const shot = layer.scene !== undefined ? world.scenes?.get(layer.scene) : undefined;
+      if (shot) visit(shot);
+    }
+  };
+  visit(scene);
   return [...ids].sort();
 }

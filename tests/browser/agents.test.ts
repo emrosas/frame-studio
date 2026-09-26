@@ -6,7 +6,7 @@
  * restarts and one working thread per scene. Runs on a throwaway handoff
  * folder and throwaway scenes.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Browser, BrowserContext, Page } from 'playwright';
@@ -18,7 +18,10 @@ import { readTurnEvents } from '../../tools/studio/agents/runner';
 
 const A = `test-tmp-agents-a-${process.pid}`;
 const B = `test-tmp-agents-b-${process.pid}`;
-const sceneFile = (id: string) => join(ROOT, 'scenes', `${id}.json`);
+/** A copy of projects/bears-story, for threads on a project's scenes (ADR 0007). */
+const P = `test-tmp-agents-${process.pid}`;
+const PROJECT_DIR = join(ROOT, 'projects', P);
+const sceneFile = (id: string) => (id.includes('/') ? join(ROOT, 'projects', `${id}.json`) : join(ROOT, 'scenes', `${id}.json`));
 const STUDIO = mkdtempSync(join(tmpdir(), 'frame-studio-agents-'));
 const queue = new StudioQueue(STUDIO, async (id) => sceneFile(id));
 const RIG_FILE = join(ROOT, 'src/rigs', `test-tmp-fake-rig-${process.pid}.ts`);
@@ -33,7 +36,37 @@ const originals = new Map<string, string>();
 const ball = (color: string, from = 12, to = 24) => ({ tool: 'apply_to_selection', args: { selection: { sceneId: A, layerId: 'ball', from, to }, patch: { params: { fill: color } } } });
 
 function writeScripts(): void {
+  const film = JSON.parse(readFileSync(join(PROJECT_DIR, 'film.json'), 'utf8')) as { layers: Record<string, unknown>[] };
+  // The cut from meet to pip moves from 3 s to 3.5 s.
+  const recut = film.layers.map((l) => (l.id === 'meet' ? { ...l, out: 3.5 } : l.id === 'pip' ? { ...l, start: 3.5 } : l));
+  const project = [
+    {
+      match: 'project hold',
+      steps: [
+        { tool: 'apply_to_selection', args: { selection: { sceneId: `${P}/meet`, layerId: 'bruno', from: 0, to: 12 }, patch: { params: { width: 480 } } } },
+        { wait: 8000 },
+        { say: 'Held meet.' },
+      ],
+    },
+    {
+      match: 'project quick',
+      steps: [
+        { tool: 'apply_to_selection', args: { selection: { sceneId: `${P}/pip`, layerId: 'pip', from: 0, to: 12 }, patch: { params: { x: 700 } } } },
+        { say: 'Moved pip.' },
+      ],
+    },
+    { match: 'project recut', steps: [{ tool: 'update_scene', args: { id: `${P}/film`, patch: { layers: recut } } }, { say: 'Recut.' }] },
+    {
+      match: 'project recast',
+      steps: [
+        { tool: 'update_project', args: { id: P, patch: { cast: { bruno: { params: { body: '#d8b48a' } } } } } },
+        { tool: 'apply_to_selection', args: { selection: { sceneId: `${P}/film`, layerId: 'together', from: 90, to: 96 }, patch: { params: { scale: 1.1 } } } },
+        { say: 'Recast.' },
+      ],
+    },
+  ];
   const scripts = [
+    ...project,
     {
       match: 'make the ball blue',
       steps: [
@@ -70,6 +103,7 @@ async function startServer(): Promise<void> {
 }
 
 beforeAll(async () => {
+  cpSync(join(ROOT, 'projects/bears-story'), PROJECT_DIR, { recursive: true });
   process.env.FRAME_STUDIO_DIR = STUDIO;
   process.env.FRAME_STUDIO_FAKE_AGENT = '1';
   const hello = JSON.parse(readFileSync(join(ROOT, 'scenes/hello.json'), 'utf8'));
@@ -95,6 +129,7 @@ afterAll(async () => {
   for (const id of [A, B]) rmSync(sceneFile(id), { force: true });
   rmSync(RIG_FILE, { force: true });
   rmSync(DOC_FILE, { force: true });
+  rmSync(PROJECT_DIR, { recursive: true, force: true });
   rmSync(STUDIO, { recursive: true, force: true });
 });
 
@@ -223,5 +258,48 @@ describe('an agent in the studio', () => {
     const first = await readTurnEvents(join(queue.threadDir(t.id), 'turn-0.jsonl'));
     expect(first.some((e) => e.type === 'status' && e.message === 'The studio server stopped during this turn.')).toBe(true);
     await queue.revertTo(t.id, 0);
+  });
+});
+
+describe('agents in a project (ADR 0007)', () => {
+  const read = (name: string) => readFileSync(join(PROJECT_DIR, name), 'utf8');
+  const start = (sceneId: string, prompt: string) =>
+    queue.create({ selection: { sceneId: `${P}/${sceneId}`, from: 0, to: 12 }, frame: 0, prompt, references: [], agent: 'fake', settings: { access: 'studio' } });
+  const status = async (id: number) => (await queue.get(id)).status;
+
+  it('works threads on two shots at once, lets the film thread recut, holds a cast edit until the shots are done, and reverts both files', async () => {
+    const film = read('film.json');
+    const cast = read('project.json');
+    const hold = await start('meet', 'project hold');
+    const quick = await start('pip', 'project quick');
+    await expect.poll(() => status(hold.id), { timeout: 10000 }).toBe('working');
+    // pip's thread runs and finishes while meet's still works.
+    await expect.poll(() => status(quick.id), { timeout: 10000 }).toBe('your_turn');
+    expect(await status(hold.id)).toBe('working');
+
+    const cut = await start('film', 'project recut');
+    await expect.poll(() => status(cut.id), { timeout: 10000 }).toBe('your_turn');
+    const recut = JSON.parse(read('film.json')) as { layers: { id: string; start?: number; out?: number }[] };
+    expect(recut.layers.find((l) => l.id === 'pip')?.start).toBe(3.5);
+
+    // The cast edit waits for meet's thread, which is still working.
+    await queue.reply(cut.id, { selection: { sceneId: `${P}/film`, from: 0, to: 12 }, frame: 0, prompt: 'project recast', references: [] });
+    await expect.poll(async () => (await readTurnEvents(join(queue.threadDir(cut.id), 'turn-1.jsonl'))).some((e) => e.type === 'status' && /waits until no other request there is working/.test(e.message)), { timeout: 10000 }).toBe(true);
+    expect(read('project.json')).toBe(cast);
+    expect(await status(hold.id)).toBe('working');
+    await expect.poll(() => status(hold.id), { timeout: 15000 }).toBe('your_turn');
+    await expect.poll(() => status(cut.id), { timeout: 15000 }).toBe('your_turn');
+    expect(JSON.parse(read('project.json')).cast.bruno.params.body).toBe('#d8b48a');
+    const done = await queue.get(cut.id);
+    expect(done.turns.map((t) => [t.status, t.projectChanged ?? false])).toEqual([['done', false], ['done', true]]);
+    expect((await queue.get(hold.id)).turns[0].projectChanged).toBeUndefined();
+
+    // Revert to before the recast: project.json and the film go back together; the recut stays.
+    await queue.revertTo(cut.id, 1);
+    expect(read('project.json')).toBe(cast);
+    expect(JSON.parse(read('film.json'))).toEqual(recut);
+    await queue.revertTo(cut.id, 0);
+    expect(read('film.json')).toBe(film);
+    for (const id of [hold.id, quick.id]) await queue.revertTo(id, 0);
   });
 });

@@ -12,7 +12,7 @@ export * from './types';
 export { SAMPLE_RATE, samplesPerFrame, sceneSamples, sourceTime, paramTime, cueTimes, frameSample, type CueTimes } from './timing';
 export { mix } from './mix';
 export { envelopeGain, noiseBuffer, toSamples, wanderCurve } from './parts';
-export { AUDIO_CHANNELS, audioKey, generatorsUsed, hasAudio, renderSceneAudio, sameGenerators, scheduleScene } from './render';
+export { AUDIO_CHANNELS, audioKey, generatorIdsUsed, generatorsUsed, hasAudio, renderSceneAudio, sameGenerators, scheduleScene, type ShotAudio } from './render';
 export { DRIFT_TOLERANCE, LivePlayback, wrapInto, wrappedDifference, type Playhead } from './live';
 export { blip, buzz, pad };
 

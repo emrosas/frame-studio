@@ -4,7 +4,7 @@ import type { AudioCue, Scene } from '../engine/types';
 import { createDefaultRegistry } from '../rigs';
 import { allGenerators, createDefaultGenerators, createGeneratorRegistry, type AudioGenerator } from './index';
 import { mix } from './mix';
-import { scheduleScene } from './render';
+import { audioKey, generatorIdsUsed, generatorsUsed, hasAudio, scheduleScene } from './render';
 import { installFakeAudio, reaches, type AutomationEvent, type FakeAudio, type FakeNode } from './testing/fake-audio';
 import { cueTimes, frameSample, paramTime, SAMPLE_RATE, samplesPerFrame, sceneSamples, sourceTime } from './timing';
 import { readParams } from '../rigs/parts/params';
@@ -214,6 +214,78 @@ describe('with a fake audio graph', () => {
         scheduleScene(audio.ctx, scene([{ id: 'x', generator: 'nope', start: 0, end: 1 }]), createDefaultGenerators(), audio.destination as unknown as AudioNode),
       ).toThrow(/audio cue "x" uses unknown generator "nope"/);
     });
+
+    /** Gain automation as [method, value, sample], the sample being the one paramTime aims at (it clamps at 0). */
+    const gainEvents = (node: FakeNode) =>
+      node.params.gain.events.map((e) => [e.method, Math.round((e.value as number) * 1e6) / 1e6, e.time === 0 ? 0 : Math.round(e.time * SAMPLE_RATE + 0.5)]);
+
+    it('follows volume keys on a cue, a ramp between frame starts where it changes, and leaves a cue without them alone', () => {
+      const probe: AudioGenerator = { id: 'probe', params: {}, schedule: () => {} };
+      const cues: AudioCue[] = [
+        { id: 'bed', generator: 'probe', start: 0, end: 1, tracks: [{ param: 'volume', keys: [{ t: 0.4, v: 1 }, { t: 0.6, v: 0.5 }] }] },
+        { id: 'flat', generator: 'probe', start: 0, end: 1 },
+      ];
+      scheduleScene(audio.ctx, { ...scene(cues), fps: 10 }, createGeneratorRegistry([probe]), audio.destination as unknown as AudioNode);
+      const [bed, flat] = audio.nodes.filter((n) => n.kind === 'GainNode');
+      const spf = samplesPerFrame(10);
+      // Frames 0 to 3 hold 1, 4 to 6 ramp down to 0.5, then it holds.
+      expect(gainEvents(bed)).toEqual([
+        ['setValueAtTime', 1, 0],
+        ['linearRampToValueAtTime', 1, 4 * spf],
+        ['linearRampToValueAtTime', 0.75, 5 * spf],
+        ['linearRampToValueAtTime', 0.5, 6 * spf],
+      ]);
+      expect(gainEvents(flat)).toEqual([]);
+    });
+
+    const shotScene: Scene = { id: 'shot', fps: 12, duration: 3, size: [100, 100], seed: 1, layers: [] };
+    const shotBuffer = () => {
+      const buffer = audio.ctx.createBuffer(2, sceneSamples(shotScene), SAMPLE_RATE);
+      for (let c = 0; c < 2; c++) buffer.getChannelData(c).forEach((_, i, data) => (data[i] = c + i / 1e6));
+      return buffer;
+    };
+    const parent = (layer: Scene['layers'][number]): Scene => ({ id: 'film', fps: 12, duration: 4, size: [100, 100], seed: 2, layers: [layer] });
+
+    it("plays a scene layer's shot cut to its trim, from its start, sample for sample, through its volume", () => {
+      const film = parent({
+        id: 'take',
+        scene: 'shot',
+        start: 1,
+        in: 0.5,
+        out: 1.5,
+        tracks: [{ param: 'volume', keys: [{ t: 1, v: 0 }, { t: 1.25, v: 1 }] }],
+      });
+      const buffer = shotBuffer();
+      scheduleScene(audio.ctx, film, createDefaultGenerators(), audio.destination as unknown as AudioNode, new Map([['shot', { scene: shotScene, buffer }]]));
+      const [source] = audio.sources();
+      const spf = samplesPerFrame(12);
+      expect(source.kind).toBe('AudioBufferSourceNode');
+      expect(Math.round(source.startTime! * SAMPLE_RATE)).toBe(12 * spf);
+      expect(source.startOffset).toBeUndefined();
+      const clip = source.options.buffer as AudioBuffer;
+      expect(clip.length).toBe(12 * spf);
+      for (let c = 0; c < 2; c++) expect(clip.getChannelData(c)).toEqual(buffer.getChannelData(c).slice(6 * spf, 18 * spf));
+      const gain = audio.nodes.find((n) => n.kind === 'GainNode')!;
+      expect(reaches(audio, source, audio.destination)).toBe(true);
+      expect(gainEvents(gain).slice(0, 2)).toEqual([
+        ['setValueAtTime', 0, 12 * spf],
+        ['linearRampToValueAtTime', 0.333333, 13 * spf],
+      ]);
+      expect(gainEvents(gain).at(-1)).toEqual(['linearRampToValueAtTime', 1, 15 * spf]);
+    });
+
+    it('leaves out a shot that is muted or silent all through, and one that never shows', () => {
+      const shots = new Map([['shot', { scene: shotScene, buffer: shotBuffer() }]]);
+      const layers: Scene['layers'] = [
+        { id: 'a', scene: 'shot', params: { mute: true } },
+        { id: 'b', scene: 'shot', params: { volume: 0 } },
+        { id: 'c', scene: 'shot', start: 1, in: 1, out: 1 },
+      ];
+      for (const layer of layers) {
+        scheduleScene(audio.ctx, parent(layer), createDefaultGenerators(), audio.destination as unknown as AudioNode, shots);
+      }
+      expect(audio.sources()).toEqual([]);
+    });
   });
 });
 
@@ -240,5 +312,42 @@ describe('generator registry', () => {
       'audio[0].params.pitch: generator "blip" param "pitch" expects a number, got string "high"',
       'audio[0].params.volume: unknown param "volume" for generator "blip"; known params: pitch, wave, length, every, gain',
     ]);
+  });
+});
+
+describe('sound through scene layers (ADR 0007)', () => {
+  const blip: AudioCue = { id: 'b', generator: 'blip', start: 0, end: 0.5 };
+  const shot: Scene = { id: 'shot', fps: 12, duration: 2, size: [10, 10], seed: 1, layers: [], audio: [blip] };
+  const quiet: Scene = { id: 'quiet', fps: 12, duration: 2, size: [10, 10], seed: 1, layers: [] };
+  const middle: Scene = { ...quiet, id: 'middle', layers: [{ id: 's', scene: 'shot' }] };
+  const film: Scene = { ...quiet, id: 'film', layers: [{ id: 'm', scene: 'middle' }, { id: 'q', scene: 'quiet' }], audio: [{ id: 'bed', generator: 'pad', start: 0, end: 2 }] };
+  const world = { scenes: new Map([['shot', shot], ['quiet', quiet], ['middle', middle], ['film', film]]) };
+
+  it("counts the placed scenes' sound, however deep", () => {
+    expect(hasAudio(middle, world)).toBe(true);
+    expect(hasAudio(middle)).toBe(false);
+    expect(hasAudio({ ...quiet, layers: [{ id: 'q', scene: 'quiet' }] }, world)).toBe(false);
+    expect(generatorIdsUsed(film, world)).toEqual(['blip', 'pad']);
+    const generators = createDefaultGenerators();
+    expect(generatorsUsed(film, generators, world)).toEqual([generators.get('pad'), generators.get('blip')]);
+  });
+
+  it('renders again when a placed scene\'s sound or placement changes', () => {
+    const key = audioKey(film, world);
+    const louder = { scenes: new Map([...world.scenes, ['shot', { ...shot, audio: [{ ...blip, params: { gain: 1 } }] }]]) };
+    expect(audioKey(film, louder)).not.toBe(key);
+    const moved = { ...film, layers: [{ id: 'm', scene: 'middle', start: 0.5 }, film.layers[1]] };
+    expect(audioKey(moved, world)).not.toBe(key);
+    // A silent shot's placement doesn't change the sound.
+    const silentMoved = { ...film, layers: [film.layers[0], { id: 'q', scene: 'quiet', start: 1 }] };
+    expect(audioKey(silentMoved, world)).toBe(key);
+  });
+
+  it('lets cue tracks animate only volume, within 0 to 4', () => {
+    const check = (tracks: unknown) =>
+      validateScene({ ...quiet, audio: [{ ...blip, tracks }] }, createDefaultRegistry(), createDefaultGenerators());
+    expect(check([{ param: 'volume', keys: [{ t: 0, v: 1 }, { t: 1, v: 0.2 }] }]).ok).toBe(true);
+    const pitch = check([{ param: 'pitch', keys: [{ t: 0, v: 440 }] }]);
+    expect(pitch.ok ? [] : pitch.errors.join('\n')).toMatch(/unknown param "pitch" for an audio cue's tracks.*known params: volume/);
   });
 });

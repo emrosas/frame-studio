@@ -1,0 +1,40 @@
+{
+  "id": "pip",
+  "fps": 12,
+  "duration": 4,
+  "size": [1920, 1080],
+  "seed": 22,
+  "background": {
+    "rig": "paper",
+    "params": { "tone": "#7cc6d9", "grain": 0, "fibres": 0, "mottle": 0.15, "vignette": 0 }
+  },
+  "layers": [
+    {
+      "id": "pip",
+      "cast": "pip",
+      "stepFps": 6,
+      "params": {
+        "x": 760,
+        "y": 420,
+        "width": 420,
+        "tilt": -5.281,
+        "faceTilt": -5.319,
+        "wavePaw": "right"
+      },
+      "tracks": [
+        { "param": "pose", "keys": [{ "t": 0, "v": "shy" }, { "t": 2.5, "v": "wave" }] },
+        { "param": "expression", "keys": [{ "t": 0, "v": "sad" }, { "t": 2.5, "v": "happy" }] },
+        { "param": "lookX", "keys": [{ "t": 0, "v": -0.5 }, { "t": 2.5, "v": 0.7 }] }
+      ]
+    }
+  ],
+  "audio": [
+    {
+      "id": "cut",
+      "generator": "blip",
+      "start": 0,
+      "end": 0.25,
+      "params": { "pitch": 990, "length": 0.08, "gain": 0.3 }
+    }
+  ]
+}

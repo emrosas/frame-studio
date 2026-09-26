@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-25, after M8.
+Last updated 2026-09-25, after M9.
 
 ## Done
 
@@ -437,6 +437,64 @@ The viewer review found nothing critical. These are fixed:
 - Reference images show only for real reference paths.
 - The agents test waits long enough for real CLIs to answer.
 
+### M9: Projects
+
+M9 is built as ticket 17 settled it (ADR 0007), and its nine acceptance criteria pass. A project is a folder of scenes that share a frame rate, a size and a cast, and a scene can place its siblings, so a longer video is a main scene of shots that can each be worked on at once.
+
+What M9 delivered:
+
+- **Project folders.** `projects/<id>/project.json` holds the name, fps, size, main scene and cast. The library (`src/viewer/library.ts`) builds each project with its own rig registry, checks every scene against the project, and gives project scenes qualified ids, `<project>/<scene>`. A scene that places itself, however indirectly, a scene nested more than 4 deep, and a scene placing a broken one each get an error.
+- **Scene layers** (`src/engine/scene-layer.ts`, `render.ts`). A layer with `scene` shows a sibling from `start`, trimmed to `[in, out)`, with trackable `x`, `y`, `scale`, `rotation`, `opacity`, `volume` and `mute`. At full opacity with no mask the shot draws straight onto the canvas with its own seeds, so it matches the shot alone pixel for pixel. Opacity and masks composite through offscreen surfaces that each host passes in (`src/embed/surfaces.ts`), since the engine never makes a canvas.
+- **Masks** on any layer: a rig with params and tracks, cut in with `destination-in`.
+- **The cast.** A layer with `"cast": "bruno"` draws the member's rig with its params, under the layer's own.
+- **Project rigs** in `projects/<id>/rigs/`, offered only to that project's scenes. The runtime-budget test scans them too, and keeps each project's rigs to itself.
+- **Sound through scene layers** (`src/audio/render.ts`). Each placed shot's sound renders once on its own, then its buffer is cut into the parent sample for sample, from `start`, through a gain that follows the layer's `volume` and `mute`. Cues can take `volume` keys, for a bed that ducks.
+- **Exports.** MP4, GIF and HTML of any project scene. The embed carries every scene it places, the cast members they use and the project rigs they draw with. Outputs go to `out/<project>/<scene>/`.
+- **The viewer.** The picker groups each project's scenes under its name, main first. A scene that places shots shows a band per shot under the scrubber; a click selects the scene layer and its span. Double-clicking a shot or a band, or **Open shot**, opens it at the matching frame, and a link goes back to the same moment.
+- **Agents.** Project rigs are writable by default. An edit to `project.json`, through `update_project` or to the file, waits while another thread in the project works, for up to 50 s, then gives up with the reason. Each turn on a project scene saves `project.json` beside its checkpoint, marks the turn if `project.json` changed, and Revert to here restores both.
+- **MCP.** `list_projects`, `get_project` and `update_project`. `update_project` also checks that every scene in the project stays valid. `list_scenes` shows each scene's project and each layer's rig, cast member or placed scene, and `list_rigs` marks project rigs. Every tool takes qualified ids.
+- **The sample**, `projects/bears-story/`: `meet`, `pip` and `together` with bruno and pip from the cast, and `film`, which cuts at 3 s, crossfades from 6 s to 7 s and opens the project's `iris` rig onto `meet` again at 10 s, trimmed so meet's first blip stays out. A pad under the film ducks while `pip` plays.
+
+### How each M9 acceptance criterion was verified
+
+1. **The project in the viewer.** `tests/browser/viewer.test.ts` opens `?scene=bears-story/pip`, finds the project's scenes in an optgroup named "Bears' story" with `film (main)` first, and loose scenes outside it. Every earlier test still passes.
+2. **Cut, crossfade, mask, and pixel identity.** `tests/projects.test.ts` finds the three transitions in `film` and checks that a shot showing in full draws the same paint calls as the shot alone. `tests/browser/projects.test.ts` compares real pixels: six film frames across the three shots hash the same as the matching shot frames. A contact sheet of the film showed the cut, a clean crossfade and the iris opening.
+3. **The cast.** Both bears in every shot come from the cast. A changed cast colour reaches every shot that uses the member, and a layer's own param still wins. Through MCP, `update_project` on bruno's body changed the rendered shot.
+4. **Project rigs.** `iris` is in `film`'s registry and not in a loose scene's, and a loose scene using it fails validation. The film's embed bundles it.
+5. **Sound.** In the film's MP4, decoded by ffmpeg above the bed's range, pip's blip lands within a frame of the 3 s cut, and meet's second blip lands within a frame of 11 s. Meet's first blip, trimmed away, is silent at 10 s. Below 400 Hz, the bed's level while `pip` plays is under half its level before.
+6. **Exports.** The film exports to MP4 (144 frames, 12 s, with audio), GIF and HTML. The HTML carries `meet`, `pip` and `together`, the `iris` rig and both cast members, makes no request but itself with the network off, and matches the render page's pixels at a plain frame, mid-crossfade and mid-iris. It comes to 70 KB.
+7. **Threads in a project.** `tests/browser/agents.test.ts` runs the test agent on `meet` and `pip` at once, and `pip`'s thread finishes while `meet`'s works. A thread on `film` moves the cut from 3 s to 3.5 s. Its next turn changes bruno in the cast. The turn logs that it waits for meet's thread, and changes `project.json` only after that thread ends. Revert to here on that turn restores `project.json` and `film.json` together. `tests/node/queue.test.ts` covers the checkpoints and the revert rules.
+8. **MCP.** `tests/browser/mcp.test.ts` works on a copy of the sample: `list_projects`, `get_project`, `update_project` (saved, invalid, would break a scene, and waiting for another agent's thread), qualified ids in `render_frame`, `hit_test`, `apply_to_selection`, `update_scene` and `export`, and `iris` marked with its project in `list_rigs`.
+9. **Shot bands.** The film shows four bands, one per scene layer, with the crossfade's two in separate rows. A click selects `pip` over `[36, 84)`. A double-click on film frame 50 opens `pip` at frame 14, and the link back from frame 15 lands on film frame 51 with `pip` selected. Open shot on the trimmed `meet` from outside its span opens meet at frame 12.
+
+The suites are at 1129 unit tests and 97 browser tests, all passing with the committed `bear-test.json`. Typecheck is clean.
+
+### Deliberate deviations from ADR 0007 and the roadmap
+
+- Cues gained `volume` keys. The ADR's audio section had volume only on scene layers, but the roadmap asks for a bed on the main scene that ducks, and the bed is a cue.
+- A shot's sound renders in its own offline pass before its parent's, rather than all in one. Its buffer is then cut in exactly, which keeps the shot sounding as it does alone.
+- A `project.json` edit waits for up to 50 s and then refuses, where the ADR said refused. The roadmap said it waits. The limit stays under Codex's 60 s tool timeout, and it stops two threads that both want the project from waiting on each other forever.
+
+### M9 review
+
+Two review agents read the M9 diff, one on the engine and tools and one on the viewer. These are fixed:
+
+- **A moved shot showed what it draws off its stage.** With `x`, `y`, `scale` or `rotation` set, a shot's layers drew unclipped, so bruno walking in from x = -150 would show outside a pushed-in shot. A placed shot is now clipped to its own stage, and only when it's moved, so full-frame shots keep their exact pixels.
+- **An edit to a shot didn't re-check the scenes that place it.** Shortening `meet` to 2.5 s saved, and broke `film`, whose trim runs to 3 s. `update_scene` and `apply_to_selection` now rebuild the project as the viewer would and refuse an edit that breaks any scene that works now. `update_project` uses the same check.
+- **Double-clicking a band didn't open the shot at common widths.** The first click fills in the selection bar, which can wrap to a second line and push the bands up, so the second click missed. The bands now remember the one clicked, and a new test double-clicks one. The lanes also hang below the scrubber now, rather than padding it on both sides, which halves the jump when you open a shot.
+- **Back used the span saved when the shot opened.** If the film's cut moved meanwhile, Back landed on the old frame. It now reads the span again, and a test moves the cut while the shot is open. If the parent can't render, it opens there once it can. The back link also goes away when its shot's file does.
+- **Smaller ones:**
+  - A loose scene id can't contain `/`, so it can never shadow a project scene.
+  - The picker groups by project id, not name, so two projects with one name stay apart. `studio.scenes` is in picker order, as documented.
+  - The back link is named "Back to bears-story/film", and bands say which layer they are when it differs from the shot, and whether they're selected.
+  - A turn cancelled while it worked records a change to `project.json`, and reverts count it.
+  - An external session working two threads in one project doesn't get a pass on the project rule.
+  - The MCP render page reloads when `project.json` or any scene in the project changes, not only the scene's own file.
+  - An `out` equal to a shot's duration keeps a partial last frame, as leaving `out` out does.
+  - Error titles in the viewer use qualified ids.
+
+After the fixes the suites are at 1132 unit tests and 99 browser tests, all passing with the committed `bear-test.json`.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -448,7 +506,7 @@ The viewer review found nothing critical. These are fixed:
    Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
 2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
 3. Try the integrated AI: in the viewer, pick Claude or Codex in the Requests panel, select something, and ask for a change.
-4. M9, ticket 20: Projects. Ticket 17 settled it on 2026-09-25 (ADR 0007), and `docs/ROADMAP.md` has its acceptance criteria.
+4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film with `npm run export -- --scene bears-story/film --target mp4`.
 5. M10, ticket 19: the Electron app, reading the project layout.
 
 ## Open questions
@@ -478,5 +536,9 @@ The viewer review found nothing critical. These are fixed:
 - Codex's app-server protocol is marked experimental. The adapter is written against codex-cli 0.156, so check it on upgrades.
 - A thread for an agent that isn't ready waits as pending until the agent is ready, with a note in the thread. Nothing times it out.
 - With the default access, Codex runs commands it considers safe, such as `cat`, without asking, even on files outside the project. Claude asks before reading outside the project.
+- Revert to here restores files without checking the rest of the project. If a turn adds a cast member and another thread's scene then uses it, reverting the first turn breaks that scene, and the viewer shows the error. Scene reverts have the same gap with scenes that place them.
+- Hit testing stops at the scene layer: a click on a shot selects the whole shot. Selecting inside a shot from its parent is left for later (ADR 0007). Open the shot to select inside it.
+- A hover probe on a scene that places shots draws each shot in full, so hovering a heavy film costs as much as rendering it.
+- The busy-rig check for a thread on a main scene counts every rig its shots draw with, so an agent on another scene of the project gets asked before editing any of them.
 - The access rules aren't a sandbox. Rig and generator code an agent writes runs in the studio server and the browser.
 

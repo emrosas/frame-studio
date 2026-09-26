@@ -618,7 +618,7 @@ describe('hitTest: parity with the full-size render', () => {
     }
     expect(checked).toBeGreaterThan(8000);
     expect([...seen].sort()).toEqual(['background', 'ball', 'bar', 'dust', 'hero']);
-  });
+  }, 20_000); // about 1.5 s alone, but several times that when the whole suite runs at once
 });
 
 // -------------------------------------------------------------------- speed

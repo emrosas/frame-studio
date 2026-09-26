@@ -5,7 +5,8 @@
 // scene's audio renders once, offline, and exports slice it (M7).
 
 import { hasAudio, renderSceneAudio, SAMPLE_RATE, samplesPerFrame } from '../audio';
-import { formatTimecode, frameCount, hitTest, render, type Ctx2D, type RigRegistry, type Scene } from '../engine';
+import { formatTimecode, frameCount, hitTest, render, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
+import { createSurfaces } from '../embed/surfaces';
 import {
   contactSheetFrames,
   contactSheetLayout,
@@ -72,12 +73,16 @@ function boot(): RenderStudioApi {
   const requested = new URLSearchParams(location.search).get('scene');
   const entry = requested ? findEntry(library, requested) : (library.entries[0] ?? null);
   const errors: string[] = [...library.errors];
-  if (!entry) errors.push(requested ? `No scene "${requested}" in scenes/. Scenes: ${library.entries.map((e) => e.key).join(', ')}` : 'scenes/ has no scenes.');
+  if (!entry) errors.push(requested ? `No scene "${requested}". Scenes: ${library.entries.map((e) => e.key).join(', ')}` : 'There are no scenes.');
   else errors.push(...entry.errors.map((e) => `${entry.file}: ${e}`));
   const scene: Scene | null = entry?.scene ?? null;
-  const registry: RigRegistry | null = library.registry;
+  const registry: RigRegistry | null = entry?.registry ?? null;
+  const project = entry?.project ? library.projects.find((p) => p.id === entry.project) : undefined;
+  if (project) errors.push(...project.errors.map((e) => `${project.file}: ${e}`));
+  // Surfaces rasterize on the CPU like the canvas, so masks and fades give the same pixels everywhere.
+  const world: World = { ...entry?.world, surfaces: createSurfaces({ willReadFrequently: true, colorSpace: 'srgb' }) };
   const total = scene ? frameCount(scene) : 0;
-  const sound = scene !== null && hasAudio(scene);
+  const sound = scene !== null && hasAudio(scene, world);
   if (sound && !library.generators) errors.push('The scene has audio, but the audio generators failed to load.');
 
   const canvas = document.createElement('canvas');
@@ -99,7 +104,7 @@ function boot(): RenderStudioApi {
   const draw = (frame: number) => {
     const ready = need();
     checkFrame(frame);
-    render(ctx as unknown as Ctx2D, ready.scene, frame, ready.registry);
+    render(ctx as unknown as Ctx2D, ready.scene, frame, ready.registry, world);
     return canvas;
   };
   const range = (from = 0, to = total) => {
@@ -115,7 +120,7 @@ function boot(): RenderStudioApi {
     const { scene: s } = need();
     if (!library.generators) throw new Error('The audio generators failed to load.');
     if (!rendered) {
-      const attempt = renderSceneAudio(s, library.generators);
+      const attempt = renderSceneAudio(s, library.generators, world);
       rendered = attempt;
       // Don't keep a failure, so the next call tries again.
       attempt.catch(() => {
@@ -129,7 +134,7 @@ function boot(): RenderStudioApi {
 
   return {
     ready: true,
-    scene: scene ? { id: scene.id, fps: scene.fps, frameCount: total, width: scene.size[0], height: scene.size[1], audio: sound } : null,
+    scene: scene ? { id: scene.id, out: entry?.project ? `${entry.project}/${scene.id}` : scene.id, fps: scene.fps, frameCount: total, width: scene.size[0], height: scene.size[1], audio: sound } : null,
     errors,
     scenes: library.entries.map((e) => e.key),
     canvas,
@@ -180,7 +185,7 @@ function boot(): RenderStudioApi {
       checkFrame(frame);
       probe ??= new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
       if (!probe) throw new Error('This browser did not provide an offscreen 2D context for hit testing.');
-      const result = hitTest(probe as unknown as Ctx2D, ready.scene, frame, x, y, ready.registry, { parts: options.parts });
+      const result = hitTest(probe as unknown as Ctx2D, ready.scene, frame, x, y, ready.registry, { parts: options.parts, world });
       return { layerId: result.layerId, ...(result.partId !== undefined ? { partId: result.partId } : {}), candidates: result.candidates };
     },
     async exportVideo(target: ExportTarget, sinkId, options = {}): Promise<RenderExportResult> {

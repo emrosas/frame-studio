@@ -27,7 +27,7 @@
  */
 import { assertFrame, drawLayer } from './render';
 import { resolveLayer, sceneLayers } from './resolve';
-import type { Ctx2D, DrawKit, Layer, RigRegistry, Scene } from './types';
+import type { Ctx2D, DrawKit, Layer, RigRegistry, Scene, World } from './types';
 
 /** One layer with paint at the probed pixel. */
 export interface HitCandidate {
@@ -52,6 +52,8 @@ export interface HitTestOptions {
   all?: boolean;
   /** Also find the part of the winning layer. */
   parts?: boolean;
+  /** A project scene's world (ADR 0007). A scene layer hits as one layer, the shot it places. */
+  world?: World;
 }
 
 /**
@@ -90,7 +92,7 @@ export function hitTest(
     for (let i = layers.length - 1; i >= 0; i--) {
       const layer = layers[i];
       pixel.clear();
-      drawLayer(probe, scene, layer, frame, registry);
+      drawLayer(probe, scene, layer, frame, registry, undefined, options.world);
       const alpha = pixel.alpha();
       if (alpha > 0) {
         const share = transmit * alpha;
@@ -107,7 +109,7 @@ export function hitTest(
 
     const result: HitResult = { layerId: winner.id, candidates };
     if (options.parts) {
-      const partId = partAt(probe, pixel, scene, winner, frame, registry);
+      const partId = partAt(probe, pixel, scene, winner, frame, registry, options.world ?? {});
       if (partId !== undefined) result.partId = partId;
     }
     return result;
@@ -146,8 +148,10 @@ function resetProbe(probe: Ctx2D): void {
  * The part of `layer` that contributes most to the probed pixel, or undefined
  * when the rig declares no parts or the winning segment is outside any part.
  */
-function partAt(probe: Ctx2D, pixel: ProbePixel, scene: Scene, layer: Layer, frame: number, registry: RigRegistry): string | undefined {
-  const { rig } = resolveLayer(layer, scene, frame, registry);
+function partAt(probe: Ctx2D, pixel: ProbePixel, scene: Scene, layer: Layer, frame: number, registry: RigRegistry, world: World): string | undefined {
+  // A scene layer's shot is picked inside by opening the shot; a masked layer draws on a surface, where parts can't be read.
+  if (layer.scene !== undefined || layer.mask) return undefined;
+  const { rig } = resolveLayer(layer, scene, frame, registry, world);
   if (!rig.parts || rig.parts.length === 0) return undefined;
 
   const segments: { partId: string | undefined; alpha: number }[] = [];
@@ -170,7 +174,7 @@ function partAt(probe: Ctx2D, pixel: ProbePixel, scene: Scene, layer: Layer, fra
     },
   };
   pixel.clear();
-  drawLayer(probe, scene, layer, frame, registry, kit);
+  drawLayer(probe, scene, layer, frame, registry, kit, world);
   cut();
 
   // A part drawn in several segments owns the sum of their shares. Map keeps

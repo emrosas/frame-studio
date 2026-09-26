@@ -90,9 +90,10 @@ async function range(studio: Studio): Promise<{ from?: number; to?: number }> {
 
 async function run(studio: Studio): Promise<void> {
   const id = studio.scene.id;
+  const dir = `out/${studio.scene.out}`;
   if (command === 'frame') {
     const frame = await studio.call('resolveFrame', values.frame ?? '');
-    const path = outPath(`out/${id}/frame-${pad(frame)}.png`);
+    const path = outPath(`${dir}/frame-${pad(frame)}.png`);
     const bytes = await writeViaSink(studio, path, (sink) => studio.call('writePng', frame, sink));
     process.stderr.write(`${id} frame ${frame}: ${studio.scene.width}x${studio.scene.height}, ${bytes} bytes\n`);
     process.stdout.write(`${shown(path)}\n`);
@@ -101,7 +102,7 @@ async function run(studio: Studio): Promise<void> {
   if (command === 'export' && (target === 'mp4' || target === 'gif')) {
     const r = await range(studio);
     const suffix = r.from !== undefined || r.to !== undefined ? `-${pad(r.from ?? 0)}-${pad(r.to ?? studio.scene.frameCount)}` : '';
-    const path = outPath(`out/${id}/${id}${suffix}.${target}`);
+    const path = outPath(`${dir}/${id}${suffix}.${target}`);
     const result = await writeViaSink(studio, path, (sink) => studio.call('exportVideo', target, sink, { ...r, silent: values.silent }));
     const detail = result.codec ? `${result.codec}${result.audioCodec ? ` with ${result.audioCodec} audio` : ''}` : `${result.colours} colours`;
     process.stderr.write(
@@ -113,7 +114,7 @@ async function run(studio: Studio): Promise<void> {
   if (command === 'contact-sheet') {
     const r = await range(studio);
     const suffix = r.from !== undefined || r.to !== undefined || every !== undefined ? `-${pad(r.from ?? 0)}-${pad(r.to ?? studio.scene.frameCount)}${every ? `-every${every}` : ''}` : '';
-    const path = outPath(`out/${id}/contact-sheet${suffix}.png`);
+    const path = outPath(`${dir}/contact-sheet${suffix}.png`);
     const sheet = await writeViaSink(studio, path, (sink) => studio.call('contactSheet', sink, { ...r, every, columns }));
     process.stderr.write(`${id} contact sheet: ${sheet.frames.length} frames (${sheet.frames[0]} to ${sheet.frames.at(-1)}), ${sheet.width}x${sheet.height}\n`);
     process.stdout.write(`${shown(path)}\n`);
@@ -124,7 +125,7 @@ async function run(studio: Studio): Promise<void> {
 /** The HTML embed is bundled in Node; it needs no browser. */
 async function exportHtml(sceneKey: string): Promise<void> {
   const embed = await buildEmbed(sceneKey, { silent: values.silent });
-  const path = outPath(`out/${embed.scene.id}/${embed.scene.id}.html`);
+  const path = outPath(`out/${embed.out}/${embed.scene.id}.html`);
   await writeFileAtomic(path, embed.html);
   const sound = embed.generators.length > 0 ? ` and generators ${embed.generators.join(', ')}` : '';
   process.stderr.write(`${embed.scene.id} html: ${(embed.bytes.total / 1024).toFixed(1)} KB with rigs ${embed.rigs.join(', ')}${sound}\n`);

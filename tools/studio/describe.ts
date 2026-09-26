@@ -4,7 +4,7 @@
 // what the caller looks up about the scene. Node only; runs as TypeScript
 // through type stripping.
 
-import { currentTurn, describeTarget, type RequestSelection, type StudioRequest, type Turn } from '../../src/studio/protocol.ts';
+import { currentTurn, describeTarget, projectOf, type RequestSelection, type StudioRequest, type Turn } from '../../src/studio/protocol.ts';
 
 /** What the caller knows about the thread's scene. */
 export interface SceneInfo {
@@ -70,7 +70,13 @@ export function describeThread(request: StudioRequest, info: SceneInfo, options:
   if (turn.ask.references.length > 0) {
     lines.push(`Reference images (open them to see what the user means; never put them in a scene or export): ${turn.ask.references.join(', ')}`);
   }
-  if (turn.checkpointAt) lines.push('The scene was saved before this turn, so the user can revert it.');
+  if (turn.checkpointAt) {
+    lines.push(
+      projectOf(request.sceneId) !== null
+        ? 'The scene and its project.json were saved before this turn, so the user can revert them.'
+        : 'The scene was saved before this turn, so the user can revert it.',
+    );
+  }
   lines.push(
     '',
     'How to do it: look with render_frame, render_contact_sheet and hit_test. Change it with apply_to_selection (pass this selection), update_scene, or a new rig variant under src/rigs applied through an override. Render again to check.',

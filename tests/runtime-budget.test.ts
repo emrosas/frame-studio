@@ -1,7 +1,10 @@
 /**
- * Runtime budget: src/engine, src/rigs, src/audio and the embed player in
- * src/embed ship in the single-file embed, so they may import only each other
- * (by relative path) and must stay deterministic. See CLAUDE.md, "Runtime budget" and "Core principle".
+ * Runtime budget: src/engine, src/rigs, src/audio, the embed player in
+ * src/embed, and each project's own rigs in projects/<id>/rigs ship in the
+ * single-file embed, so they may import only each other (by relative path)
+ * and must stay deterministic. A project's rigs may use the global ones but
+ * no other project's, and nothing global may use a project's. See CLAUDE.md,
+ * "Runtime budget" and "Core principle", and ADR 0007.
  *
  * Sources are read with Vite's import.meta.glob (?raw), so this test needs no
  * Node typings and picks up new files automatically.
@@ -27,7 +30,12 @@ const EXPORT_DEPENDENCIES = ['gifenc', 'mediabunny'];
 
 // Every script extension Vite would bundle, so a .mts or .js file cannot slip past the scan.
 const globbed = import.meta.glob(
-  ['/src/{engine,rigs,audio,embed}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}', '!**/*.test.*', '!**/*.d.{ts,mts,cts}'],
+  [
+    '/src/{engine,rigs,audio,embed}/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
+    '/projects/*/rigs/**/*.{ts,tsx,mts,cts,js,jsx,mjs,cjs}',
+    '!**/*.test.*',
+    '!**/*.d.{ts,mts,cts}',
+  ],
   { query: '?raw', import: 'default', eager: true },
 ) as Record<string, string>;
 // All other app code, to check that only src/export reaches for the export libraries.
@@ -116,8 +124,18 @@ export function findViolations(file: string, source: string): string[] {
     const target = resolveSpecifier(file, spec);
     const inside = (root: string) => `${target}/`.startsWith(root) || target.startsWith(root);
     const forbidden = FORBIDDEN_TARGETS.find(inside);
+    const ownProject = /^\/projects\/([^/]+)\/rigs\//.exec(file)?.[1];
+    const targetProject = /^\/projects\/([^/]+)\/rigs(?:\/|$)/.exec(target)?.[1];
     if (forbidden) {
       problems.push(`${where}: imports "${spec}", which resolves into ${forbidden}; runtime code must not depend on UI or tooling`);
+    } else if (targetProject !== undefined && targetProject !== ownProject) {
+      problems.push(
+        ownProject
+          ? `${where}: imports "${spec}" from project "${targetProject}"'s rigs; a project's rigs may use src/rigs, but not another project's`
+          : `${where}: imports "${spec}", a rig of project "${targetProject}"; only that project's own rigs may use it`,
+      );
+    } else if (targetProject !== undefined) {
+      // A project rig importing its own project's rigs.
     } else if (!RUNTIME_ROOTS.some(inside)) {
       problems.push(`${where}: imports "${spec}" (${target}), outside src/engine, src/rigs, src/audio, src/embed`);
     } else if (file.startsWith('/src/engine/') && inside('/src/rigs/')) {
@@ -212,6 +230,7 @@ describe('runtime budget scanner (self-test)', () => {
     ['/src/rigs/a.mjs', true],
     ['/src/audio/a.cjs', true],
     ['/src/audio/a.jsx', true],
+    ['/projects/p/rigs/a.ts', true],
     ['/src/engine/a.test.ts', false],
     ['/src/engine/a.test.mts', false],
     ['/src/rigs/a.test.js', false],
@@ -263,6 +282,15 @@ describe('runtime budget scanner (self-test)', () => {
     const problems = check(source);
     expect(problems.length).toBeGreaterThan(0);
     expect(problems.join('\n')).toMatch(message);
+  });
+
+  it("keeps projects' rigs to themselves", () => {
+    const own = '/projects/story/rigs/hat.ts';
+    expect(check(`import { num } from '../../../src/rigs/parts/params';\nimport { brim } from './parts/brim';`, own)).toEqual([]);
+    expect(check(`import { x } from '../../other/rigs/x';`, own).join('\n')).toMatch(/another project's/);
+    expect(check(`import { hat } from '../../projects/story/rigs/hat';`, '/src/rigs/index.ts').join('\n')).toMatch(/only that project's own rigs/);
+    expect(check(`import { ui } from '../../../src/viewer/ui';`, own).join('\n')).toMatch(/src\/viewer/);
+    expect(check(`const r = Math.random();`, own).join('\n')).toMatch(/Math\.random/);
   });
 
   it('forbids the engine from importing rigs', () => {

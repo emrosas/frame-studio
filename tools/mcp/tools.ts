@@ -12,7 +12,10 @@ import type { Workspace } from './workspace.ts';
 const frame = z
   .union([z.number().int().min(0), z.string()])
   .describe('A frame number, or an MM:SS:FF timecode where FF is the frame within the second');
-const sceneId = z.string().describe('Scene id, as list_scenes shows it');
+const sceneId = z.string().describe('Scene id, as list_scenes shows it: a loose scene\'s id, or "<project>/<scene>" in a project');
+const projectId = z.string().describe('Project id, the folder name in projects/, as list_projects shows it');
+/** How long update_project waits for the project's other threads before it refuses. Under Codex's 60 s tool timeout. */
+const PROJECT_WAIT_MS = 50_000;
 const paramValue = z.union([z.number(), z.string(), z.boolean()]);
 
 const text = (value: unknown): CallToolResult => ({
@@ -41,6 +44,8 @@ export interface ToolHooks {
   after?(name: string, args: Record<string, unknown>, result: CallToolResult): void | Promise<void>;
   /** False once the caller's turn has ended; its queued calls then fail instead of running. */
   active?(): boolean;
+  /** The thread whose turn makes these calls, so a project edit doesn't wait for its own caller. */
+  thread?: number;
 }
 
 export interface StudioToolsOptions {
@@ -63,14 +68,16 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
 
   /**
    * Runs a tool body in turn, turning any error into a readable tool error instead of a protocol error.
-   * The before hook runs first, outside the queue, since it may wait on the user; the body then checks the
-   * caller is still active, so a call queued behind others doesn't run after its turn ended.
+   * The before hook runs first, outside the queue, since it may wait on the user, and then `prepare`, for
+   * waits of the tool's own; the body then checks the caller is still active, so a call queued behind
+   * others doesn't run after its turn ended.
    */
-  function tool<A>(name: string, body: (w: Workspace, args: A) => Promise<CallToolResult>) {
+  function tool<A>(name: string, body: (w: Workspace, args: A) => Promise<CallToolResult>, prepare?: (w: Workspace, args: A) => Promise<void>) {
     return async (args: A): Promise<CallToolResult> => {
       const record = (args ?? {}) as Record<string, unknown>;
       try {
         await hooks?.before?.(name, record);
+        if (prepare) await prepare(await ws(), args);
       } catch (err) {
         return failure(err);
       }
@@ -91,7 +98,8 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     'list_scenes',
     {
       title: 'List scenes',
-      description: 'Every scene in scenes/: id, file, fps, duration, frame count, size, layers, and any validation errors.',
+      description:
+        'Every scene: loose scenes in scenes/, then each project\'s, with ids qualified as "<project>/<scene>". For each: id, project (null when loose), file, fps, duration, frame count, size, layers (with the rig, cast member or placed scene each draws), and any validation errors.',
       annotations: { readOnlyHint: true },
     },
     tool('list_scenes', async (w) => text(await w.listScenes())),
@@ -120,10 +128,48 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
   );
 
   server.registerTool(
+    'list_projects',
+    {
+      title: 'List projects',
+      description:
+        "Every project in projects/: id, name, file, the fps and size every scene in it shares, main (the scene that places the shots, whose export is the whole video), the cast (named characters: a rig with params, used by layers as { \"cast\": \"name\" }), its scenes by qualified id, its own rigs, and any errors in project.json.",
+      annotations: { readOnlyHint: true },
+    },
+    tool('list_projects', async (w) => text(await w.listProjects())),
+  );
+
+  server.registerTool(
+    'get_project',
+    {
+      title: 'Get a project',
+      description: "A project's project.json exactly as it is in its file, plus the file path, its scenes by qualified id, and any errors.",
+      inputSchema: { id: projectId },
+      annotations: { readOnlyHint: true },
+    },
+    tool('get_project', async (w, { id }: { id: string }) => text(await w.getProject(id))),
+  );
+
+  server.registerTool(
+    'update_project',
+    {
+      title: 'Update a project',
+      description:
+        "Applies an RFC 7386 JSON merge patch to a project's project.json, e.g. { \"cast\": { \"bruno\": { \"params\": { \"fur\": \"#8a5a3c\" } } } } to change a character in every shot. A change here touches every scene in the project, so it waits (up to about 50 s) while another request in the project is working, and is refused if that work doesn't end. The result is validated, and every scene in the project must stay valid under it; if not, nothing is saved and the errors say why.",
+      inputSchema: { id: projectId, patch: z.record(z.string(), z.unknown()).describe('JSON merge patch') },
+    },
+    tool(
+      'update_project',
+      async (w, { id, patch }: { id: string; patch: Record<string, unknown> }) => text(await w.updateProject(id, patch, hooks?.thread)),
+      (w, { id }) => w.waitForProject(id, hooks?.thread, PROJECT_WAIT_MS),
+    ),
+  );
+
+  server.registerTool(
     'list_rigs',
     {
       title: 'List rigs',
-      description: "Every rig: its param schema (type, default, range, options, description), the parts it declares for selection, its variants (e.g. bear.bandaged) and, for a variant, its base. A variant takes every param of its base.",
+      description:
+        "Every rig: its param schema (type, default, range, options, description), the parts it declares for selection, its variants (e.g. bear.bandaged) and, for a variant, its base. A variant takes every param of its base. A rig with a project belongs to that project's rigs/ folder, and only that project's scenes can use it.",
       annotations: { readOnlyHint: true },
     },
     tool('list_rigs', async (w) => text(await w.listRigs())),
@@ -144,7 +190,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     'render_frame',
     {
       title: 'Render a frame',
-      description: 'Renders one frame so you can see it. Writes the full-size PNG to out/<scene>/ and returns a preview at most maxWidth wide.',
+      description: 'Renders one frame so you can see it. Writes the full-size PNG to out/<scene>/ (out/<project>/<scene>/ in a project) and returns a preview at most maxWidth wide.',
       inputSchema: { sceneId, frame, maxWidth: z.number().int().min(64).max(3840).default(1280).describe('Preview width limit in pixels') },
       annotations: { readOnlyHint: true },
     },

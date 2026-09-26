@@ -1,0 +1,39 @@
+{
+  "id": "meet",
+  "fps": 12,
+  "duration": 4,
+  "size": [1920, 1080],
+  "seed": 21,
+  "background": {
+    "rig": "paper",
+    "params": { "tone": "#ffa200", "grain": 0, "fibres": 0, "mottle": 0.15, "vignette": 0 }
+  },
+  "layers": [
+    {
+      "id": "bruno",
+      "cast": "bruno",
+      "params": { "x": -150, "y": 250, "width": 520, "tilt": 0.1, "faceTilt": 1 },
+      "tracks": [
+        { "param": "x", "keys": [{ "t": 0, "v": -150 }, { "t": 2, "v": 700, "ease": "outQuad" }] },
+        { "param": "pose", "keys": [{ "t": 0, "v": "idle" }, { "t": 2, "v": "wave" }] },
+        { "param": "expression", "keys": [{ "t": 0, "v": "neutral" }, { "t": 2, "v": "happy" }] }
+      ]
+    }
+  ],
+  "audio": [
+    {
+      "id": "cut",
+      "generator": "blip",
+      "start": 0,
+      "end": 0.25,
+      "params": { "pitch": 880, "length": 0.08, "gain": 0.3 }
+    },
+    {
+      "id": "hello",
+      "generator": "blip",
+      "start": 2,
+      "end": 2.25,
+      "params": { "pitch": 1175, "length": 0.08, "gain": 0.3 }
+    }
+  ]
+}

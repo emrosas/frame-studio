@@ -1,0 +1,64 @@
+{
+  "id": "together",
+  "fps": 12,
+  "duration": 5,
+  "size": [1920, 1080],
+  "seed": 23,
+  "background": {
+    "rig": "paper",
+    "params": { "tone": "#ffd166", "grain": 0, "fibres": 0, "mottle": 0.15, "vignette": 0 }
+  },
+  "layers": [
+    {
+      "id": "bruno",
+      "cast": "bruno",
+      "params": {
+        "x": 620,
+        "y": 250,
+        "width": 520,
+        "tilt": 0.1,
+        "faceTilt": 1,
+        "pose": "wave",
+        "expression": "happy"
+      },
+      "tracks": [
+        { "param": "pose", "keys": [{ "t": 0, "v": "wave" }, { "t": 1.5, "v": "cheer" }] }
+      ]
+    },
+    {
+      "id": "pip",
+      "cast": "pip",
+      "stepFps": 6,
+      "params": {
+        "x": 1270,
+        "y": 470,
+        "width": 380,
+        "tilt": -5.281,
+        "faceTilt": -5.319,
+        "lookX": -0.7,
+        "lookY": -0.35,
+        "pose": "wave",
+        "expression": "happy"
+      },
+      "tracks": [
+        { "param": "pose", "keys": [{ "t": 0, "v": "wave" }, { "t": 1.5, "v": "cheer" }] }
+      ]
+    }
+  ],
+  "audio": [
+    {
+      "id": "cut",
+      "generator": "blip",
+      "start": 0,
+      "end": 0.25,
+      "params": { "pitch": 1320, "length": 0.08, "gain": 0.3 }
+    },
+    {
+      "id": "cheer",
+      "generator": "buzz",
+      "start": 1.5,
+      "end": 2.5,
+      "params": { "pitch": 220, "gain": 0.12 }
+    }
+  ]
+}

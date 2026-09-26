@@ -1,8 +1,10 @@
 import { isCssColor } from './color';
 import { EASING_NAMES } from './easing';
 import { baseRigId, variantsOf } from './registry';
+import { SCENE_LAYER_PARAMS } from './scene-layer';
+import { CUE_PARAMS } from './cue';
 import { frameCount, quantizeTime } from './time';
-import { BACKGROUND_ID, type ParamSchema, type ParamSpec, type Rig, type RigRegistry, type Scene } from './types';
+import { BACKGROUND_ID, type Cast, type ParamSchema, type ParamSpec, type Rig, type RigRegistry, type Scene } from './types';
 
 export type ValidationResult = { ok: true; scene: Scene } | { ok: false; errors: string[] };
 
@@ -13,13 +15,35 @@ export interface SchemaOwner {
 }
 
 /**
+ * What a scene in a project is checked against (ADR 0007): the project's fps
+ * and size, its cast, and its other scenes, by bare id, with their lengths.
+ */
+export interface ProjectContext {
+  id: string;
+  fps: number;
+  size: readonly [number, number];
+  cast: Cast;
+  scenes: ReadonlyMap<string, { duration: number }>;
+}
+
+/** Scene layers' params, checked like a rig's. */
+const SCENE_OWNER: SchemaOwner = { id: 'scene layer', params: SCENE_LAYER_PARAMS };
+/** What an audio cue's tracks animate. */
+const CUE_OWNER: SchemaOwner = { id: 'audio cue', params: CUE_PARAMS };
+
+/**
  * Check an untrusted scene (e.g. parsed JSON). Collects every problem as
  * "path: message", with paths like layers[1].tracks[0].keys[2].t, and
  * messages that say how to fix it. With a registry it also checks rig ids,
  * param names, and param value types against each rig's schema, and with
  * generators it does the same for audio cues.
  */
-export function validateScene(input: unknown, registry?: RigRegistry, generators?: ReadonlyMap<string, SchemaOwner>): ValidationResult {
+export function validateScene(
+  input: unknown,
+  registry?: RigRegistry,
+  generators?: ReadonlyMap<string, SchemaOwner>,
+  project?: ProjectContext,
+): ValidationResult {
   const errors: string[] = [];
   const err = (path: string, message: string) => errors.push(`${path}: ${message}`);
 
@@ -31,6 +55,7 @@ export function validateScene(input: unknown, registry?: RigRegistry, generators
   checkFields(err, s, '', SCENE_FIELDS);
 
   if (!isNonEmptyString(s.id)) err('id', `must be a non-empty string, got ${show(s.id)}`);
+  else if (s.id.includes('/')) err('id', `may not contain "/", which joins a project and a scene in qualified ids like "bears-story/film", got ${show(s.id)}`);
 
   const fpsOk = typeof s.fps === 'number' && Number.isInteger(s.fps) && s.fps > 0;
   if (!fpsOk) err('fps', `must be a positive integer (frames per second, e.g. 12, 24, 30), got ${show(s.fps)}`);
@@ -46,6 +71,11 @@ export function validateScene(input: unknown, registry?: RigRegistry, generators
 
   if (!(Array.isArray(s.size) && s.size.length === 2 && s.size.every(isPositiveInteger))) {
     err('size', `must be two positive integers [width, height] in scene pixels, e.g. [1920, 1080], got ${show(s.size)}`);
+  } else if (project && (s.size[0] !== project.size[0] || s.size[1] !== project.size[1])) {
+    err('size', `must be the project's size, [${project.size[0]}, ${project.size[1]}] (project "${project.id}"), got [${s.size.join(', ')}]`);
+  }
+  if (project && fps !== undefined && fps !== project.fps) {
+    err('fps', `must be the project's fps, ${project.fps} (project "${project.id}"), got ${fps}`);
   }
 
   if (!(typeof s.seed === 'number' && Number.isInteger(s.seed))) {
@@ -63,6 +93,8 @@ export function validateScene(input: unknown, registry?: RigRegistry, generators
     duration: durationOk ? (s.duration as number) : undefined,
     generators,
     generatorNames: generators ? [...generators.keys()].join(', ') || 'none' : '',
+    project,
+    sceneId: isNonEmptyString(s.id) ? s.id : undefined,
   };
 
   if (s.background !== undefined) {
@@ -73,7 +105,8 @@ export function validateScene(input: unknown, registry?: RigRegistry, generators
         err('background.id', `the background's id is always "${BACKGROUND_ID}"; remove this field`);
       }
       checkFields(err, s.background, 'background', BACKGROUND_FIELDS, 'id');
-      checkLayerSpec(env, s.background, 'background');
+      if (s.background.scene !== undefined) err('background.scene', 'the background draws a rig or a cast member; place scenes with a layer');
+      else checkLayerSpec(env, s.background, 'background');
     }
   }
 
@@ -117,6 +150,8 @@ interface Env {
   duration: number | undefined;
   generators: ReadonlyMap<string, SchemaOwner> | undefined;
   generatorNames: string;
+  project: ProjectContext | undefined;
+  sceneId: string | undefined;
 }
 
 type Obj = Record<string, unknown>;
@@ -161,13 +196,14 @@ function truncate(text: string): string {
 }
 
 const SCENE_FIELDS = ['id', 'fps', 'duration', 'size', 'seed', 'background', 'layers', 'audio'];
-const LAYER_FIELDS = ['id', 'rig', 'params', 'tracks', 'stepFps', 'overrides'];
+const LAYER_FIELDS = ['id', 'rig', 'cast', 'scene', 'start', 'in', 'out', 'params', 'tracks', 'stepFps', 'overrides', 'mask'];
+const MASK_FIELDS = ['rig', 'params', 'tracks'];
 /** The background is a layer without an id; background.id gets its own message. */
 const BACKGROUND_FIELDS = LAYER_FIELDS.filter((f) => f !== 'id');
 const TRACK_FIELDS = ['param', 'keys'];
 const KEY_FIELDS = ['t', 'v', 'ease'];
 const OVERRIDE_FIELDS = ['from', 'to', 'rig', 'params'];
-const AUDIO_FIELDS = ['id', 'generator', 'start', 'end', 'params'];
+const AUDIO_FIELDS = ['id', 'generator', 'start', 'end', 'params', 'tracks'];
 /** Misspellings too far from the right name for the edit-distance hint. */
 const FIELD_ALIASES: Readonly<Record<string, string>> = { easing: 'ease' };
 
@@ -223,18 +259,25 @@ function lookupRig(env: Env, rigId: unknown, path: string): Rig | undefined {
   return rig;
 }
 
-type OwnerKind = 'rig' | 'generator';
+type OwnerKind = 'rig' | 'generator' | 'scene layer';
+
+/** "rig "bear"", "generator "blip"", "a scene layer", or "an audio cue's tracks". */
+function ownerName(owner: SchemaOwner, kind: OwnerKind): string {
+  if (owner === SCENE_OWNER) return 'a scene layer';
+  if (owner === CUE_OWNER) return "an audio cue's tracks (generator params are fixed per cue)";
+  return `${kind} "${owner.id}"`;
+}
 
 function unknownParam(rig: SchemaOwner, name: string, kind: OwnerKind = 'rig'): string {
   const known = Object.keys(rig.params);
   return known.length > 0
-    ? `unknown param "${name}" for ${kind} "${rig.id}"; known params: ${known.join(', ')}`
-    : `unknown param "${name}": ${kind} "${rig.id}" takes no params`;
+    ? `unknown param "${name}" for ${ownerName(rig, kind)}; known params: ${known.join(', ')}`
+    : `unknown param "${name}": ${ownerName(rig, kind)} takes no params`;
 }
 
 /** Why a value does not fit a param spec, or undefined if it fits. */
 function typeMismatch(spec: ParamSpec, v: unknown, rig: SchemaOwner, name: string, kind: OwnerKind = 'rig'): string | undefined {
-  const who = `${kind} "${rig.id}" param "${name}"`;
+  const who = `${ownerName(rig, kind)} param "${name}"`;
   switch (spec.type) {
     case 'number':
       return typeof v === 'number' ? undefined : `${who} expects a number, got ${show(v)}`;
@@ -281,9 +324,37 @@ function checkParams(env: Env, params: unknown, path: string, rig: SchemaOwner |
 
 function checkLayerSpec(env: Env, layer: Obj, path: string): void {
   const { err } = env;
+  const kinds = (['rig', 'cast', 'scene'] as const).filter((k) => layer[k] !== undefined);
+  if (kinds.length === 0) {
+    err(path, 'needs a "rig" (a rig id), a "cast" member of its project, or a "scene" of its project to place');
+    return;
+  }
+  if (kinds.length > 1) {
+    err(path, `names both ${kinds.map((k) => `"${k}"`).join(' and ')}; a layer draws a rig, draws a cast member, or places a scene`);
+    return;
+  }
+  if (kinds[0] === 'scene') {
+    checkSceneLayer(env, layer, path);
+    return;
+  }
+  for (const key of ['start', 'in', 'out'] as const) {
+    if (layer[key] !== undefined) err(`${path}.${key}`, 'only scene layers take start, in and out; remove it');
+  }
 
-  if (!isNonEmptyString(layer.rig)) err(`${path}.rig`, `must be a non-empty string (a rig id), got ${show(layer.rig)}`);
-  const rig = lookupRig(env, layer.rig, `${path}.rig`);
+  let rig: Rig | undefined;
+  if (kinds[0] === 'rig') {
+    if (!isNonEmptyString(layer.rig)) err(`${path}.rig`, `must be a non-empty string (a rig id), got ${show(layer.rig)}`);
+    rig = lookupRig(env, layer.rig, `${path}.rig`);
+  } else if (!isNonEmptyString(layer.cast)) {
+    err(`${path}.cast`, `must be the name of a cast member, got ${show(layer.cast)}`);
+  } else if (!env.project) {
+    err(`${path}.cast`, 'only scenes in a project have a cast; name a "rig" instead, or move the scene into projects/<id>/');
+  } else {
+    const member = Object.hasOwn(env.project.cast, layer.cast) ? env.project.cast[layer.cast] : undefined;
+    const names = Object.keys(env.project.cast);
+    if (!member) err(`${path}.cast`, `no cast member "${layer.cast}" in project "${env.project.id}"; the cast is ${names.length ? names.join(', ') : 'empty'}`);
+    else rig = env.registry?.get(member.rig);
+  }
 
   if (layer.stepFps !== undefined) {
     const v = layer.stepFps;
@@ -297,9 +368,68 @@ function checkLayerSpec(env: Env, layer: Obj, path: string): void {
   checkParams(env, layer.params, `${path}.params`, rig);
   checkTracks(env, layer.tracks, `${path}.tracks`, rig);
   checkOverrides(env, layer, path, rig);
+  checkMask(env, layer.mask, `${path}.mask`);
 }
 
-function checkTracks(env: Env, tracks: unknown, path: string, rig: Rig | undefined): void {
+/** A seconds field of a scene layer: a finite number, 0 or more. */
+function checkSeconds(env: Env, v: unknown, path: string, what: string): number | undefined {
+  if (v === undefined) return undefined;
+  if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
+  env.err(path, `must be ${what}, in seconds, 0 or more; got ${show(v)}`);
+  return undefined;
+}
+
+/** A scene layer (ADR 0007): a sibling scene of the project, a start, a trim, and placement params. */
+function checkSceneLayer(env: Env, layer: Obj, path: string): void {
+  const { err, project } = env;
+  let shot: { duration: number } | undefined;
+  if (!isNonEmptyString(layer.scene)) {
+    err(`${path}.scene`, `must be the id of another scene in the project, got ${show(layer.scene)}`);
+  } else if (!project) {
+    err(`${path}.scene`, 'only scenes in a project can place scenes; move this scene into projects/<id>/');
+  } else if (layer.scene === env.sceneId) {
+    err(`${path}.scene`, 'a scene cannot place itself');
+  } else {
+    shot = project.scenes.get(layer.scene);
+    if (!shot) {
+      const known = [...project.scenes.keys()].filter((id) => id !== env.sceneId);
+      err(`${path}.scene`, `no scene "${layer.scene}" in project "${project.id}"; its scenes are ${known.length ? known.join(', ') : 'none yet'}`);
+    }
+  }
+  const start = checkSeconds(env, layer.start, `${path}.start`, 'when the shot starts in this scene');
+  const from = checkSeconds(env, layer.in, `${path}.in`, 'where the shot starts, in its own time');
+  const to = checkSeconds(env, layer.out, `${path}.out`, 'where the shot ends, in its own time');
+  if (to !== undefined && to <= (from ?? 0)) err(`${path}.out`, `must be after in (${from ?? 0} s), got ${to}`);
+  if (shot && to !== undefined && to > shot.duration) err(`${path}.out`, `must be within the shot's duration (${shot.duration} s), got ${to}`);
+  if (shot && from !== undefined && from >= shot.duration) err(`${path}.in`, `must be before the shot ends (${shot.duration} s), got ${from}`);
+  if (start !== undefined && env.duration !== undefined && start >= env.duration) {
+    err(`${path}.start`, `must be before this scene ends (${env.duration} s), got ${start}`);
+  }
+  if (layer.stepFps !== undefined) err(`${path}.stepFps`, 'a scene layer shows its shot on every frame; remove stepFps (set it on the shot\'s own layers)');
+  checkParams(env, layer.params, `${path}.params`, SCENE_OWNER, 'scene layer');
+  checkTracks(env, layer.tracks, `${path}.tracks`, SCENE_OWNER);
+  checkOverrides(env, layer, path, undefined, true);
+  checkMask(env, layer.mask, `${path}.mask`);
+}
+
+/** A layer's mask: a rig, with params and tracks like a layer's. */
+function checkMask(env: Env, mask: unknown, path: string): void {
+  if (mask === undefined) return;
+  if (!isObject(mask)) {
+    env.err(path, `must be an object like { "rig": "circle", "params": {...}, "tracks": [...] }, got ${show(mask)}`);
+    return;
+  }
+  checkFields(env.err, mask, path, MASK_FIELDS);
+  if (!isNonEmptyString(mask.rig)) {
+    env.err(`${path}.rig`, `must be a rig id: the layer shows only where this rig draws; got ${show(mask.rig)}`);
+    return;
+  }
+  const rig = lookupRig(env, mask.rig, `${path}.rig`);
+  checkParams(env, mask.params, `${path}.params`, rig);
+  checkTracks(env, mask.tracks, `${path}.tracks`, rig);
+}
+
+function checkTracks(env: Env, tracks: unknown, path: string, rig: SchemaOwner | undefined): void {
   const { err } = env;
   if (tracks === undefined) return;
   if (!Array.isArray(tracks)) {
@@ -367,7 +497,7 @@ function checkTracks(env: Env, tracks: unknown, path: string, rig: Rig | undefin
   });
 }
 
-function checkOverrides(env: Env, layer: Obj, layerPath: string, layerRig: Rig | undefined): void {
+function checkOverrides(env: Env, layer: Obj, layerPath: string, layerRig: Rig | undefined, sceneLayer = false): void {
   const { err, frames } = env;
   const overrides = layer.overrides;
   const path = `${layerPath}.overrides`;
@@ -407,6 +537,11 @@ function checkOverrides(env: Env, layer: Obj, layerPath: string, layerRig: Rig |
       }
     }
 
+    if (sceneLayer) {
+      if (o.rig !== undefined) err(`${op}.rig`, "a scene layer's override holds placement params; it has no rig to swap");
+      checkParams(env, o.params, `${op}.params`, SCENE_OWNER, 'scene layer');
+      return;
+    }
     let rig = layerRig;
     if (o.rig !== undefined) {
       if (!isNonEmptyString(o.rig)) {
@@ -568,6 +703,7 @@ function checkAudio(env: Env, audio: unknown): void {
       if (!generator) err(`${p}.generator`, `unknown generator "${cue.generator}"; known generators: ${env.generatorNames}`);
     }
     checkParams(env, cue.params, `${p}.params`, generator, 'generator');
+    checkTracks(env, cue.tracks, `${p}.tracks`, CUE_OWNER);
   });
   // Audio renders at 48 kHz, and a frame has to start on a whole sample for audio and video to line up (ticket 04).
   if (audio.length > 0 && env.fps !== undefined && 48000 % env.fps !== 0) {

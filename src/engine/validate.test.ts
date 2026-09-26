@@ -125,6 +125,10 @@ describe('scene-level errors', () => {
     expectError(withChange((s) => (s.id = id)), 'id', /non-empty string/);
   });
 
+  it('keeps "/" out of scene ids, so a loose scene never looks like a project scene', () => {
+    expectError(withChange((s) => (s.id = 'bears-story/film')), 'id', /may not contain "\/"/);
+  });
+
   it.each([undefined, 0, -12, 12.5, '12', Number.NaN])('fps %j', (fps) => {
     expectError(withChange((s) => (s.fps = fps)), 'fps', /positive integer/);
   });
@@ -199,8 +203,12 @@ describe('layer errors', () => {
     expectError(withChange((s) => (s.layers[1].id = 'fly/wing')), 'layers[1].id', /may not contain "\/"/);
   });
 
-  it.each([undefined, '', 3])('layer rig %j', (rig) => {
+  it.each(['', 3])('layer rig %j', (rig) => {
     expectError(withChange((s) => (s.layers[0].rig = rig)), 'layers[0].rig', /non-empty string/);
+  });
+
+  it('needs a rig, a cast member or a scene', () => {
+    expectError(withChange((s) => delete s.layers[0].rig), 'layers[0]', /needs a "rig".*a "cast" member.*or a "scene"/);
   });
 
   it.each([0, -6, 13, '6', Number.NaN])('stepFps %j', (stepFps) => {
@@ -435,13 +443,13 @@ describe('unknown fields', () => {
     ['overide', [{ from: 0, to: 6 }], /did you mean "overrides"\?/],
     ['override', [{ from: 0, to: 6 }], /did you mean "overrides"\?/],
     ['track', [], /did you mean "tracks"\?/],
-    ['hidden', true, /unknown field "hidden"; allowed fields: id, rig, params, tracks, stepFps, overrides/],
+    ['hidden', true, /unknown field "hidden"; allowed fields: id, rig, cast, scene, start, in, out, params, tracks, stepFps, overrides, mask/],
   ])('rejects the layer field %s', (field, value, message) => {
     expectError(withChange((s) => (s.layers[0][field] = value)), `layers[0].${field}`, message);
   });
 
   it('rejects unknown background fields, and says the background id is fixed', () => {
-    expectError(withChange((s) => (s.background.overide = [])), 'background.overide', /allowed fields: rig, params, tracks, stepFps, overrides/);
+    expectError(withChange((s) => (s.background.overide = [])), 'background.overide', /allowed fields: rig, cast, scene, start, in, out, params, tracks, stepFps, overrides, mask/);
     expectError(withChange((s) => (s.background.id = 'sky')), 'background.id', /always "background"/);
   });
 

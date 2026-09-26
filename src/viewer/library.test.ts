@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { RigRegistry, Scene } from '../engine/types';
-import { buildLibrary, findEntry, openingEntry, type ValidateScene } from './library';
+import { createRegistry, sceneGraphErrors, validateProject, validateScene } from '../engine';
+import type { Rig, RigRegistry, Scene } from '../engine/types';
+import { buildLibrary, findEntry, openingEntry, type ProjectTools, type ValidateScene } from './library';
 
 const registry: RigRegistry = new Map();
 
@@ -108,5 +109,96 @@ describe('openingEntry', () => {
   it('opens the first scene and reports the request missing when nothing matches', () => {
     expect(openingEntry(lib, 'sunrse')).toEqual({ entry: lib.entries[0], missing: true });
     expect(openingEntry(buildLibrary({}, validate, () => registry), 'x')).toEqual({ entry: null, missing: true });
+  });
+});
+
+describe('projects (ADR 0007)', () => {
+  const box: Rig = {
+    id: 'box',
+    params: { size: { type: 'number', default: 10, min: 0, max: 1000 } },
+    draw: (ctx, p) => ctx.fillRect(0, 0, Number(p.size), Number(p.size)),
+  };
+  const hat: Rig = { ...box, id: 'hat' };
+  const tools: ProjectTools = {
+    validateProject,
+    sceneGraphErrors,
+    createProjectRegistry: (rigs) => createRegistry([box, ...rigs]),
+    rigs: { story: [hat] },
+  };
+  const json = (value: unknown) => JSON.stringify(value);
+  const project = { name: 'Story', fps: 12, size: [100, 100], main: 'film', cast: { bruno: { rig: 'box', params: { size: 40 } } } };
+  const shot = (id: string, layers: unknown[] = [{ id: 'b', cast: 'bruno' }]) => json({ id, fps: 12, duration: 2, size: [100, 100], seed: 1, layers });
+  const build = (files: Record<string, string>) => buildLibrary(files, validateScene, () => createRegistry([box]), () => new Map(), tools);
+  const story = (extra: Record<string, string> = {}) =>
+    build({
+      '/scenes/loose.json': shot('loose', [{ id: 'b', rig: 'box' }]),
+      '/projects/story/project.json': json(project),
+      '/projects/story/film.json': shot('film', [{ id: 'one', scene: 'one' }, { id: 'two', scene: 'two', start: 1 }]),
+      '/projects/story/one.json': shot('one'),
+      '/projects/story/two.json': shot('two', [{ id: 'h', rig: 'hat' }]),
+      ...extra,
+    });
+
+  it('keys project scenes by qualified id, after the loose ones, with their project, world and context', () => {
+    const lib = story();
+    expect(lib.entries.map((e) => e.key)).toEqual(['loose', 'story/film', 'story/one', 'story/two']);
+    expect(lib.entries.every((e) => e.errors.length === 0)).toBe(true);
+    expect(lib.projects).toEqual([
+      { id: 'story', name: 'Story', file: 'projects/story/project.json', project, main: 'story/film', errors: [] },
+    ]);
+    const film = findEntry(lib, 'story/film')!;
+    expect(film.project).toBe('story');
+    expect(film.file).toBe('projects/story/film.json');
+    expect([...(film.world.scenes?.keys() ?? [])].sort()).toEqual(['film', 'one', 'two']);
+    expect(film.world.cast).toEqual(project.cast);
+    expect(film.context?.fps).toBe(12);
+    expect(findEntry(lib, 'loose')?.world).toEqual({});
+  });
+
+  it("offers a project's rigs only to its own scenes", () => {
+    const lib = story({ '/scenes/stray.json': shot('stray', [{ id: 'h', rig: 'hat' }]) });
+    expect(findEntry(lib, 'story/two')?.registry?.has('hat')).toBe(true);
+    expect(findEntry(lib, 'stray')?.errors.join('\n')).toMatch(/unknown rig "hat"/);
+  });
+
+  it('finds a project scene only by its qualified id', () => {
+    const lib = story();
+    expect(findEntry(lib, 'film')).toBeNull();
+    expect(openingEntry(lib, 'story/one').entry?.key).toBe('story/one');
+  });
+
+  it('needs project.json, and checks every scene against it', () => {
+    const missing = build({ '/projects/story/one.json': shot('one') });
+    expect(missing.projects[0].errors[0]).toMatch(/project\.json: missing/);
+    expect(missing.entries[0].scene).toBeNull();
+    expect(missing.entries[0].errors[0]).toMatch(/can't be checked/);
+    const wrongFps = story({ '/projects/story/one.json': json({ ...JSON.parse(shot('one')), fps: 24 }) });
+    expect(findEntry(wrongFps, 'story/one')?.errors.join('\n')).toMatch(/fps/);
+  });
+
+  it('names a scene after its file', () => {
+    const lib = story({ '/projects/story/one.json': shot('uno') });
+    expect(findEntry(lib, 'story/one')?.errors).toContain('id: must be "one", the file\'s name, got "uno"');
+  });
+
+  it('marks a scene that places a broken scene, and scenes that place each other', () => {
+    const broken = story({ '/projects/story/one.json': shot('one', [{ id: 'b', cast: 'nobody' }]) });
+    expect(findEntry(broken, 'story/one')?.scene).toBeNull();
+    expect(findEntry(broken, 'story/film')?.errors).toContain('layers: "one" places scene "one", which has errors');
+    expect(findEntry(broken, 'story/two')?.scene).not.toBeNull();
+
+    const loop = story({ '/projects/story/one.json': shot('one', [{ id: 'f', scene: 'film' }]) });
+    for (const key of ['story/film', 'story/one']) expect(findEntry(loop, key)?.errors.join('\n')).toMatch(/in a loop/);
+  });
+
+  it('reports rigs that fail to register against the project', () => {
+    const lib = buildLibrary(
+      { '/projects/story/project.json': json(project), '/projects/story/one.json': shot('one') },
+      validateScene,
+      () => createRegistry([box]),
+      () => new Map(),
+      { ...tools, rigs: { story: [box] } },
+    );
+    expect(lib.projects[0].errors[0]).toMatch(/^rigs: .*projects\/story\/rigs/);
   });
 });

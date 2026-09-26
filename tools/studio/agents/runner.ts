@@ -33,6 +33,14 @@ const SCENE_WRITERS: Record<string, (args: Record<string, unknown>) => unknown> 
   update_scene: (a) => a.id,
   apply_to_selection: (a) => (a.selection as { sceneId?: unknown } | undefined)?.sceneId,
 };
+/** Studio tools that write a project's project.json, by the argument that names it. */
+const PROJECT_WRITERS: Record<string, (args: Record<string, unknown>) => unknown> = {
+  update_project: (a) => a.id,
+};
+
+/** How long a project.json edit waits for the project's other threads to finish, by default. Under Codex's 60 s tool timeout. */
+export const PROJECT_WAIT_MS = 50_000;
+const WAIT_POLL_MS = 500;
 
 const STATUS_TTL_MS = 60_000;
 const STATUS_TIMEOUT_MS = 20_000;
@@ -64,6 +72,8 @@ export interface RunnerOptions {
   instructions: () => Promise<string>;
   /** What the viewer's library knows about a scene: its file, timecodes, and the base rig ids it draws with. */
   sceneInfo: (sceneId: string) => Promise<SceneInfo & { rigs?: string[] }>;
+  /** How long a project.json edit waits for the project's other threads. Defaults to PROJECT_WAIT_MS. */
+  projectWaitMs?: number;
 }
 
 /** A turn's events on disk (NNNN/turn-K.jsonl) and on the way to the viewer. Text deltas are joined for up to 80 ms. */
@@ -344,11 +354,18 @@ export class AgentRunner {
     // Unique per run, so a requeued turn's thumbnails never reuse (cached) names.
     const run = Date.now().toString(36);
     return {
+      thread: thread.id,
       active: () => !running.ended && !running.stopping,
       before: async (name, args) => {
+        const projectId = PROJECT_WRITERS[name]?.(args);
+        if (typeof projectId === 'string') {
+          const why = await this.refusal(thread, settings, running, { kind: 'project', projectId, tool: name });
+          if (why) throw new Error(`Not allowed: ${why}`);
+          return;
+        }
         const sceneId = SCENE_WRITERS[name]?.(args);
         if (typeof sceneId !== 'string' || sceneId === thread.sceneId) return;
-        if (!(await this.decide(thread, settings, running, { kind: 'scene', sceneId, tool: name }))) {
+        if (await this.refusal(thread, settings, running, { kind: 'scene', sceneId, tool: name })) {
           throw new Error(`Not allowed: this request is about scene "${thread.sceneId}", and changing "${sceneId}" was declined.`);
         }
       },
@@ -368,16 +385,43 @@ export class AgentRunner {
 
   /** The access rules, then the user through an approval card when they say to ask. */
   private async decide(thread: StudioRequest, settings: TurnSettings, running: Running, action: Action): Promise<boolean> {
-    if (running.stopping) return false;
+    return (await this.refusal(thread, settings, running, action)) === null;
+  }
+
+  /** The access rules on the queue as it is now. */
+  private async judgeNow(thread: StudioRequest, settings: TurnSettings, action: Action) {
     const all = await this.options.queue.list();
     const busyScenes = [...new Set(all.filter((r) => r.id !== thread.id && r.status === 'working').map((r) => r.sceneId))];
     const busyRigs: string[] = [];
     for (const sceneId of busyScenes) busyRigs.push(...((await this.options.sceneInfo(sceneId).catch(() => ({}) as { rigs?: string[] })).rigs ?? []));
-    const verdict = judge(action, { access: settings.access, root: this.options.root, sceneId: thread.sceneId, busyScenes, busyRigs: [...new Set(busyRigs)] });
-    if (verdict.allow) return true;
+    return judge(action, { access: settings.access, root: this.options.root, sceneId: thread.sceneId, busyScenes, busyRigs: [...new Set(busyRigs)] });
+  }
+
+  /**
+   * Null when the action may go ahead, else why not. An action that has to wait for other threads (a
+   * project.json edit) waits, up to projectWaitMs; one the rules ask about asks the user.
+   */
+  private async refusal(thread: StudioRequest, settings: TurnSettings, running: Running, action: Action): Promise<string | null> {
+    if (running.stopping) return 'the turn is stopping.';
+    let verdict = await this.judgeNow(thread, settings, action);
+    if (!verdict.allow && !verdict.ask && verdict.wait) {
+      running.log.append({ type: 'status', message: verdict.reason });
+      const until = Date.now() + (this.options.projectWaitMs ?? PROJECT_WAIT_MS);
+      while (!verdict.allow && !verdict.ask && verdict.wait && Date.now() < until && !running.stopping) {
+        await new Promise((resolve) => setTimeout(resolve, WAIT_POLL_MS));
+        verdict = await this.judgeNow(thread, settings, action);
+      }
+      if (!verdict.allow && !verdict.ask && verdict.wait) {
+        const reason = `${verdict.reason} Gave up waiting; try again when that work ends.`;
+        running.log.append({ type: 'status', message: reason });
+        return reason;
+      }
+      if (running.stopping) return 'the turn is stopping.';
+    }
+    if (verdict.allow) return null;
     if (!verdict.ask) {
       running.log.append({ type: 'status', message: verdict.reason });
-      return false;
+      return verdict.reason;
     }
     const id = randomBytes(6).toString('hex');
     const decision = await new Promise<ApprovalDecision>((resolve) => {
@@ -386,7 +430,7 @@ export class AgentRunner {
     });
     running.approvals.delete(id);
     running.log.append({ type: 'approval-resolved', id, decision });
-    return decision === 'accept';
+    return decision === 'accept' ? null : `${verdict.summary} was declined.`;
   }
 
   /** The user's answer to an approval card. False when there is no such open card. */

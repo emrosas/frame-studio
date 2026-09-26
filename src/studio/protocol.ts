@@ -81,6 +81,11 @@ export interface Turn {
   summary?: string;
   /** When the scene was copied to this turn's checkpoint file, at claim time. It stays put across a requeue. */
   checkpointAt?: string;
+  /**
+   * True when the scene's project.json changed while the turn worked (ADR 0007). Its checkpoint then
+   * holds project.json too, and Revert to here restores both.
+   */
+  projectChanged?: boolean;
   usage?: TurnUsage;
   /** 2 or more when asked again with Try again. */
   attempt?: number;
@@ -138,7 +143,7 @@ export type TurnEventBody =
   | { type: 'error'; message: string };
 
 export type TurnEvent = TurnEventBody & { seq: number; at: string };
-export type ApprovalKind = 'write' | 'command' | 'network' | 'read' | 'scene' | 'tool';
+export type ApprovalKind = 'write' | 'command' | 'network' | 'read' | 'scene' | 'project' | 'tool';
 export type ApprovalDecision = 'accept' | 'decline';
 
 /** An agent the studio can run, as the agent picker shows it. */
@@ -178,6 +183,17 @@ export function requestFileName(id: number, kind: RequestFileKind = 'request'): 
 export function checkpointFileName(id: number, turn: number): string {
   const stem = String(id).padStart(4, '0');
   return turn === 0 ? `${stem}.before.json` : `${stem}.${turn}.before.json`;
+}
+
+/** Where a turn on a project scene keeps its copy of project.json: NNNN.project.before.json, then NNNN.K.project.before.json. */
+export function projectCheckpointFileName(id: number, turn: number): string {
+  return checkpointFileName(id, turn).replace(/\.before\.json$/, '.project.before.json');
+}
+
+/** The project of a qualified scene id ("bears-story/shot-1"), or null for a loose scene (ADR 0007). */
+export function projectOf(sceneId: string): string | null {
+  const m = /^([^/]+)\/[^/]+$/.exec(sceneId);
+  return m && !sceneId.endsWith('.json') ? m[1] : null;
 }
 
 /** The folder beside a request that holds its turns' event logs and frame thumbnails. */
@@ -311,17 +327,24 @@ export function canRevert(request: StudioRequest, turn: number, all: readonly St
   if (!target || !target.checkpointAt || target.status === 'reverted' || target.status === 'cancelled') return false;
   if (request.turns.some((t) => !isFinished(t))) return false;
   const since = time(target.checkpointAt);
+  /** A turn that works now, or worked after the checkpoint, and still counts. */
+  const later = (t: Turn) =>
+    t.claimedAt !== undefined &&
+    t.status !== 'reverted' &&
+    t.status !== 'cancelled' &&
+    (t.status === 'working' || time(t.claimedAt) > since || time(t.completedAt) > since);
+  // Restoring project.json touches every scene in the project, like editing it: nothing else there may be working,
+  // or have changed it since. A turn cancelled while it worked may have changed it too, so those count here.
+  const project = projectOf(request.sceneId);
+  const changedProject = (t: Turn) => t.projectChanged === true && t.status !== 'reverted';
+  const restoresProject = project !== null && request.turns.slice(turn).some(changedProject);
+  const changedProjectSince = (t: Turn) =>
+    changedProject(t) && t.claimedAt !== undefined && (t.status === 'working' || time(t.claimedAt) > since || time(t.completedAt) > since);
   return !all.some(
     (r) =>
       r.id !== request.id &&
-      r.sceneId === request.sceneId &&
-      r.turns.some(
-        (t) =>
-          t.claimedAt !== undefined &&
-          t.status !== 'reverted' &&
-          t.status !== 'cancelled' &&
-          (t.status === 'working' || time(t.claimedAt) > since || time(t.completedAt) > since),
-      ),
+      ((r.sceneId === request.sceneId && r.turns.some(later)) ||
+        (restoresProject && projectOf(r.sceneId) === project && r.turns.some((t) => t.status === 'working' || changedProjectSince(t)))),
   );
 }
 

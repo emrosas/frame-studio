@@ -18,6 +18,7 @@ A scene is one continuous stretch of time on one stage, and so far every scene s
 - **A cast.** `project.json` names characters, each a rig with params. A layer uses `"cast": "bruno"` and can still override params, so one edit to the cast changes every shot.
 - **Rigs.** The global `src/rigs/` library stays. A project can add its own rigs in `projects/<id>/rigs/`, offered only to that project's scenes.
 - **Audio.** A scene layer brings its shot's cues, shifted by `start` and cut to the trim, with a trackable `volume` and a `mute`. The main scene can add cues across cuts. It all renders in one offline pass (ADR 0005).
+  - Added while building M9: a cue can take `volume` keys too, so a music bed on the main scene can duck under a shot. A shot's sound renders once, on its own, and its buffer is cut into the parent's sample for sample, so it sounds exactly as it does alone.
 - **Export.** The main scene exports to MP4, GIF and one HTML embed. The embed carries the nested shots, the project rigs and the cast.
 - **The viewer.**
   - The picker lists projects, then their scenes, with loose scenes apart.

@@ -15,6 +15,8 @@ export type Action =
   | { kind: 'network'; target: string }
   /** A studio tool that writes a scene other than the thread's. */
   | { kind: 'scene'; sceneId: string; tool: string }
+  /** An edit to a project's project.json, by a studio tool or to the file (ADR 0007). */
+  | { kind: 'project'; projectId: string; tool: string }
   /** Any other tool the provider offers. */
   | { kind: 'tool'; name: string; detail?: string };
 

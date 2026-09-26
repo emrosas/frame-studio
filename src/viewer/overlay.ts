@@ -11,7 +11,7 @@
 // cutting the mask itself out.
 
 import { drawLayer, onlyParts, PASS_THROUGH, sceneLayers } from '../engine';
-import type { Layer, RigRegistry, Scene } from '../engine/types';
+import type { Layer, RigRegistry, Scene, World } from '../engine/types';
 import type { Fit } from './canvas';
 import { maskKey, maskSize, ringOffsets, thresholdMask, type PixelBox } from './mask';
 import { layerLabel } from './selection';
@@ -19,6 +19,8 @@ import { layerLabel } from './selection';
 export interface OverlayInput {
   scene: Scene | null;
   registry: RigRegistry | null;
+  /** The scene's project world and surfaces, for scene layers and masks. */
+  world?: World;
   frame: number;
   /** Bumped on every scene swap (hot edit or switch), so stale masks are never reused. */
   version: number;
@@ -53,6 +55,7 @@ const HOVER: HighlightStyle = { color: '#4da3ff', width: 1, outlineAlpha: 0.75, 
 const CACHE_SIZE = 4;
 
 export class SelectionOverlay {
+  private world: World = {};
   readonly canvas: HTMLCanvasElement;
   private readonly ctx: CanvasRenderingContext2D;
   private readonly selectedTag: HTMLElement;
@@ -82,6 +85,7 @@ export class SelectionOverlay {
   /** Redraws when anything that shows changed; cheap when nothing did. */
   update(input: OverlayInput): void {
     const { scene, registry, frame, version, fit } = input;
+    this.world = input.world ?? {};
     const ready = scene !== null && registry !== null && fit.backingWidth > 0;
     const layers = ready ? new Map(sceneLayers(scene).map((l) => [l.id, l])) : new Map<string, Layer>();
     const sel = input.selected && layers.get(input.selected.layerId);
@@ -153,7 +157,7 @@ export class SelectionOverlay {
     ctx.clearRect(0, 0, w, h);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     try {
-      drawLayer(ctx, scene, layer, frame, registry, partId ? onlyParts([partId]) : PASS_THROUGH);
+      drawLayer(ctx, scene, layer, frame, registry, partId ? onlyParts([partId]) : PASS_THROUGH, this.world);
     } catch {
       // The render error is already on the error panel; show no highlight.
       this.spare.push(canvas);

@@ -5,9 +5,11 @@ references
 .DS_Store
 *.log
 
-# Temporary scenes the browser tests write and remove
+# Temporary scenes and projects the browser tests write and remove
 scenes/mcp-test-*.json
 scenes/test-tmp-*.json
+projects/mcp-test-*/
+projects/test-tmp-*/
 
 # Viewer-to-agent handoff state: current selection, request queue, checkpoints (ADR 0003)
 .frame-studio/

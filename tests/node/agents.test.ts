@@ -53,6 +53,30 @@ describe('access rules', () => {
     expect(verdict(judge({ kind: 'write', paths: ['/repo/src/rigs/bearded.ts'] }, busy))).toBe('allow');
   });
 
+  it("writes a project's rigs and its own scene freely, and asks before another project's files (ADR 0007)", () => {
+    const shot = ctx({ sceneId: 'story/one' });
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/projects/story/rigs/iris.ts', '/repo/projects/story/one.json'] }, shot))).toBe('allow');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/projects/story/two.json'] }, shot))).toBe('ask');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/projects/story/two.json'] }, ctx({ sceneId: 'story/one', access: 'full', busyScenes: ['story/two'] })))).toBe('refuse');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/projects/other/rigs/hat.ts'] }, shot))).toBe('allow');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/projects/story/notes.md'] }, shot))).toBe('ask');
+    const busyRig = ctx({ sceneId: 'story/one', access: 'full', busyScenes: ['story/two'], busyRigs: ['iris'] });
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/projects/story/rigs/iris.ts'] }, busyRig))).toBe('ask');
+  });
+
+  it('lets a thread change its own project.json once nothing else in the project works, and asks about another project', () => {
+    const shot = ctx({ sceneId: 'story/one' });
+    expect(verdict(judge({ kind: 'project', projectId: 'story', tool: 'update_project' }, shot))).toBe('allow');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/projects/story/project.json'] }, shot))).toBe('allow');
+    expect(verdict(judge({ kind: 'project', projectId: 'other', tool: 'update_project' }, shot))).toBe('ask');
+    expect(verdict(judge({ kind: 'project', projectId: 'other', tool: 'update_project' }, ctx({ access: 'full' })))).toBe('allow');
+    const busy = judge({ kind: 'write', paths: ['/repo/projects/story/project.json'] }, ctx({ sceneId: 'story/one', access: 'full', busyScenes: ['story/two', 'hello'] }));
+    expect(busy).toMatchObject({ allow: false, ask: false, wait: true });
+    expect(!busy.allow && !busy.ask && busy.reason).toMatch(/waits until no other request there is working; "story\/two" is still working/);
+    // Work in another project, or on loose scenes, doesn't hold it up.
+    expect(verdict(judge({ kind: 'project', projectId: 'story', tool: 'update_project' }, ctx({ sceneId: 'story/one', busyScenes: ['other/one', 'hello'] })))).toBe('allow');
+  });
+
   it('with full access, allows everything else without asking', () => {
     for (const action of [
       { kind: 'write' as const, paths: ['/repo/src/engine/render.ts'] },

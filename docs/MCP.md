@@ -27,18 +27,21 @@ Any MCP client that can start a stdio server can use it. The command is `node`, 
 
 ## Tools
 
-Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame within the second. Ranges are `[from, to)`: `from` is included and `to` is not. Scene ids are the ones `list_scenes` shows.
+Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame within the second. Ranges are `[from, to)`: `from` is included and `to` is not. Scene ids are the ones `list_scenes` shows: a loose scene's id, or `<project>/<scene>` for a scene in a project, such as `bears-story/film` (`docs/SCENES.md`, "Projects").
 
 | Tool | What it does |
 | --- | --- |
-| `list_scenes()` | Every scene: id, file, fps, duration, frame count, size, layers and any validation errors. |
+| `list_scenes()` | Every scene, loose ones first: id, project, file, fps, duration, frame count, size, layers (with the rig, cast member or placed scene each draws) and any validation errors. |
 | `get_scene(id)` | The scene JSON exactly as it is in its file. |
-| `update_scene(id, patch)` | Applies an RFC 7386 JSON merge patch. Objects merge, `null` deletes a key, and arrays are replaced whole. The result is validated first, and nothing is saved when it is invalid. |
-| `list_rigs()` | Each rig's param schema, the parts it declares, its variants and, for a variant, its base. |
+| `update_scene(id, patch)` | Applies an RFC 7386 JSON merge patch. Objects merge, `null` deletes a key, and arrays are replaced whole. The result is validated first, and nothing is saved when it is invalid. In a project, it also refuses an edit that would break a scene placing this one, such as shortening a shot below its trim. |
+| `list_rigs()` | Each rig's param schema, the parts it declares, its variants and, for a variant, its base. A project's own rig carries `project`, and only that project's scenes can use it. |
+| `list_projects()` | Every project: name, fps, size, main scene, cast, its scenes by qualified id, its own rigs, and any errors in `project.json`. |
+| `get_project(id)` | The project's `project.json` exactly as it is in its file. |
+| `update_project(id, patch)` | A merge patch to `project.json`, such as a cast change. The result must be a valid project, and every scene in the project must stay valid under it. It changes every scene in the project, so it waits while another request in the project is working, for up to about 50 s, and then refuses. Because every scene must match the project's `fps` and `size`, changing either means editing `project.json` and every scene file by hand. |
 | `list_generators()` | Each audio generator's param schema, for the scene's `audio` cues. |
-| `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` and returns a preview up to `maxWidth` wide (1280 by default). |
+| `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` (`out/<project>/<scene>/` in a project) and returns a preview up to `maxWidth` wide (1280 by default). |
 | `render_contact_sheet(sceneId, from?, to?, every?, columns?)` | A labelled grid of every Nth frame, returned as an image and written to `out/<scene>/`. |
-| `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. |
+| `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. On a shot a scene places, it names the scene layer; hit-test the shot itself to find what's inside. |
 | `apply_to_selection(selection, patch)` | A scoped edit. Over `[from, to)` of one layer, it swaps to a rig variant and/or holds params, written as overrides. |
 | `export(sceneId, target, from?, to?, silent?)` | `mp4`, `gif` or `html`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. Returns the file path under `out/`. |
 | `next_request()` | Claims the oldest request waiting for an external agent and returns the whole thread, with instructions for this turn. |
@@ -66,7 +69,8 @@ Pick **Claude** or **Codex** and the studio runs the agent itself, on your machi
 
 The thread streams what the agent does: its reply, one line per step, and thumbnails of the frames it rendered, which you can click to see on the canvas. Each thread has its own model, effort and access, and you can change them between turns.
 
-- **Access.** By default the agent uses the studio's tools (the same operations as this MCP server) on its own scene, reads the project, and writes in `scenes/`, `src/rigs/` and `src/audio/`. Anything else, such as another file, a shell command or the network, shows an approval card in the thread first. **Full access** turns the cards off. Either way, a scene another request is working on is off limits, and editing a rig that scene draws with asks first.
+- **Access.** By default the agent uses the studio's tools (the same operations as this MCP server) on its own scene, reads the repo, and writes in `scenes/`, `src/rigs/`, `src/audio/` and any project's `rigs/`. Another scene's file, like another scene through the tools, asks first. So does anything else, such as another file, a shell command or the network: an approval card shows in the thread. **Full access** turns the cards off. Either way, a scene another request is working on is off limits, and editing a rig that scene draws with asks first.
+- **Projects.** An edit to a project's `project.json`, through `update_project` or to the file, touches every scene in the project. It waits until no other request in the project is working, for up to about 50 s, and then gives up with the reason, so two threads never change a project under each other. A turn on a project scene also saves `project.json`, and **Revert to here** on a turn that changed it restores both files. It's offered only when nothing else in the project is working and no other request has changed `project.json` since. Rig code stays with git.
 - **Stop** ends the agent's turn and keeps what it changed so far. If the dev server stops mid-turn, the turn shows as interrupted, and your next reply resumes the agent's session.
 - Claude gets the studio tools in the studio server's own process. Codex reaches them at `/__studio/mcp` on the dev server, with a token per turn passed in its environment. Transcripts and thumbnails live next to the request in `.frame-studio/requests/`.
 - The access rules keep a well-meaning agent inside the lines; they are not a sandbox. Rig and generator code an agent writes runs in the studio server and the browser.
@@ -74,7 +78,7 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 
 ## A typical loop
 
-1. `list_scenes`, then `render_frame` to see where things stand.
+1. `list_scenes`, then `render_frame` to see where things stand. In a project, `list_projects` shows the cast and which scene is the main one.
 2. `hit_test` on the thing to change, to get its layer.
 3. `apply_to_selection` for a change over some frames, or `update_scene` for a change to the whole scene. Sound is `update_scene` on the scene's `audio` cues, with generators from `list_generators`. The agent can't hear it, so place cues by frame: a cue starts on the frame its `start` falls in.
 4. `render_frame` or `render_contact_sheet` again to check it. Frames outside the edited range are untouched.
@@ -85,7 +89,7 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 - The first tool that renders starts Vite and a headless Chromium, which takes about 3 seconds. Later calls reuse them.
 - Tools run one at a time, even when the agent calls several at once, because they share one page and the scene files.
 - Writes go through the scene validator first, and scene files are written in the studio's format: two-space indents, with short objects and arrays on one line.
-- The server watches `src/` and `scenes/`. Edits the agent makes to those files directly, without the tools, show up in the next render.
+- The server watches `src/`, `scenes/` and `projects/`. Edits the agent makes to those files directly, without the tools, show up in the next render.
 - Renders and exports go to `out/`, which git ignores.
 - The viewer's studio server (`/__studio/` on the dev server) takes requests only from the viewer's own page. It refuses other sites, takes JSON only, and checks every request. Reference paths must be images directly in `references/`.
 - `FRAME_STUDIO_DIR` moves the handoff folder. The tests use it, so they never touch a real queue.

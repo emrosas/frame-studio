@@ -1,7 +1,9 @@
 <!--
   The control bar under the stage: play/pause, sound on/off for scenes with
-  audio, the scrubber with the frame range band, timecode, frame and fps
-  readouts, scene picker and shortcut hint.
+  audio, the scrubber with the frame range band and, on a scene that places
+  shots, a band per shot (click selects it, double-click opens it), timecode,
+  frame and fps readouts, the scene picker grouped by project, the link back
+  from an opened shot, and the shortcut hint.
 -->
 <script lang="ts">
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
@@ -20,6 +22,38 @@
     const stop = end > 0 ? (ui.band.range.to - 0.5) / end : 1;
     return `--in: ${start}; --out: ${stop}`;
   });
+  /** Where a span sits on the track, on the same scale as the range band. */
+  function spanStyle(from: number, to: number, frameCount: number, lane: number): string {
+    const end = frameCount - 1;
+    const start = end > 0 ? (from - 0.5) / end : 0;
+    const stop = end > 0 ? (to - 0.5) / end : 1;
+    return `--in: ${start}; --out: ${stop}; --lane: ${lane}`;
+  }
+
+  // Loose scenes first, then each project's under its name. The App orders them, so groups are runs of one project.
+  const sceneGroups = $derived.by(() => {
+    const groups: { project: string | null; name: string | null; options: typeof ui.scenes }[] = [];
+    for (const option of ui.scenes) {
+      const last = groups.at(-1);
+      if (last && last.project === option.project) last.options.push(option);
+      else groups.push({ project: option.project, name: option.group, options: [option] });
+    }
+    return groups;
+  });
+
+  /**
+   * The band clicked last, so a double-click opens it even when the first click moved the bands (the
+   * selection bar can grow a line when it fills in, and the controls shift up with it).
+   */
+  let lastBand: { layerId: string; at: number } | null = null;
+  function openBand(e: MouseEvent): void {
+    const target = (e.target as HTMLElement).closest<HTMLElement>('[data-layer]');
+    const recent = lastBand && performance.now() - lastBand.at < 800 ? lastBand.layerId : null;
+    const layerId = recent ?? target?.dataset.layer ?? null;
+    lastBand = null;
+    if (layerId) actions.openShot(layerId);
+  }
+
   const playLabel = $derived(ui.playing ? 'Pause' : 'Play');
   const soundLabel = $derived(ui.sound?.muted ? 'Unmute' : 'Mute');
   const soundTitle = $derived.by(() => {
@@ -47,7 +81,7 @@
   }
 </script>
 
-<div class="controls-row transport">
+<div class="controls-row transport" class:has-shots={ui.shots !== null} style={ui.shots ? `--lanes: ${ui.shots.lanes}` : ''}>
   <button
     type="button"
     class="play-button"
@@ -106,6 +140,29 @@
       oninput={(e) => actions.scrub(Number(e.currentTarget.value))}
       onchange={endScrub}
     />
+    {#if ui.shots}
+      <div class="shots" role="group" aria-label="Shots" ondblclick={openBand}>
+        {#each ui.shots.bands as band (band.layerId)}
+          <button
+            type="button"
+            class="shot-band"
+            class:is-selected={band.selected}
+            data-layer={band.layerId}
+            aria-pressed={band.selected}
+            aria-label={band.layerId === band.label ? band.label : `${band.label} (layer ${band.layerId})`}
+            style={spanStyle(band.from, band.to, ui.shots.frameCount, band.lane)}
+            title="{band.label}, frames [{band.from}, {band.to}). Click to select, double-click to open."
+            onclick={(e) => {
+              lastBand = { layerId: band.layerId, at: performance.now() };
+              actions.selectShot(band.layerId);
+              e.currentTarget.blur();
+            }}
+          >
+            {band.label}
+          </button>
+        {/each}
+      </div>
+    {/if}
   </div>
   <output class="frame-readout" aria-label="Frame number">
     {ui.timeline ? `frame ${ui.timeline.frame} of ${ui.timeline.frameCount}` : 'frame -'}
@@ -113,6 +170,12 @@
 </div>
 
 <div class="controls-row info">
+  {#if ui.back}
+    <button type="button" class="back-link" aria-label="Back to {ui.back.key}" title="Back to {ui.back.key} at the matching frame" onclick={() => actions.back()}>
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3 5.5 8l5 5 1-1-4-4 4-4z" /></svg>
+      {ui.back.label}
+    </button>
+  {/if}
   <label class="scene-picker">
     <span class="label">Scene</span>
     <select
@@ -125,8 +188,17 @@
         e.currentTarget.blur();
       }}
     >
-      {#each ui.scenes as option (option.key)}
+      {#snippet sceneOption(option: (typeof ui.scenes)[number])}
         <option value={option.key} title={option.file}>{option.invalid ? `${option.label} (invalid)` : option.label}</option>
+      {/snippet}
+      {#each sceneGroups as group (group.project ?? '')}
+        {#if group.name === null}
+          {#each group.options as option (option.key)}{@render sceneOption(option)}{/each}
+        {:else}
+          <optgroup label={group.name}>
+            {#each group.options as option (option.key)}{@render sceneOption(option)}{/each}
+          </optgroup>
+        {/if}
       {/each}
     </select>
   </label>

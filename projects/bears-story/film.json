@@ -1,0 +1,64 @@
+{
+  "id": "film",
+  "fps": 12,
+  "duration": 12,
+  "size": [1920, 1080],
+  "seed": 20,
+  "background": {
+    "rig": "paper",
+    "params": { "tone": "#1b1712", "grain": 0, "fibres": 0, "mottle": 0.15, "vignette": 0 }
+  },
+  "layers": [
+    { "id": "meet", "scene": "meet", "start": 0, "out": 3 },
+    { "id": "pip", "scene": "pip", "start": 3 },
+    {
+      "id": "together",
+      "scene": "together",
+      "start": 6,
+      "tracks": [
+        {
+          "param": "opacity",
+          "keys": [{ "t": 6, "v": 0 }, { "t": 7, "v": 1, "ease": "inOutSine" }]
+        },
+        { "param": "volume", "keys": [{ "t": 6, "v": 0 }, { "t": 7, "v": 1 }] }
+      ]
+    },
+    {
+      "id": "again",
+      "scene": "meet",
+      "start": 10,
+      "in": 1,
+      "out": 3,
+      "mask": {
+        "rig": "iris",
+        "params": { "radius": 0 },
+        "tracks": [
+          {
+            "param": "radius",
+            "keys": [{ "t": 10, "v": 0 }, { "t": 11, "v": 1200, "ease": "inOutSine" }]
+          }
+        ]
+      }
+    }
+  ],
+  "audio": [
+    {
+      "id": "bed",
+      "generator": "pad",
+      "start": 0,
+      "end": 12,
+      "params": { "note": 147, "chord": "fifth", "gain": 0.12, "attack": 1, "release": 1.5, "brightness": 0.1 },
+      "tracks": [
+        {
+          "param": "volume",
+          "keys": [
+            { "t": 3, "v": 1 },
+            { "t": 3.5, "v": 0.3 },
+            { "t": 6.5, "v": 0.3 },
+            { "t": 7, "v": 1 }
+          ]
+        }
+      ]
+    }
+  ]
+}

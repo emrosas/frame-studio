@@ -23,6 +23,8 @@ const params: ParamSchema = {
   angle: num(-30, -360, 360, 'Direction from the shoulder to the paw, in degrees clockwise from pointing right.'),
   length: num(0.5, 0, 2, 'Distance from the shoulder to the paw centre, as a fraction of width.'),
   ...Object.fromEntries(fromBear.map((name) => [name, bear.params[name]])),
+  // An arm layer is there to draw its paw, so unlike the bear's, its paw can't be hidden with 0.
+  pawSize: num(0.2, 0.05, 0.5, 'Paw width, as a fraction of width. Match the bear.'),
 };
 
 export const bearArm: Rig = {

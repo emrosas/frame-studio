@@ -194,7 +194,8 @@ export function studioServer(): Plugin {
           if (!entry) return {};
           const scene = entry.scene;
           if (!scene) return { file: entry.file };
-          const rigs = [...new Set(modules.engine.rigIdsUsed(scene).map((id) => modules.engine.baseRigId(id)))];
+          // Cast members' rigs and the rigs of every scene it places count too (ADR 0007).
+          const rigs = [...new Set(modules.engine.rigIdsUsed(scene, entry.world).map((id) => modules.engine.baseRigId(id)))];
           return { file: entry.file, timecode: (f: number) => modules.engine.formatTimecode(f, scene.fps), rigs };
         },
       });

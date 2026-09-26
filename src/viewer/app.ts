@@ -6,8 +6,19 @@
 import { LivePlayback } from '../audio/live';
 import { audioKey, generatorsUsed, hasAudio, renderSceneAudio, sameGenerators } from '../audio/render';
 import type { AudioGenerator } from '../audio/types';
-import { formatTimecode, frameCount as countFrames, hitTest, render, type HitResult, type HitTestOptions } from '../engine';
-import type { Scene } from '../engine/types';
+import {
+  formatTimecode,
+  frameCount as countFrames,
+  hitTest,
+  render,
+  sceneLayerSpan,
+  shotFrame,
+  type HitResult,
+  type HitTestOptions,
+  type SceneLayerSpan,
+} from '../engine';
+import type { Scene, World } from '../engine/types';
+import { createSurfaces } from '../embed/surfaces';
 import { CanvasView } from './canvas';
 import { FpsMeter, PlaybackClock } from './clock';
 import { ErrorLog, errorText } from './errors';
@@ -43,7 +54,7 @@ import {
   type TurnSettings,
 } from '../studio/protocol';
 import { StudioClient } from './studio-client';
-import type { SceneOption, ViewerActions, ViewerUi } from './ui.svelte';
+import type { SceneOption, ShotBand, ViewerActions, ViewerUi } from './ui.svelte';
 import { parseFrameParam, RELOAD_KEY, reloadRecord, UrlSync, type UrlPosition } from './url';
 
 /** window.studio.selection: what is picked, in the shape agent tools take. */
@@ -74,7 +85,7 @@ export interface StudioApi {
    * reaching the speakers, in seconds, or null while nothing plays.
    */
   readonly sound: { status: 'none' | 'rendering' | 'ready' | 'failed'; muted: boolean; unlocked: boolean; heard: number | null };
-  /** Scene keys (ids) in picker order. */
+  /** Scene keys in picker order: loose scenes, then each project's by qualified id. */
   readonly scenes: readonly string[];
   /** Every error the panel is showing, flattened. Empty when all is well. */
   readonly errors: readonly string[];
@@ -113,6 +124,15 @@ export interface StudioApi {
   setRange(from: number, to: number): void;
   /** Clears the frame range, so the selection covers all frames. */
   clearRange(): void;
+  /** The shots a project scene places: each scene layer, the scene it shows, and its span [from, to) in this scene's frames. */
+  readonly shots: readonly { layerId: string; scene: string; from: number; to: number }[];
+  /**
+   * Opens the shot a scene layer shows (the selected layer by default) at the frame matching the one on
+   * screen, or its first frame shown. Throws when the layer places no scene.
+   */
+  openShot(layerId?: string): void;
+  /** After openShot: back to the scene it came from, at the matching frame. Throws when there is nowhere to go back to. */
+  back(): void;
 }
 
 export interface AppOptions {
@@ -184,6 +204,8 @@ export class App {
   /** Bumped on every scene swap, so cached masks and click cycles never outlive an edit. */
   private version = 0;
   private probe: OffscreenCanvasRenderingContext2D | null = null;
+  /** Offscreen surfaces for masks and faded shots (ADR 0007). */
+  private readonly surfaces = createSurfaces();
   /** Pointer over the canvas, client CSS px; null when outside. */
   private pointer: Point | null = null;
   private downAt: Point | null = null;
@@ -198,6 +220,10 @@ export class App {
   /** The frame on which a hover probe threw; hover skips that frame only, until the next scene swap. */
   private hoverFailedFrame: number | null = null;
   private scrubbing = false;
+
+  // ---- shots (ADR 0007) ----
+  /** Where Open shot came from, so Back returns there. Any other scene switch forgets it. */
+  private shotReturn: { key: string; layerId: string; span: SceneLayerSpan; frame: number } | null = null;
 
   // ---- sound (M7) ----
   private readonly sound = new LivePlayback(() => new AudioContext({ latencyHint: 'interactive' }));
@@ -249,6 +275,20 @@ export class App {
         const next = findEntry(this.library, key);
         if (next) this.userSelect(next);
       },
+      selectShot: (layerId) => {
+        const shot = this.shots().find((s) => s.layerId === layerId);
+        if (!shot) return;
+        this.clickMemo = null;
+        this.layerId = layerId;
+        this.partId = null;
+        this.selectionPoint = null;
+        this.range = { from: shot.span.from, to: shot.span.to };
+        this.selectionChanged();
+        this.canvasDirty = true;
+        this.flushNow();
+      },
+      openShot: (layerId) => this.say(this.openShot(layerId)),
+      back: () => this.say(this.back()),
       clearLayer: () => {
         this.userSetLayer(null, null);
         this.flushNow();
@@ -315,6 +355,7 @@ export class App {
     const canvas = this.view.canvas;
     canvas.addEventListener('pointerdown', this.onCanvasPointerDown);
     canvas.addEventListener('click', this.onCanvasClick);
+    canvas.addEventListener('dblclick', this.onCanvasDoubleClick);
     canvas.addEventListener('pointermove', this.onCanvasPointerMove);
     canvas.addEventListener('pointerleave', this.onCanvasPointerLeave);
     window.addEventListener('keydown', this.onKey);
@@ -353,6 +394,8 @@ export class App {
     } else {
       const next = (previous && findEntry(library, previous.key, previous.path)) ?? library.entries[0] ?? null;
       const same = previous !== null && next !== null && (next.key === previous.key || next.path === previous.path);
+      // The shot on screen is gone, so there is no way back from wherever the viewer falls back to.
+      if (!same) this.shotReturn = null;
       this.selectEntry(next, same);
       if (same && wasPlaying && !this.clock.playing) {
         if (!this.playInternal()) this.resumeWhenValid = true;
@@ -409,6 +452,7 @@ export class App {
   // ---- scene selection ----
 
   private userSelect(entry: SceneEntry): void {
+    this.shotReturn = null;
     this.pendingFrameParam = null;
     this.pendingSelection = null;
     this.resumeWhenValid = false;
@@ -420,11 +464,11 @@ export class App {
   private selectEntry(entry: SceneEntry | null, keepFrame: boolean): void {
     this.entry = entry;
     const scene = entry?.scene ?? null;
-    const registry = this.library.registry;
+    const registry = entry?.registry ?? null;
     const renderable = scene !== null && registry !== null;
     this.total = scene ? countFrames(scene) : 0;
     this.version++;
-    this.shape = renderable ? sceneShape(scene, registry, this.total) : null;
+    this.shape = renderable ? sceneShape(scene, registry, this.total, entry?.world) : null;
     this.reconcileSelection(keepFrame);
     this.clickMemo = null;
     this.hoverLayer = null;
@@ -504,8 +548,109 @@ export class App {
     if (notes.length > 0) this.notice = notes.join(' ');
   }
 
+  /** Loose scenes, then each project's scenes under its name, its main scene first (ADR 0007). */
   private sceneOptions(): SceneOption[] {
-    return this.library.entries.map((e) => ({ key: e.key, label: e.key, file: e.file, invalid: e.scene === null }));
+    const projects = new Map(this.library.projects.map((p) => [p.id, p]));
+    const options = this.library.entries.map((e): SceneOption => {
+      const project = e.project !== null ? projects.get(e.project) : undefined;
+      const main = project?.main === e.key;
+      return {
+        key: e.key,
+        label: project ? `${e.key.slice(project.id.length + 1)}${main ? ' (main)' : ''}` : e.key,
+        file: e.file,
+        invalid: e.scene === null || (project?.errors.length ?? 0) > 0,
+        project: project ? project.id : null,
+        group: project ? project.name : null,
+        main,
+      };
+    });
+    // Loose scenes keep library order; projects follow in id order, each with its main scene first.
+    return options
+      .map((o, i) => ({ o, i }))
+      .sort((a, b) => Number(a.o.project !== null) - Number(b.o.project !== null) || (a.o.project ?? '').localeCompare(b.o.project ?? '') || Number(b.o.main) - Number(a.o.main) || a.i - b.i)
+      .map(({ o }) => o);
+  }
+
+  // ---- shots (ADR 0007) ----
+
+  /** The scene layers of the scene on screen whose shots show at all, with their spans. */
+  private shots(): { layerId: string; key: string; label: string; span: SceneLayerSpan }[] {
+    const entry = this.entry;
+    const scene = entry?.scene;
+    if (!entry || !scene || entry.project === null) return [];
+    return scene.layers.flatMap((layer) => {
+      const shot = layer.scene !== undefined ? entry.world.scenes?.get(layer.scene) : undefined;
+      if (!shot) return [];
+      const span = sceneLayerSpan(layer, scene, shot);
+      return span.to > span.from ? [{ layerId: layer.id, key: `${entry.project}/${layer.scene}`, label: layer.scene!, span }] : [];
+    });
+  }
+
+  /** Opens the shot a scene layer shows, at the frame matching the one on screen, or the first frame it shows. */
+  private openShot(layerId?: string | null): string | null {
+    const id = layerId ?? this.layerId;
+    const shot = this.shots().find((s) => s.layerId === id);
+    if (!shot || !this.entry) return id === null ? 'Select a shot first.' : `Layer "${id}" places no scene.`;
+    const target = findEntry(this.library, shot.key);
+    if (!target) return `Scene "${shot.key}" is missing.`;
+    const frame = this.clock.frame;
+    const back = { key: this.entry.key, layerId: shot.layerId, span: shot.span, frame };
+    this.userSelect(target);
+    this.shotReturn = back;
+    if (this.clock.timeline) this.clock.seek(shotFrame(shot.span, frame) ?? shot.span.in);
+    this.uiDirty = true;
+    this.syncUrl();
+    this.invalidate();
+    this.flushNow();
+    return null;
+  }
+
+  /**
+   * Back from Open shot to the scene it came from, at the frame matching the shot's, with the shot's layer
+   * selected. The span is read again from the parent, in case its cut changed while the shot was open.
+   */
+  private back(): string | null {
+    const back = this.shotReturn;
+    if (!back) return 'No shot was opened from another scene.';
+    const parent = findEntry(this.library, back.key);
+    if (!parent) {
+      this.shotReturn = null;
+      this.uiDirty = true;
+      this.schedule();
+      return `Scene "${back.key}" is missing.`;
+    }
+    const layer = parent.scene?.layers.find((l) => l.id === back.layerId);
+    const shot = layer?.scene !== undefined ? parent.world.scenes?.get(layer.scene) : undefined;
+    // Only while the layer still shows the scene on screen; otherwise go back to where Open shot was pressed.
+    const span = parent.scene && layer && shot && `${parent.project}/${layer.scene}` === this.entry?.key ? sceneLayerSpan(layer, parent.scene, shot) : null;
+    const g = this.clock.frame;
+    const frame = span && g >= span.in && g < span.in + (span.to - span.from) ? span.from + (g - span.in) : back.frame;
+    this.userSelect(parent);
+    if (!this.clock.timeline) {
+      // The parent can't render right now (it places the broken shot, say): open there once it can.
+      this.pendingFrameParam = String(frame);
+      this.pendingSelection = { layer: back.layerId, part: null, from: null, to: null };
+    } else {
+      if (this.shape?.layers.has(back.layerId)) {
+        this.layerId = back.layerId;
+        this.partId = null;
+        this.selectionChanged();
+      }
+      this.clock.seek(frame);
+    }
+    this.uiDirty = true;
+    this.syncUrl();
+    this.invalidate();
+    this.flushNow();
+    return null;
+  }
+
+  /** Shows why a button did nothing, in the selection bar. */
+  private say(problem: string | null): void {
+    if (!problem) return;
+    this.notice = problem;
+    this.uiDirty = true;
+    this.schedule();
   }
 
   private syncErrors(): void {
@@ -518,13 +663,18 @@ export class App {
         ? {
             title: `Scene "${missing.scene}" not found`,
             lines: [
-              `No scene in /scenes has the id or file name "${missing.scene}", so the viewer is showing ${this.entry ? `"${this.entry.key}"` : 'nothing'}. Scenes: ${known}.`,
+              `No scene has the id or file name "${missing.scene}", so the viewer is showing ${this.entry ? `"${this.entry.key}"` : 'nothing'}. Scenes: ${known}.`,
               'Pick a scene from the list, or add the scene file; the viewer opens it as soon as it exists.',
             ],
           }
         : null,
     );
     this.errors.set('library', lib.errors.length > 0 ? { title: 'Rigs failed to load; nothing can render', lines: lib.errors } : null);
+    const project = this.entry?.project != null ? lib.projects.find((p) => p.id === this.entry!.project) : undefined;
+    this.errors.set(
+      'project',
+      project && project.errors.length > 0 ? { title: `Project "${project.id}" has errors (${project.file})`, lines: project.errors } : null,
+    );
     if (lib.entries.length === 0) {
       this.errors.set('scene', {
         title: 'No scenes found',
@@ -629,7 +779,7 @@ export class App {
   /** The engine hit test on the frame on screen, with the one shared 1x1 probe. */
   private hit(x: number, y: number, options?: HitTestOptions): HitResult {
     const scene = this.validScene();
-    const registry = this.library.registry;
+    const registry = this.entry?.registry ?? null;
     if (!scene || !registry) {
       const why = this.errors.messages;
       throw new Error(`No valid scene to hit test.${why.length ? `\n${why.join('\n')}` : ''}`);
@@ -639,7 +789,7 @@ export class App {
       if (!ctx) throw new Error('This browser did not provide an OffscreenCanvas 2D context for hit testing.');
       this.probe = ctx;
     }
-    return hitTest(this.probe, scene, this.clock.frame, x, y, registry, options);
+    return hitTest(this.probe, scene, this.clock.frame, x, y, registry, { ...options, world: this.world() });
   }
 
   /** A client position in scene pixels, or null off the scene. */
@@ -693,6 +843,20 @@ export class App {
     }
     this.selectionPoint = this.layerId !== null && p ? { x: Math.round(p.x), y: Math.round(p.y) } : null;
     this.flushNow();
+  };
+
+  /** Double-clicking a shot on a scene that places shots opens it (ADR 0007). The top layer counts, whatever the clicks cycled to. */
+  private readonly onCanvasDoubleClick = (e: MouseEvent): void => {
+    if (e.button !== 0 || !this.validScene() || this.entry?.project === null) return;
+    const p = this.scenePoint({ x: e.clientX, y: e.clientY });
+    if (!p) return;
+    let top: string | null = null;
+    try {
+      top = this.hit(p.x, p.y).layerId;
+    } catch {
+      return;
+    }
+    if (top !== null && this.shots().some((s) => s.layerId === top)) this.openShot(top);
   };
 
   private readonly onStagePointerDown = (e: PointerEvent): void => {
@@ -811,7 +975,7 @@ export class App {
     const from = this.range?.from ?? 0;
     const to = this.range?.to ?? this.total;
     return {
-      sceneId: scene.id,
+      sceneId: this.entry!.key,
       ...(this.layerId !== null ? { layerId: this.layerId } : {}),
       ...(this.layerId !== null && this.partId !== null ? { partId: this.partId } : {}),
       from,
@@ -1003,7 +1167,7 @@ export class App {
     const sel = currentSelection(request);
     const entry = findEntry(this.library, sel.sceneId);
     if (!entry) {
-      this.notice = `Scene "${sel.sceneId}" is no longer in scenes/.`;
+      this.notice = `Scene "${sel.sceneId}" no longer exists.`;
       this.uiDirty = true;
       this.schedule();
       return;
@@ -1030,15 +1194,16 @@ export class App {
   private refreshSound(): void {
     const scene = this.validScene();
     const generators = this.library.generators;
-    if (!scene || !generators || !hasAudio(scene)) {
+    const world = this.entry?.world ?? {};
+    if (!scene || !generators || !hasAudio(scene, world)) {
       this.soundFor = null;
       this.soundStatus = 'none';
       this.sound.setBuffer(null);
       this.errors.set('audio', null);
       return;
     }
-    const key = audioKey(scene);
-    const used = generatorsUsed(scene, generators);
+    const key = audioKey(scene, world);
+    const used = generatorsUsed(scene, generators, world);
     // A scene or rig edit reloads the library, but the generator modules it didn't touch are the same objects.
     if (this.soundFor?.key === key && sameGenerators(this.soundFor.generators, used)) return;
     const request = { key, generators: used };
@@ -1049,7 +1214,7 @@ export class App {
       this.uiDirty = true;
       this.schedule();
     };
-    renderSceneAudio(scene, generators).then(
+    renderSceneAudio(scene, generators, world).then(
       (buffer) => {
         if (this.soundFor !== request) return;
         this.sound.setBuffer(buffer);
@@ -1061,7 +1226,7 @@ export class App {
         if (this.soundFor !== request) return;
         this.soundStatus = 'failed';
         const { message, stack } = errorText(err);
-        this.errors.set('audio', { title: `Audio failed to render for "${scene.id}"`, lines: [message], detail: stack });
+        this.errors.set('audio', { title: `Audio failed to render for "${this.entry?.key ?? scene.id}"`, lines: [message], detail: stack });
         settle();
       },
     );
@@ -1111,6 +1276,11 @@ export class App {
 
   // ---- rendering ----
 
+  /** What the scene on screen draws with beyond its file: its project's scenes and cast, and surfaces for compositing. */
+  private world(): World {
+    return { ...this.entry?.world, surfaces: this.surfaces };
+  }
+
   private invalidate(): void {
     this.canvasDirty = true;
     this.uiDirty = true;
@@ -1155,7 +1325,8 @@ export class App {
     const scene = this.validScene();
     this.overlay.update({
       scene,
-      registry: this.library.registry,
+      registry: this.entry?.registry ?? null,
+      world: this.world(),
       frame: this.clock.frame,
       version: this.version,
       fit: this.view.currentFit,
@@ -1168,19 +1339,20 @@ export class App {
   private drawNow(): DrawResult {
     this.canvasDirty = false;
     const scene = this.entry?.scene ?? null;
-    const registry = this.library.registry;
+    const registry = this.entry?.registry ?? null;
     if (!scene || !registry) {
       this.view.clear();
       return { kind: 'skipped', reason: 'no valid scene is loaded' };
     }
     const frame = this.clock.frame;
+    const world = this.world();
     try {
-      const drawn = this.view.draw((ctx) => render(ctx, scene, frame, registry));
+      const drawn = this.view.draw((ctx) => render(ctx, scene, frame, registry, world));
       this.errors.set('render', null);
       return drawn ? { kind: 'drawn' } : { kind: 'skipped', reason: 'the canvas has no size yet (stage not laid out)' };
     } catch (error) {
       const { message, stack } = errorText(error);
-      this.errors.set('render', { title: `Render failed at frame ${frame} of "${scene.id}"`, lines: [message], detail: stack });
+      this.errors.set('render', { title: `Render failed at frame ${frame} of "${this.entry?.key ?? scene.id}"`, lines: [message], detail: stack });
       if (this.clock.playing) {
         // Stop on the failing frame so the error stays readable.
         this.clock.pause();
@@ -1199,9 +1371,12 @@ export class App {
     const status = this.soundStatus === 'ready' && !this.sound.unlocked ? 'locked' : this.soundStatus;
     ui.sound = scene && status !== 'none' ? { status, muted: this.sound.isMuted } : null;
     ui.band = scene && this.range ? { range: this.range, frameCount: this.total } : null;
+    ui.shots = scene ? this.shotBands() : null;
+    ui.back = this.shotReturn ? { label: this.shotReturn.key.slice(this.shotReturn.key.indexOf('/') + 1), key: this.shotReturn.key } : null;
     ui.selection = {
-      sceneId: scene?.id ?? null,
+      sceneId: scene ? (this.entry?.key ?? null) : null,
       layer: layerLabel(this.layerId, this.partId),
+      shot: scene && this.layerId !== null ? (this.shots().find((s) => s.layerId === this.layerId)?.label ?? null) : null,
       range: scene ? this.range : null,
       rangeText: scene ? describeRange(this.range, scene.fps, this.total) : null,
       frameCount: this.total,
@@ -1220,6 +1395,22 @@ export class App {
       endTimecode: formatTimecode(this.total, scene.fps),
     };
     ui.fps = { scene: scene.fps, measured: this.clock.playing ? this.meter.fps(now) : null };
+  }
+
+  /** The shots for the scrubber, each in the lowest lane where it overlaps no other. Null without any. */
+  private shotBands(): { bands: ShotBand[]; lanes: number; frameCount: number } | null {
+    const shots = this.shots();
+    if (shots.length === 0) return null;
+    const laneEnds: number[] = [];
+    const bands = [...shots]
+      .sort((a, b) => a.span.from - b.span.from)
+      .map((s): ShotBand => {
+        let lane = laneEnds.findIndex((end) => end <= s.span.from);
+        if (lane < 0) lane = laneEnds.push(0) - 1;
+        laneEnds[lane] = s.span.to;
+        return { layerId: s.layerId, label: s.label, from: s.span.from, to: s.span.to, lane, selected: s.layerId === this.layerId };
+      });
+    return { bands, lanes: laneEnds.length, frameCount: this.total };
   }
 
   /** The frame the URL should carry. While a scene is invalid the clock keeps its frame, so the URL keeps it too. */
@@ -1277,7 +1468,7 @@ export class App {
         return app.clock.playing;
       },
       get scenes() {
-        return app.library.entries.map((e) => e.key);
+        return app.sceneOptions().map((o) => o.key);
       },
       get errors() {
         return app.errors.messages;
@@ -1304,7 +1495,7 @@ export class App {
           throw new Error(`No valid scene to render.${why.length ? `\n${why.join('\n')}` : ''}`);
         }
         if (!Number.isInteger(frame) || frame < 0 || frame >= app.total) {
-          throw new RangeError(`renderFrame: frame must be an integer in [0, ${app.total}) for scene "${scene.id}", got ${String(frame)}`);
+          throw new RangeError(`renderFrame: frame must be an integer in [0, ${app.total}) for scene "${app.entry?.key ?? scene.id}", got ${String(frame)}`);
         }
         app.pauseInternal();
         app.clock.seek(frame);
@@ -1332,9 +1523,10 @@ export class App {
         if (!scene) return null;
         const from = app.range?.from ?? 0;
         const to = app.range?.to ?? app.total;
-        if (app.layerId === null) return { sceneId: scene.id, from, to };
-        if (app.partId === null) return { sceneId: scene.id, layerId: app.layerId, from, to };
-        return { sceneId: scene.id, layerId: app.layerId, partId: app.partId, from, to };
+        const sceneId = app.entry!.key;
+        if (app.layerId === null) return { sceneId, from, to };
+        if (app.partId === null) return { sceneId, layerId: app.layerId, from, to };
+        return { sceneId, layerId: app.layerId, partId: app.partId, from, to };
       },
       get range() {
         return app.validScene() && app.range ? { from: app.range.from, to: app.range.to } : null;
@@ -1356,7 +1548,7 @@ export class App {
         } else {
           const parts = shape.layers.get(layerId);
           if (!parts) {
-            throw new Error(`Unknown layer "${layerId}" in scene "${scene.id}". Layers: ${[...shape.layers.keys()].join(', ')}`);
+            throw new Error(`Unknown layer "${layerId}" in scene "${app.entry?.key ?? scene.id}". Layers: ${[...shape.layers.keys()].join(', ')}`);
           }
           if (part !== null && !parts.includes(part)) {
             throw new Error(
@@ -1381,6 +1573,17 @@ export class App {
         app.userSetRange(null);
         app.flushNow();
       },
+      get shots() {
+        return app.shots().map((s) => ({ layerId: s.layerId, scene: s.key, from: s.span.from, to: s.span.to }));
+      },
+      openShot(layerId?: string): void {
+        const problem = app.openShot(layerId);
+        if (problem) throw new Error(problem);
+      },
+      back(): void {
+        const problem = app.back();
+        if (problem) throw new Error(problem);
+      },
     };
   }
 }
@@ -1402,3 +1605,4 @@ async function attempt(call: () => Promise<unknown>): Promise<string | null> {
     return errorText(err).message;
   }
 }
+
