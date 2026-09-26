@@ -16,6 +16,7 @@ import { flushSync, mount } from 'svelte';
 import { App, RESUME_KEY, type StudioApi } from './app';
 import Viewer from './components/Viewer.svelte';
 import { ViewerUi, type ViewerActions } from './ui.svelte';
+import { desktop } from './desktop';
 import { pair } from './pairing';
 import { loadLibrary, type LoadedLibrary } from './scenes';
 import { LIBRARY_EVENT } from '../studio/protocol';
@@ -93,6 +94,9 @@ const url = bootUrlState(readUrlState(location.search), takeReloadRecord(), navi
 // before the canvas measures it. The components only call actions once the
 // user acts, by which time the App has filled them in.
 const ui = new ViewerUi();
+ui.folder = { path: paired.folder, canSwitch: desktop() !== null };
+// The app's window has no title bar on macOS: the page leaves room for the window buttons and is dragged by its bars.
+if (desktop() && /Mac/.test(navigator.platform)) document.documentElement.classList.add('is-desktop-mac');
 const actions = {} as ViewerActions;
 mount(Viewer, { target: root, props: { ui, actions } });
 flushSync();

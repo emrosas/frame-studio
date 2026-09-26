@@ -1,9 +1,10 @@
 <!--
-  One thread (ADR 0006): each turn's ask, what the agent did (streamed text,
-  steps, the frames it rendered, approval cards) and how it ended, with
-  "Revert to here" on each finished turn. Below, what you can do now: stop a
-  working turn, reply, settle, try again. The files in .frame-studio/ are the
-  truth; this only shows them.
+  One thread (ADR 0006), in the agent panel: each turn's ask, what the agent
+  did (streamed text, steps, the frames it rendered, approval cards) and how
+  it ended, with "Revert to here" on each finished turn. It follows the newest
+  work while you're at the bottom. Below, what you can do now: stop a working
+  turn, reply, settle, try again. The files in .frame-studio/ are the truth;
+  this only shows them.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -21,13 +22,13 @@
   } from '../../studio/protocol';
   import { describeUsage, foldTurn } from '../transcript';
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
-  import AgentPicker from './AgentPicker.svelte';
-  import PromptBox from './PromptBox.svelte';
+  import Composer from './Composer.svelte';
+  import Icon from './Icon.svelte';
 
-  let { ui, actions, thread }: { ui: ViewerUi; actions: ViewerActions; thread: StudioRequest } = $props();
+  let { ui, actions, thread, onhide }: { ui: ViewerUi; actions: ViewerActions; thread: StudioRequest; onhide: () => void } = $props();
 
   const THREAD_LABELS: Record<string, string> = {
-    pending: 'waiting for the agent',
+    pending: 'waiting',
     working: 'working',
     your_turn: 'your turn',
     settled: 'settled',
@@ -77,6 +78,33 @@
       (!thread.turns[lastCounted].checkpointAt || canRevert(thread, lastCounted, ui.studio.requests)),
   );
 
+  // What a reply is about, by the App's rule: a layer or range picked on this thread's scene, else the newest
+  // turn's selection. Try again asks about the turn it reverts.
+  const replyTarget = $derived.by(() => {
+    const sel = ui.selection;
+    if (!retrying && sel.sceneId === thread.sceneId && (sel.layer !== '' || sel.range !== null)) {
+      const what = sel.layer === '' ? 'All layers' : sel.layer;
+      return `${what}${sel.range ? ` · ${sel.rangeText?.interval ?? ''}` : ''} · ${thread.sceneId}`;
+    }
+    const s = (retrying && lastCounted >= 0 ? thread.turns[lastCounted] : currentTurn(thread)).ask.selection;
+    return `${describeTarget(s)} · [${s.from}, ${s.to}) · ${thread.sceneId}`;
+  });
+
+  // Follow the newest work while scrolled to the bottom, including thumbnails that load late; leave it be once
+  // you scroll up to read.
+  let body = $state<HTMLElement | null>(null);
+  let list = $state<HTMLElement | null>(null);
+  let pinned = true;
+  $effect(() => {
+    if (!body || !list) return;
+    const box = body;
+    const follow = new ResizeObserver(() => {
+      if (pinned) box.scrollTop = box.scrollHeight;
+    });
+    follow.observe(list);
+    return () => follow.disconnect();
+  });
+
   const frameUrl = (turn: number, file: string) => `/__studio/requests/${thread.id}/turns/${turn}/frames/${encodeURIComponent(file)}`;
   const range = (t: Turn) => `[${t.ask.selection.from}, ${t.ask.selection.to})`;
   const settingsText = (s: TurnSettings | undefined) =>
@@ -104,129 +132,148 @@
 </script>
 
 <section class="thread" aria-label="Request {thread.id}">
-  <header class="thread-head">
-    <button type="button" class="back" aria-label="Back to requests" onclick={() => actions.openThread(null)}>←</button>
-    <span class="thread-title">#{thread.id} · {agentLabel}</span>
-    <span class="thread-status is-{shown}" role="status" aria-label="Request status">{THREAD_LABELS[shown]}</span>
+  <header class="panel-head">
+    <span class="panel-title">#{thread.id} <span class="sub">· {agentLabel}</span></span>
+    <span class="status-badge is-{shown}" role="status" aria-label="Request status"><span class="status-dot is-{shown}" aria-hidden="true"></span>{THREAD_LABELS[shown]}</span>
+    <div class="actions">
+      <button type="button" class="icon-btn" aria-label="New thread" title="New thread" onclick={() => actions.openThread(null)}><Icon name="plus" /></button>
+      <button type="button" class="icon-btn" aria-label="Hide agent panel" title="Hide agent panel" onclick={onhide}><Icon name="panel" /></button>
+    </div>
   </header>
 
-  <ol class="turns">
-    {#each thread.turns as turn, k (k)}
-      {@const transcript = foldTurn(ui.turnEvents[`${thread.id}:${k}`] ?? [])}
-      <li class="turn is-{turn.status}" aria-label="Turn {k + 1}">
-        <div class="ask">
-          <p class="ask-prompt">{turn.ask.prompt}</p>
-          <p class="ask-meta">
-            {describeTarget(turn.ask.selection)} · {range(turn)}{turn.attempt && turn.attempt > 1 ? ` · attempt ${turn.attempt}` : ''}{settingsText(turn.settings) ? ` · ${settingsText(turn.settings)}` : ''}
-          </p>
-          {#if turn.ask.references.length > 0}
-            <ul class="composer-refs" aria-label="Reference images">
-              {#each turn.ask.references.filter(isReferencePath) as ref (ref)}<li><img src="/{ref}" alt={ref} /></li>{/each}
-            </ul>
-          {/if}
-        </div>
-
-        <div class="work">
-          {#each transcript.items as item, i (i)}
-            {#if item.kind === 'text'}
-              <p class="work-text">{item.text}</p>
-            {:else if item.kind === 'step'}
-              <p class="work-step is-{item.status}" title={item.detail ?? ''}>{item.label}</p>
-            {:else if item.kind === 'frames'}
-              <div class="work-frames">
-                {#each item.frames as f (f.file)}
-                  <button type="button" class="thumb" title="Show frame {f.frame}" onclick={() => actions.showFrame(thread.id, f.frame)}>
-                    <img src={frameUrl(k, f.file)} alt="Frame {f.frame}" />
-                    <span>{f.frame}</span>
-                  </button>
-                {/each}
-              </div>
-            {:else if item.kind === 'approval'}
-              <div class="approval" class:is-open={item.decision === null} role="group" aria-label="Approval: {item.summary}">
-                <p class="approval-summary">{item.summary}</p>
-                {#if item.detail}<p class="approval-detail">{item.detail}</p>{/if}
-                {#if item.decision === null && (turn.status === 'working' || turn.status === 'pending')}
-                  <div class="composer-row">
-                    <button type="button" disabled={busy} onclick={() => run(() => actions.respond(thread.id, item.id, 'decline'))}>Decline</button>
-                    <button type="button" class="send" disabled={busy} onclick={() => run(() => actions.respond(thread.id, item.id, 'accept'))}>Allow</button>
-                  </div>
-                {:else}
-                  <p class="approval-answer">{item.decision === 'accept' ? 'Allowed' : item.decision === 'decline' ? 'Declined' : 'Not answered before the turn ended'}</p>
-                {/if}
-              </div>
-            {:else}
-              <p class="work-note" class:is-error={item.error}>{item.text}</p>
+  <div class="panel-body" bind:this={body} onscroll={() => body && (pinned = body.scrollHeight - body.scrollTop - body.clientHeight < 60)}>
+    <ol class="turns" bind:this={list}>
+      {#each thread.turns as turn, k (k)}
+        {@const transcript = foldTurn(ui.turnEvents[`${thread.id}:${k}`] ?? [])}
+        <li class="turn is-{turn.status}" aria-label="Turn {k + 1}">
+          <div class="ask">
+            <p class="ask-prompt">{turn.ask.prompt}</p>
+            {#if turn.ask.references.length > 0}
+              <ul class="composer-refs" aria-label="Reference images">
+                {#each turn.ask.references.filter(isReferencePath) as ref (ref)}<li><img src="/{ref}" alt={ref} /></li>{/each}
+              </ul>
             {/if}
-          {/each}
-        </div>
+            <p class="ask-meta">
+              {describeTarget(turn.ask.selection)} · {range(turn)}{turn.attempt && turn.attempt > 1 ? ` · attempt ${turn.attempt}` : ''}{settingsText(turn.settings) ? ` · ${settingsText(turn.settings)}` : ''}
+            </p>
+          </div>
 
-        <footer class="turn-foot">
-          <span class="turn-status">{TURN_LABELS[turn.status]}</span>
-          {#if external && turn.summary}<span class="turn-summary">{turn.summary}</span>{/if}
-          {#if !external && turn.summary && transcript.items.length === 0}<span class="turn-summary">{turn.summary}</span>{/if}
-          {#if transcript.usage}<span class="turn-usage">{describeUsage(transcript.usage)}</span>{/if}
-          {#if turn.checkpointAt && canRevert(thread, k, ui.studio.requests)}
-            <button type="button" aria-label="Revert to before turn {k + 1}" onclick={() => run(() => actions.revert(thread.id, k))}>Revert to here</button>
-          {/if}
-        </footer>
-      </li>
-    {/each}
-  </ol>
+          <div class="work">
+            {#each transcript.items as item, i (i)}
+              {#if item.kind === 'text'}
+                <p class="work-text">{item.text}</p>
+              {:else if item.kind === 'step'}
+                <p class="work-step is-{item.status}" title={item.detail ?? ''}>{item.label}</p>
+              {:else if item.kind === 'frames'}
+                <div class="work-frames">
+                  {#each item.frames as f (f.file)}
+                    <button type="button" class="thumb" title="Show frame {f.frame}" onclick={() => actions.showFrame(thread.id, f.frame)}>
+                      <img src={frameUrl(k, f.file)} alt="Frame {f.frame}" />
+                      <span>{f.frame}</span>
+                    </button>
+                  {/each}
+                </div>
+              {:else if item.kind === 'approval'}
+                <div class="approval" class:is-open={item.decision === null} role="group" aria-label="Approval: {item.summary}">
+                  <p class="approval-summary">{item.summary}</p>
+                  {#if item.detail}<p class="approval-detail">{item.detail}</p>{/if}
+                  {#if item.decision === null && (turn.status === 'working' || turn.status === 'pending')}
+                    <div class="row">
+                      <button type="button" class="btn is-small" disabled={busy} onclick={() => run(() => actions.respond(thread.id, item.id, 'decline'))}>Decline</button>
+                      <button type="button" class="btn is-primary is-small" disabled={busy} onclick={() => run(() => actions.respond(thread.id, item.id, 'accept'))}>Allow</button>
+                    </div>
+                  {:else}
+                    <p class="approval-answer">{item.decision === 'accept' ? 'Allowed' : item.decision === 'decline' ? 'Declined' : 'Not answered before the turn ended'}</p>
+                  {/if}
+                </div>
+              {:else}
+                <p class="work-note" class:is-error={item.error}>{item.text}</p>
+              {/if}
+            {/each}
+          </div>
 
-  <footer class="thread-actions">
-    {#if problem}<p class="studio-note is-error" role="status">{problem}</p>{/if}
-    {#if thread.status === 'working'}
-      {#if external}
-        {#if shown === 'stalled'}<button type="button" onclick={() => run(() => actions.requestAction(thread.id, 'requeue'))}>Requeue</button>{/if}
-        <button type="button" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>
-      {:else}
-        <button type="button" class="stop" onclick={async () => (stopFailed = !(await run(() => actions.requestAction(thread.id, 'stop'))))}>Stop</button>
-        <!-- Stop works only on a turn this studio server runs; Cancel ends the turn whoever has it. -->
-        {#if stopFailed}<button type="button" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>{/if}
+          <footer class="turn-foot">
+            <span class="turn-status">{TURN_LABELS[turn.status]}</span>
+            {#if transcript.usage}<span class="turn-usage">{describeUsage(transcript.usage)}</span>{/if}
+            {#if turn.checkpointAt && canRevert(thread, k, ui.studio.requests)}
+              <button type="button" class="btn is-ghost is-small" aria-label="Revert to before turn {k + 1}" title="Put the scene back as it was before this turn" onclick={() => run(() => actions.revert(thread.id, k))}>
+                <Icon name="revert" size={13} />Revert to here
+              </button>
+            {/if}
+            {#if external && turn.summary}<span class="turn-summary">{turn.summary}</span>{/if}
+            {#if !external && turn.summary && transcript.items.length === 0}<span class="turn-summary">{turn.summary}</span>{/if}
+          </footer>
+        </li>
+      {/each}
+    </ol>
+  </div>
+
+  <footer class="panel-foot">
+    {#if problem}<p class="panel-note is-error" role="status">{problem}</p>{/if}
+    {#if thread.status === 'pending' && !agentReady}
+      <p class="panel-note" role="status">{agentLabel} isn't ready, so this waits. Pick it in a new thread to see why.</p>
+    {/if}
+    <div class="thread-actions">
+      {#if thread.status === 'working'}
+        {#if external}
+          {#if shown === 'stalled'}<button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'requeue'))}>Requeue</button>{/if}
+          <button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>
+        {:else}
+          <button type="button" class="btn is-small is-danger" onclick={async () => (stopFailed = !(await run(() => actions.requestAction(thread.id, 'stop'))))}>
+            <Icon name="stop" size={12} />Stop
+          </button>
+          <!-- Stop works only on a turn this studio server runs; Cancel ends the turn whoever has it. -->
+          {#if stopFailed}<button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>{/if}
+        {/if}
+      {:else if thread.status === 'pending'}
+        <button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>
+        {#if external}
+          <button type="button" class="btn is-small" onclick={() => navigator.clipboard.writeText(clipboardLine(thread)).catch(() => {})}>Copy line for your agent</button>
+        {/if}
       {/if}
-    {:else if thread.status === 'pending'}
-      {#if !agentReady}<p class="studio-note" role="status">{agentLabel} isn't ready, so this waits. Pick it in a new request to see why.</p>{/if}
-      <button type="button" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>
-      {#if external}
-        <button type="button" onclick={() => navigator.clipboard.writeText(clipboardLine(thread)).catch(() => {})}>Copy line for your agent</button>
+      {#if canReply}
+        {#if thread.status === 'your_turn'}
+          <button type="button" class="btn is-small" title="It's right: close the thread" onclick={() => run(() => actions.requestAction(thread.id, 'settle'))}>
+            <Icon name="check" size={13} />Settle
+          </button>
+        {/if}
+        {#if canRetry && !retrying}
+          <button
+            type="button"
+            class="btn is-small"
+            title="Revert the last turn and ask again"
+            onclick={() => {
+              retrying = true;
+              reply = thread.turns[lastCounted].ask.prompt;
+            }}><Icon name="retry" size={13} />Try again</button
+          >
+        {/if}
+        {#if retrying}<button type="button" class="btn is-small" onclick={() => ((retrying = false), (reply = ''))}>Cancel</button>{/if}
+        {#if canRevertAll}
+          <button type="button" class="btn is-small" onclick={() => run(() => actions.revert(thread.id))}><Icon name="revert" size={13} />Revert all</button>
+        {/if}
       {/if}
+    </div>
+    {#if retrying}
+      <p class="panel-note" role="status">Sending reverts turn {lastCounted + 1}, then asks again with this prompt.</p>
     {/if}
     {#if canReply}
-      <PromptBox
+      <Composer
         bind:value={reply}
         bind:files
+        bind:settings
+        agent={thread.agent}
+        agents={ui.studio.agents}
+        fixed
         label={retrying ? 'Prompt for the next attempt' : 'Reply'}
-        placeholder={thread.status === 'settled' ? 'Reply to reopen this request' : 'Reply, e.g. a bit smaller'}
-        rows={2}
+        placeholder={thread.status === 'settled' ? 'Reply to reopen this thread' : 'Reply, e.g. a bit smaller'}
+        target={replyTarget}
+        sendLabel={retrying ? 'Revert and try again' : 'Reply'}
+        canSend={reply.trim() !== '' && !busy}
         onsubmit={send}
         onproblem={(text) => (problem = text)}
+        onrefresh={() => actions.refreshAgents()}
       />
-      {#if !external}
-        <AgentPicker agents={ui.studio.agents} agent={thread.agent} bind:settings fixed onrefresh={() => actions.refreshAgents()} />
-      {/if}
-      <div class="composer-row">
-        <div class="thread-buttons">
-          {#if thread.status === 'your_turn'}
-            <button type="button" onclick={() => run(() => actions.requestAction(thread.id, 'settle'))}>Settle</button>
-          {/if}
-          {#if canRetry && !retrying}
-            <button
-              type="button"
-              onclick={() => {
-                retrying = true;
-                reply = thread.turns[lastCounted].ask.prompt;
-              }}>Try again</button
-            >
-          {/if}
-          {#if retrying}<button type="button" onclick={() => ((retrying = false), (reply = ''))}>Cancel</button>{/if}
-          {#if canRevertAll}
-            <button type="button" onclick={() => run(() => actions.revert(thread.id))}>Revert all</button>
-          {/if}
-        </div>
-        <button type="button" class="send" disabled={!reply.trim() || busy} onclick={send}>
-          {retrying ? 'Revert and try again' : 'Reply'}
-        </button>
-      </div>
     {/if}
   </footer>
 </section>

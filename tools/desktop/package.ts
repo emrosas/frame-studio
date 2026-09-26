@@ -1,6 +1,7 @@
 // npm run desktop:build: builds Frame Studio.app and a DMG for macOS arm64
 // (ADR 0008), unsigned, into build/desktop/dist/. Then checks it
-// (tools/desktop/check.ts).
+// (tools/desktop/check.ts). With --release it also builds the zip the
+// updater downloads (ADR 0009); npm run desktop:release passes it.
 //
 // The stage, build/desktop/:
 // - app/: what goes in app.asar. The main process bundled into main.mjs with
@@ -19,6 +20,7 @@ import { join } from 'node:path';
 import { build as electronBuild } from 'electron-builder';
 import { rolldown } from 'rolldown';
 import { REPO } from '../studio/folder.ts';
+import { writeIcon } from './icon.ts';
 
 const STAGE = join(REPO, 'build/desktop');
 const APP = join(STAGE, 'app');
@@ -49,6 +51,9 @@ if (vite.status !== 0) process.exit(vite.status ?? 1);
 await rm(STAGE, { recursive: true, force: true });
 await mkdir(join(APP, 'desktop'), { recursive: true });
 await mkdir(join(RES, 'server/node_modules/@rolldown'), { recursive: true });
+
+step('icon');
+const icon = await writeIcon(STAGE);
 
 step('main process');
 await bundle(join(REPO, 'desktop/main.ts'), join(APP, 'main.mjs'), ['electron']);
@@ -92,9 +97,11 @@ ELECTRON_RUN_AS_NODE=1 exec "$CONTENTS/MacOS/Frame Studio" "$CONTENTS/Resources/
 await chmod(mcp, 0o755);
 
 step('electron-builder');
+// A release adds the zip the updater downloads. Its name, and the DMG's, are the ones the release feed lists.
+const macTargets: ('dir' | 'dmg' | 'zip')[] = process.argv.includes('--release') ? ['dir', 'dmg', 'zip'] : ['dir', 'dmg'];
 await electronBuild({
   targets: undefined,
-  mac: ['dir', 'dmg'],
+  mac: macTargets,
   arm64: true,
   publish: 'never',
   config: {
@@ -111,8 +118,15 @@ await electronBuild({
     npmRebuild: false,
     nodeGypRebuild: false,
     electronLanguages: ['en'],
-    mac: { category: 'public.app-category.graphics-design', identity: null, hardenedRuntime: false, target: ['dir', 'dmg'] },
-    dmg: { title: 'Frame Studio' },
+    mac: {
+      category: 'public.app-category.graphics-design',
+      identity: null,
+      hardenedRuntime: false,
+      target: macTargets,
+      icon: icon.icns ?? icon.png,
+      artifactName: 'Frame-Studio-${version}-${arch}-mac.${ext}',
+    },
+    dmg: { title: 'Frame Studio', artifactName: 'Frame-Studio-${version}-${arch}.${ext}' },
   },
 });
 

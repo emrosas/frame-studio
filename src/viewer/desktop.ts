@@ -2,6 +2,31 @@
 // The viewer stays web-only code, so everything here is optional; in a
 // browser tab there is no bridge.
 
+/** What the app knows about updates (ADR 0009). `notes` is the release page's URL. */
+export type UpdateState =
+  // Nothing known, or up to date.
+  | { status: 'idle' }
+  | { status: 'checking' }
+  | { status: 'available'; version: string; notes: string }
+  // `done` and `total` in bytes.
+  | { status: 'downloading'; version: string; notes: string; done: number; total: number }
+  | { status: 'restarting'; version: string }
+  // `manual`: the app can't update itself where it is, so offer the release page instead.
+  | { status: 'error'; message: string; version?: string; notes?: string; manual?: boolean };
+
+/** Updates, in the installed app only (ADR 0009). */
+export interface DesktopUpdates {
+  state(): Promise<UpdateState>;
+  /** Calls `cb` on every change. Returns a function that stops it. */
+  onChange(cb: (state: UpdateState) => void): () => void;
+  /** Checks for a newer version now, and returns what it found. */
+  check(): Promise<UpdateState>;
+  /** Downloads the newer version, replaces the app and restarts it. Progress and failures arrive as states. */
+  install(): Promise<void>;
+  /** Opens the release page of the version on offer. */
+  openNotes(): Promise<void>;
+}
+
 export interface DesktopBridge {
   /** The studio server's pairing token, handed over once. */
   readonly token: string;
@@ -9,6 +34,8 @@ export interface DesktopBridge {
   reveal(path: string): Promise<void>;
   /** Opens a studio folder picker, then switches the app to the folder chosen. */
   openFolder(): Promise<void>;
+  /** Missing when the app can't update, such as when it runs from the repo. */
+  readonly updates?: DesktopUpdates;
 }
 
 declare global {

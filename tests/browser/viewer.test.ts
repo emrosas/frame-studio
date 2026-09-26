@@ -40,6 +40,9 @@ const readout = (page: Page) => page.getByRole('status', { name: 'Frame number' 
 const timecode = (page: Page) => page.getByRole('status', { name: 'Timecode' }).textContent();
 const layer = (page: Page) => page.getByRole('status', { name: 'Selected layer' }).textContent();
 const range = (page: Page) => page.getByRole('status', { name: 'Frame range' }).textContent();
+const sidebar = (page: Page) => page.getByRole('navigation', { name: 'Studio' });
+/** The scene the sidebar marks as the one on screen. */
+const currentScene = (page: Page) => sidebar(page).locator('[aria-current="page"]').getAttribute('data-key');
 
 /** Viewport position of scene pixel (x, y) on the canvas. */
 async function scenePoint(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
@@ -58,7 +61,7 @@ describe('the viewer', () => {
     const page = await open('?scene=shapes-test&frame=12');
     await expect.poll(() => readout(page)).toBe('frame 12 of 72');
     await expect.poll(() => timecode(page)).toBe('00:01:00 / 00:06:00');
-    expect(await page.getByRole('combobox', { name: 'Scene' }).inputValue()).toBe('shapes-test');
+    expect(await currentScene(page)).toBe('shapes-test');
     expect(await page.title()).toBe('shapes-test · Frame Studio');
     await page.close();
   });
@@ -91,11 +94,11 @@ describe('the viewer', () => {
     await page.close();
   });
 
-  it('seeks with the scrubber and switches scenes with the picker', async () => {
+  it('seeks with the scrubber and switches scenes from the sidebar', async () => {
     const page = await open('?scene=shapes-test&frame=0');
     await page.getByRole('slider', { name: 'Frame' }).fill('30');
     await expect.poll(() => readout(page)).toBe('frame 30 of 72');
-    await page.getByRole('combobox', { name: 'Scene' }).selectOption('hello');
+    await sidebar(page).getByRole('button', { name: 'hello', exact: true }).click();
     await expect.poll(() => readout(page)).toBe('frame 0 of 72');
     expect(await page.getByRole('status', { name: 'Frame rate' }).textContent()).toMatch(/^24 fps/);
     await expect.poll(() => page.url()).toContain('scene=hello');
@@ -114,7 +117,7 @@ describe('the viewer', () => {
     await expect.poll(() => layer(page)).toMatch(/^bruno › \w+/);
     await page.mouse.move(5, 5);
     await page.keyboard.press('Escape');
-    await expect.poll(() => layer(page)).toBe('none');
+    await expect.poll(() => layer(page)).toBe('No layer');
     await page.close();
   });
 
@@ -218,15 +221,15 @@ describe('projects (ADR 0007)', () => {
   const shots = (page: Page) => page.evaluate(() => (window as unknown as { studio: { shots: Shots } }).studio.shots);
   const url = (page: Page) => new URL(page.url()).searchParams;
 
-  it('lists projects in the picker under their names, and opens a project scene by its qualified id', async () => {
+  it('lists projects in the sidebar under their names, and opens a project scene by its qualified id', async () => {
     const page = await open(`?scene=${encodeURIComponent('bears-story/pip')}&frame=12`);
     await expect.poll(() => readout(page)).toBe('frame 12 of 48');
-    const picker = page.getByRole('combobox', { name: 'Scene' });
-    expect(await picker.inputValue()).toBe('bears-story/pip');
-    expect(await picker.locator('optgroup').getAttribute('label')).toBe("Bears' story");
-    expect(await picker.locator('optgroup option').allTextContents()).toEqual(['film (main)', 'meet', 'pip', 'together']);
-    // Loose scenes stay outside the group.
-    expect(await picker.locator(':scope > option', { hasText: 'bear-test' }).count()).toBe(1);
+    expect(await currentScene(page)).toBe('bears-story/pip');
+    const project = sidebar(page).getByRole('group', { name: "Bears' story" });
+    expect(await project.getByRole('listitem').getByRole('button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['film', 'meet', 'pip', 'together']);
+    expect(await project.getByRole('button', { name: 'film', exact: true }).textContent()).toContain('main');
+    // Loose scenes stay outside the project.
+    expect(await sidebar(page).getByRole('region', { name: 'Scenes' }).getByRole('button', { name: 'bear-test', exact: true }).count()).toBe(1);
     expect(await page.title()).toBe('bears-story/pip · Frame Studio');
     await page.close();
   });

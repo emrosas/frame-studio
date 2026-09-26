@@ -138,7 +138,7 @@ async function expectText(locator: ReturnType<Page['locator']>, text: string, ti
   await expect.poll(async () => (await locator.count()) > 0 && ((await locator.first().textContent()) ?? ''), { timeout }).toContain(text);
 }
 
-const panel = () => page.getByRole('complementary', { name: 'Requests' });
+const panel = () => page.getByRole('complementary', { name: 'Agent' });
 const thread = () => panel().getByRole('region', { name: /^Request \d+$/ });
 const turn = (n: number) => thread().getByRole('listitem', { name: `Turn ${n}` });
 const threadStatus = () => thread().getByRole('status', { name: 'Request status' });
@@ -147,7 +147,7 @@ const studioCall = (fn: string, ...args: unknown[]) =>
 
 /** Starts a thread with the test agent from the viewer, about `layer` over [from, to). */
 async function send(prompt: string, options: { full?: boolean; layer?: string; from?: number; to?: number } = {}): Promise<void> {
-  if (await thread().count()) await thread().getByRole('button', { name: 'Back to requests' }).click();
+  if (await thread().count()) await thread().getByRole('button', { name: 'New thread' }).click();
   await studioCall('select', options.layer ?? 'ball');
   await studioCall('setRange', options.from ?? 12, options.to ?? 24);
   await panel().getByRole('combobox', { name: 'Agent' }).selectOption('fake');

@@ -3,6 +3,7 @@
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
 import type { AgentId, AgentStatus, ApprovalDecision, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
+import type { UpdateState } from './desktop';
 import type { FrameRange, RangeText } from './selection';
 import type { RequestAction } from './studio-client';
 
@@ -17,6 +18,19 @@ export interface SceneOption {
   group: string | null;
   /** The project's main scene. */
   main: boolean;
+}
+
+/** The scene on screen, for the header: its name in its project, and its format. */
+export interface SceneHeader {
+  key: string;
+  /** The scene's name without its project, e.g. "film". */
+  name: string;
+  /** The project's name, or null for a loose scene. */
+  project: string | null;
+  size: readonly [number, number] | null;
+  fps: number | null;
+  /** Length in frames; 0 for an invalid scene. */
+  frames: number;
 }
 
 /** A shot on the scrubber: a scene layer's span in the scene on screen (ADR 0007). */
@@ -135,18 +149,24 @@ export interface ViewerActions {
   /** Asks the studio server again which agents are ready. */
   refreshAgents(): void;
   dismissToast(): void;
+  /** Switches the app to another studio folder (the app only). */
+  openFolder(): void;
+  /** Downloads and installs the update on offer, then restarts (the app only). */
+  installUpdate(): void;
+  /** Checks for an update now (the app only). */
+  checkForUpdate(): void;
+  /** Opens the update's release notes (the app only). */
+  openUpdateNotes(): void;
 }
 
 export interface StudioState {
-  /** False without a studio server (a static build); the panel says so. */
-  available: boolean;
   requests: StudioRequest[];
   /** Updated every 30 s so stalled requests show up. */
   now: number;
   error: string | null;
   /** The external agent and the agents the studio runs, as the picker offers them. */
   agents: AgentStatus[];
-  /** The thread open in the panel, or null for the list. */
+  /** The thread open in the agent panel, or null for a new thread. */
   open: number | null;
 }
 
@@ -154,6 +174,19 @@ export interface Toast {
   id: number;
   status: 'done' | 'failed' | 'interrupted';
   text: string;
+}
+
+/** Where the layout is saved between visits. */
+export const LAYOUT_KEY = 'frame-studio:layout';
+
+function savedLayout(): { sidebar: boolean; panel: boolean } {
+  try {
+    const saved = JSON.parse(localStorage.getItem(LAYOUT_KEY) ?? '{}') as { sidebar?: unknown; panel?: unknown };
+    return { sidebar: saved.sidebar !== false, panel: saved.panel !== false };
+  } catch {
+    // storage unavailable or unreadable; both columns show
+    return { sidebar: true, panel: true };
+  }
 }
 
 export class ViewerUi {
@@ -165,6 +198,12 @@ export class ViewerUi {
   sound = $state<SoundState | null>(null);
   scenes = $state<SceneOption[]>([]);
   selectedScene = $state<string | null>(null);
+  /** The scene on screen, for the header. */
+  header = $state<SceneHeader | null>(null);
+  /** The studio folder: its path, and whether the app can switch it. */
+  folder = $state<{ path: string; canSwitch: boolean } | null>(null);
+  /** The app's update, when it has one to offer or is installing it; null in a browser. */
+  update = $state<UpdateState | null>(null);
   /** The frame range band on the scrubber. */
   band = $state<{ range: FrameRange; frameCount: number } | null>(null);
   /** Shot bands under the scrubber, on a scene that places shots. */
@@ -174,7 +213,12 @@ export class ViewerUi {
   exporting = $state<ExportState>({ open: false, running: null, result: null, canReveal: false });
   selection = $state<SelectionState>({ sceneId: null, layer: '', shot: null, range: null, rangeText: null, frameCount: 0, notice: null });
   errors = $state<ErrorBlock[]>([]);
-  studio = $state<StudioState>({ available: false, requests: [], now: Date.now(), error: null, agents: [], open: null });
+  studio = $state<StudioState>({ requests: [], now: Date.now(), error: null, agents: [], open: null });
+  /**
+   * Which side columns show, as last left (Viewer.svelte saves it). The App reads it, so a thread that ends while
+   * the agent panel is hidden still gets its notice.
+   */
+  layout = $state(savedLayout());
   /**
    * Each turn's events so far, keyed "id:turn": pushed ones for every thread, and saved ones for threads
    * opened. Raw, and replaced rather than changed, since a long turn has thousands of events.

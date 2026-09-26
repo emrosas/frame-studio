@@ -1,12 +1,12 @@
 <!--
-  The control bar under the stage: play/pause, sound on/off for scenes with
-  audio, the scrubber with the frame range band and, on a scene that places
-  shots, a band per shot (click selects it, double-click opens it), timecode,
-  frame and fps readouts, the scene picker grouped by project, the link back
-  from an opened shot, and the shortcut hint.
+  The transport under the stage: play/pause, sound on/off for scenes with
+  audio, timecode, the scrubber with the frame range band and, on a scene that
+  places shots, a band per shot (click selects it, double-click opens it), and
+  the frame readout.
 -->
 <script lang="ts">
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
+  import Icon from './Icon.svelte';
 
   let { ui, actions }: { ui: ViewerUi; actions: ViewerActions } = $props();
 
@@ -30,21 +30,7 @@
     return `--in: ${start}; --out: ${stop}; --lane: ${lane}`;
   }
 
-  // Loose scenes first, then each project's under its name. The App orders them, so groups are runs of one project.
-  const sceneGroups = $derived.by(() => {
-    const groups: { project: string | null; name: string | null; options: typeof ui.scenes }[] = [];
-    for (const option of ui.scenes) {
-      const last = groups.at(-1);
-      if (last && last.project === option.project) last.options.push(option);
-      else groups.push({ project: option.project, name: option.group, options: [option] });
-    }
-    return groups;
-  });
-
-  /**
-   * The band clicked last, so a double-click opens it even when the first click moved the bands (the
-   * selection bar can grow a line when it fills in, and the controls shift up with it).
-   */
+  /** The band clicked last, so a double-click opens it even if the first click moved the bands under the pointer. */
   let lastBand: { layerId: string; at: number } | null = null;
   function openBand(e: MouseEvent): void {
     const target = (e.target as HTMLElement).closest<HTMLElement>('[data-layer]');
@@ -81,7 +67,7 @@
   }
 </script>
 
-<div class="controls-row transport" class:has-shots={ui.shots !== null} style={ui.shots ? `--lanes: ${ui.shots.lanes}` : ''}>
+<div class="transport" class:has-shots={ui.shots !== null} style={ui.shots ? `--lanes: ${ui.shots.lanes}` : ''}>
   <button
     type="button"
     class="play-button"
@@ -91,16 +77,12 @@
     disabled={!ui.canPlay}
     onclick={() => actions.togglePlay()}
   >
-    {#if ui.playing}
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 2.5h3v11h-3zM9.5 2.5h3v11h-3z" /></svg>
-    {:else}
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z" /></svg>
-    {/if}
+    <Icon name={ui.playing ? 'pause' : 'play'} size={14} />
   </button>
   {#if ui.sound}
     <button
       type="button"
-      class="play-button sound-button"
+      class="icon-btn sound-button"
       class:is-waiting={ui.sound.status !== 'ready'}
       aria-keyshortcuts="M"
       aria-label={soundLabel}
@@ -108,14 +90,7 @@
       title={soundTitle}
       onclick={() => actions.toggleMute()}
     >
-      <svg viewBox="0 0 16 16" aria-hidden="true">
-        <path d="M2 6h2.5L8 3v10L4.5 10H2z" />
-        {#if ui.sound.muted}
-          <path d="M10.2 5.6l1 -1 1.8 1.8 1.8 -1.8 1 1 -1.8 1.8 1.8 1.8 -1 1 -1.8 -1.8 -1.8 1.8 -1 -1 1.8 -1.8z" />
-        {:else}
-          <path d="M10 5.2a3.5 3.5 0 0 1 0 5.6l-.8 -1a2.2 2.2 0 0 0 0 -3.6zM11.8 3a6.3 6.3 0 0 1 0 10l-.8 -1a5 5 0 0 0 0 -8z" />
-        {/if}
-      </svg>
+      <Icon name={ui.sound.muted ? 'mute' : 'volume'} />
     </button>
   {/if}
   <output class="timecode" aria-label="Timecode">
@@ -167,51 +142,4 @@
   <output class="frame-readout" aria-label="Frame number">
     {ui.timeline ? `frame ${ui.timeline.frame} of ${ui.timeline.frameCount}` : 'frame -'}
   </output>
-</div>
-
-<div class="controls-row info">
-  {#if ui.back}
-    <button type="button" class="back-link" aria-label="Back to {ui.back.key}" title="Back to {ui.back.key} at the matching frame" onclick={() => actions.back()}>
-      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10.5 3 5.5 8l5 5 1-1-4-4 4-4z" /></svg>
-      {ui.back.label}
-    </button>
-  {/if}
-  <label class="scene-picker">
-    <span class="label">Scene</span>
-    <select
-      class="scene-select"
-      disabled={ui.scenes.length === 0}
-      value={ui.selectedScene ?? ''}
-      onchange={(e) => {
-        actions.selectScene(e.currentTarget.value);
-        // Hand focus back so Space and the arrow keys drive playback again.
-        e.currentTarget.blur();
-      }}
-    >
-      {#snippet sceneOption(option: (typeof ui.scenes)[number])}
-        <option value={option.key} title={option.file}>{option.invalid ? `${option.label} (invalid)` : option.label}</option>
-      {/snippet}
-      {#each sceneGroups as group (group.project ?? '')}
-        {#if group.name === null}
-          {#each group.options as option (option.key)}{@render sceneOption(option)}{/each}
-        {:else}
-          <optgroup label={group.name}>
-            {#each group.options as option (option.key)}{@render sceneOption(option)}{/each}
-          </optgroup>
-        {/if}
-      {/each}
-    </select>
-  </label>
-  <button type="button" class="export-button" aria-expanded={ui.exporting.open} onclick={() => actions.toggleExport()}>
-    Export
-  </button>
-  <output class="fps-readout" aria-label="Frame rate">
-    {ui.fps ? `${ui.fps.scene} fps · playback ${ui.fps.measured === null ? '–' : ui.fps.measured.toFixed(1)}` : ''}
-  </output>
-  <span class="spacer"></span>
-  <div class="hint">
-    <kbd>Space</kbd> play/pause <span class="sep">·</span> <kbd>←</kbd><kbd>→</kbd> frame <span class="sep">·</span>
-    <kbd>Shift</kbd>+<kbd>←</kbd><kbd>→</kbd> 1 s <span class="sep">·</span> <kbd>Home</kbd><kbd>End</kbd>
-    {#if ui.sound}<span class="sep">·</span> <kbd>M</kbd> sound{/if}
-  </div>
 </div>

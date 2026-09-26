@@ -1,12 +1,14 @@
 <!--
-  The selection bar: what is picked (scene, layer › part, frame range), fields
-  to type the range, and buttons to clear either half. A field shows the
-  current range unless you are typing in it or it holds rejected text. Enter
-  applies, Esc reverts, and leaving the field applies.
+  The selection, under the transport: the layer picked on the canvas (layer ›
+  part) and the frame range, with fields to type the range and buttons to
+  clear either half; Open shot for a selected shot. A field shows the current
+  range unless you are typing in it or it holds rejected text. Enter applies,
+  Esc reverts, and leaving the field applies.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
+  import Icon from './Icon.svelte';
 
   type End = 'from' | 'to';
   let { ui, actions }: { ui: ViewerUi; actions: ViewerActions } = $props();
@@ -72,41 +74,24 @@
   ];
 </script>
 
-{#snippet clearIcon()}
-  <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.2 3.1 8 6.9l3.8-3.8 1.1 1.1L9.1 8l3.8 3.8-1.1 1.1L8 9.1l-3.8 3.8-1.1-1.1L6.9 8 3.1 4.2z" /></svg>
-{/snippet}
-
-<div class="controls-row selection-bar" class:is-disabled={!enabled} role="group" aria-label="Selection">
-  <span class="sel-group">
-    <span class="label">Scene</span>
-    <output class="sel-value sel-scene">{sel.sceneId ?? '-'}</output>
-  </span>
-  <span class="sel-group">
-    <span class="label">Layer</span>
-    <output class="sel-value sel-layer" class:is-empty={sel.layer === ''} aria-label="Selected layer">{sel.layer === '' ? 'none' : sel.layer}</output>
-    <button type="button" class="sel-clear" aria-label="Clear layer (Esc)" title="Clear layer (Esc)" disabled={sel.layer === ''} onclick={(e) => clear(actions.clearLayer, e)}>
-      {@render clearIcon()}
+<div class="selection-bar" class:is-disabled={!enabled} role="group" aria-label="Selection">
+  <span class="chip is-layer" class:is-set={sel.layer !== ''} title={sel.layer || 'Click the canvas to select a layer, again to cycle; Alt+click for a part'}>
+    <Icon name="pointer" size={14} />
+    <output class="chip-value" class:is-empty={sel.layer === ''} aria-label="Selected layer">{sel.layer === '' ? 'No layer' : sel.layer}</output>
+    <button type="button" class="icon-btn is-small" aria-label="Clear layer (Esc)" title="Clear layer (Esc)" hidden={sel.layer === ''} onclick={(e) => clear(actions.clearLayer, e)}>
+      <Icon name="close" size={13} />
     </button>
-    {#if sel.shot}
-      <button type="button" class="open-shot" title="Open {sel.shot} at the matching frame" onclick={(e) => clear(() => actions.openShot(), e)}>Open shot</button>
-    {/if}
   </span>
-  <span class="sel-group">
-    <span class="label">Range</span>
-    <output class="sel-value sel-interval" class:is-empty={sel.range === null} aria-label="Frame range">{sel.rangeText ? sel.rangeText.interval : '-'}</output>
-    <span class="sel-timecodes" hidden={!sel.rangeText?.timecodes}>{sel.rangeText?.timecodes ?? ''}</span>
-    <span class="sel-count">{sel.rangeText ? sel.rangeText.count : ''}</span>
-  </span>
-  <span class="sel-group sel-edit">
-    {#each fields as { end, label } (end)}
-      <span class="label">{end}</span>
+  <span class="chip" class:is-set={sel.range !== null} title="Frames [from, to): to is not included. I and O mark them at the playhead.">
+    <Icon name="range" size={14} />
+    {#each fields as { end, label }, i (end)}
+      {#if i === 1}<span class="arrow">→</span>{/if}
       <input
         class="sel-field"
         type="text"
         inputmode="text"
         autocomplete="off"
         spellcheck="false"
-        size="8"
         aria-label="{label}: a frame number or MM:SS:FF"
         title="{label}. A frame number or MM:SS:FF; Enter applies, Esc reverts."
         aria-invalid={invalid === end ? 'true' : undefined}
@@ -125,15 +110,18 @@
         }}
       />
     {/each}
-    <button type="button" class="sel-clear" aria-label="Clear range" title="Clear range" disabled={sel.range === null} onclick={(e) => clear(actions.clearRange, e)}>
-      {@render clearIcon()}
+    <output class="sub chip-value is-empty" aria-label="Frame range">{sel.range && sel.rangeText ? sel.rangeText.interval : 'All frames'}</output>
+    <span class="sub is-count" hidden={!sel.range || !sel.rangeText?.count}>{sel.rangeText?.count ?? ''}</span>
+    <span class="sub is-timecodes" hidden={!sel.rangeText?.timecodes}>{sel.rangeText?.timecodes ?? ''}</span>
+    <button type="button" class="icon-btn is-small" aria-label="Clear range" title="Clear range" hidden={sel.range === null} onclick={(e) => clear(actions.clearRange, e)}>
+      <Icon name="close" size={13} />
     </button>
   </span>
-  <span class="sel-error" role="status" aria-live="polite" hidden={!error}>{error ?? ''}</span>
-  <span class="sel-notice" role="status" aria-live="polite" hidden={!sel.notice}>{sel.notice ?? ''}</span>
-  <span class="spacer"></span>
-  <div class="hint">
-    click select <span class="sep">·</span> again to cycle <span class="sep">·</span> <kbd>Alt</kbd>+click part <span class="sep">·</span>
-    <kbd>I</kbd><kbd>O</kbd> range <span class="sep">·</span> <kbd>Esc</kbd> clear
-  </div>
+  {#if sel.shot}
+    <button type="button" class="btn is-small" title="Open {sel.shot} at the matching frame" onclick={(e) => clear(() => actions.openShot(), e)}>
+      <Icon name="shot" size={14} />Open shot
+    </button>
+  {/if}
+  <span class="sel-error" role="status" aria-live="polite" title={error ?? ''} hidden={!error}>{error ?? ''}</span>
+  <span class="sel-notice" role="status" aria-live="polite" title={sel.notice ?? ''} hidden={!sel.notice}>{sel.notice ?? ''}</span>
 </div>

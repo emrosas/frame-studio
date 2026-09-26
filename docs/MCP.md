@@ -60,7 +60,7 @@ A selection is `{ sceneId, layerId?, partId?, from, to }`. `layerId` comes from 
 
 ## Requests from the viewer
 
-The viewer's Requests panel, on the left, sends asks to an agent through files in `.frame-studio/` (`docs/adr/0003-selection-handoff-file-queue.md`, `docs/adr/0006-requests-are-threads.md`). You select something on the canvas, write what should change, attach reference images if you like, pick who works it, and press **Send to agent**.
+The viewer's agent panel, on the right, sends asks to an agent through files in `.frame-studio/` (`docs/adr/0003-selection-handoff-file-queue.md`, `docs/adr/0006-requests-are-threads.md`). You select something on the canvas, write what should change, attach reference images if you like, pick who works it, and send. The sidebar lists the threads.
 
 A request is a thread, like a chat. The agent works a turn and ends it with a summary; you look, and reply ("a bit smaller") or **Settle** it when it's right. Only you settle a thread, and replying to a settled one reopens it. Each turn saves the scene file before the agent starts, so **Revert to here** on any turn puts the scene back to how it was before that turn. **Try again** reverts the newest turn and asks again, with the prompt editable. Reverting is offered only when no other request on that scene was active after the save, so it can never throw away someone else's work. One thread per scene works at a time; threads on other scenes run in parallel.
 

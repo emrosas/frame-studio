@@ -207,14 +207,14 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 
 - TypeScript 6, strict mode. Vite for the viewer, with Svelte 5 for its UI (ADR 0002). Vitest for tests. `npm run typecheck` runs tsc for app and Node code and svelte-check for components. TypeScript 7 has no JavaScript API, which svelte-check needs, so the repo stays on 6.
 - `npm test` is the unit suite. `npm run test:browser` runs Playwright against the viewer, the render worker, the embed, the handoff, the MCP shim, the app from source, and the packaged app when `npm run desktop:build` has built it.
-- `npm run dev` runs the studio server on the repo and prints the viewer's paired URL. `npm run desktop` runs the app from the repo; `npm run desktop:build` packages it for macOS arm64 and checks the result.
+- `npm run dev` runs the studio server on the repo and prints the viewer's paired URL. `npm run desktop` runs the app from the repo; `npm run desktop:build` packages it for macOS arm64 and checks the result. `npm run desktop:release` builds a release for the app's updater (ADR 0009, `docs/RELEASING.md`).
 - After changing drawing code, verify visually with `render_frame` or a contact sheet rather than assuming it looks right.
 - Maintain `docs/PROGRESS.md`: done, next, open questions, known issues. Read it at the start of each session and update it at the end.
 - The roadmap is `docs/ROADMAP.md`. Work milestone by milestone; don't start the next until the current one's acceptance criteria pass.
 
 ## Later (don't build yet)
 
-- The app signed and notarized, auto-update, and Windows and Linux builds (ADR 0008 left them for later). The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
+- The app signed and notarized, with electron-updater in place of the unsigned updater (ADR 0009), and Windows and Linux builds (ADR 0008 left them for later). The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
 - Camera layer (pan, zoom, shake), scene transitions, multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.

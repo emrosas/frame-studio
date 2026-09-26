@@ -348,7 +348,17 @@ export class App {
       },
       refreshAgents: () => this.refreshAgents(true),
       dismissToast: () => (this.ui.toast = null),
+      openFolder: () => void desktop()?.openFolder(),
+      installUpdate: () => void desktop()?.updates?.install(),
+      checkForUpdate: () => void desktop()?.updates?.check(),
+      openUpdateNotes: () => void desktop()?.updates?.openNotes(),
     };
+    // The app pushes where its update stands; a browser has none.
+    const updates = desktop()?.updates;
+    if (updates) {
+      updates.onChange((state) => (this.ui.update = state));
+      void updates.state().then((state) => (this.ui.update = state));
+    }
     this.view = new CanvasView(
       stage,
       () => {
@@ -514,6 +524,17 @@ export class App {
     this.syncErrors();
     this.ui.scenes = this.sceneOptions();
     this.ui.selectedScene = entry?.key ?? null;
+    const project = entry && entry.project !== null ? this.library.projects.find((p) => p.id === entry.project) : undefined;
+    this.ui.header = entry
+      ? {
+          key: entry.key,
+          name: project ? entry.key.slice(project.id.length + 1) : entry.key,
+          project: project?.name ?? null,
+          size: scene ? scene.size : null,
+          fps: scene?.fps ?? null,
+          frames: this.total,
+        }
+      : null;
     document.title = entry ? `${entry.key} · Frame Studio` : 'Frame Studio';
     this.syncUrl();
     this.schedulePublish();
@@ -577,7 +598,7 @@ export class App {
       const main = project?.main === e.key;
       return {
         key: e.key,
-        label: project ? `${e.key.slice(project.id.length + 1)}${main ? ' (main)' : ''}` : e.key,
+        label: project ? e.key.slice(project.id.length + 1) : e.key,
         file: e.file,
         invalid: e.scene === null || (project?.errors.length ?? 0) > 0,
         project: project ? project.id : null,
@@ -720,8 +741,10 @@ export class App {
     );
     if (lib.entries.length === 0) {
       this.errors.set('scene', {
-        title: 'No scenes found',
-        lines: ['Add a scene file to /scenes (for example scenes/my-scene.json). The format is under "Scene format" in CLAUDE.md.'],
+        title: 'No scenes yet',
+        lines: [
+          'This folder has no scenes. Ask an agent with the frame-studio MCP server to make one, or add a scene file to scenes/, such as scenes/my-scene.json.',
+        ],
       });
     } else if (this.entry && this.entry.errors.length > 0) {
       const n = this.entry.errors.length;
@@ -1042,7 +1065,6 @@ export class App {
   }
 
   private startQueue(): void {
-    this.ui.studio.available = this.studio.available;
     if (!this.studio.available) return;
     const apply = (requests: StudioRequest[]) => {
       for (const r of requests) {
@@ -1053,7 +1075,7 @@ export class App {
         // fold the claim and the end together, so any change to "your turn" with an ended turn counts.
         // Stopped turns are the user's own doing, so they need no notice.
         const changed = before && (before.status !== r.status || before.turns.length !== r.turns.length);
-        if (changed && r.status === 'your_turn' && ended && this.ui.studio.open !== r.id) {
+        if (changed && r.status === 'your_turn' && ended && (this.ui.studio.open !== r.id || !this.ui.layout.panel)) {
           this.ui.toast = { id: r.id, status: turn.status as 'done' | 'failed' | 'interrupted', text: turn.summary ?? '' };
         }
       }

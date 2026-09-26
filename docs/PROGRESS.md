@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-26, after M10.
+Last updated 2026-09-26, after M10 and the app's icon, updates and redesign.
 
 ## Done
 
@@ -585,8 +585,73 @@ These are yours to change. Most are a line or two.
 - **Built-in rigs load through the module service too**, not the viewer bundle, so there's one loading path. The first paint waits for them, a few hundred ms.
 - **The app's CPU canvas switches apply to its viewer as well**, since Chromium switches are process-wide. Preview uses CPU raster in the app.
 - **New studio folder uses `~/Frame Studio`**, or `~/Frame Studio 2` and so on when taken, without asking where.
-- **No app icon yet**; it uses Electron's.
+- **No app icon yet**; it uses Electron's. (Since done: see below.)
 - **An external agent's session** is named `mcp-<pid of its shim>`, so two Claude Code sessions on one app keep their claims apart.
+
+### After M10: the icon, updates, and a redesign
+
+You asked for three things after trying the app: an icon, updates like T3 Code's, and a UI pass after T3 Code and Mistral's Le Chat. The repo is public now, at https://github.com/emrosas/frame-studio.
+
+- **The icon** (`tools/desktop/icon.ts`). It is drawn in code: four white viewfinder corners around an orange dot (#ff5a1f), on a black squircle.
+  - The squircle is Apple's continuous corner on the macOS grid: an 824 px body inset 100 px, corner radius 185.4, smoothed 60%.
+  - Each size in the `.icns` is drawn from the vectors, so 16 px stays crisp.
+  - `desktop:build` puts the icon in the app and the DMG. `npm run desktop` sets it in the Dock.
+  - The viewer and the welcome window use the same mark as an inline SVG (`Logo.svelte`), and the browser tab uses it as its favicon.
+- **Updates (ADR 0009, `docs/RELEASING.md`).** The unsigned app updates itself in one click.
+  - It reads electron-builder's `latest-mac.yml` from the latest GitHub release: 10 s after launch, every 4 hours, and from **Check for Updates…** in the app menu.
+  - Update downloads the zip, checks its size and SHA-512 against the feed, and unpacks it beside the app. The app then quits, and a detached script swaps the bundle and relaunches it.
+  - The viewer shows the offer in a card at the foot of the sidebar. The welcome window shows it too.
+  - If the app can't replace itself (it runs from the DMG, from a translocated path, or from a folder you can't write to), the card links the release page instead.
+  - `npm run desktop:release` checks the tag, origin/main and uncommitted shipped files. It then builds the DMG and zip, checks the zip, and writes the feed. `-- --publish` runs `gh release create`.
+  - The feed format is electron-updater's, so once there's a Developer ID the signed app switches to electron-updater and the same releases keep working.
+- **The redesign.** The viewer now has three columns:
+  - **The sidebar:** the studio folder (click it to switch folders in the app), New thread, the scenes, each project's scenes (the main one marked), and the threads, with a status dot and a count of those waiting for you.
+  - **The canvas:** a top bar with the scene, its format and frame rate, the shortcuts, Export and the panel toggles. Under the canvas, the timeline: transport, scrubber with the range and shot bands, and the selection as chips on one fixed line, so selecting never moves the canvas.
+  - **The agent panel:** a new thread shows the three steps (click something, mark frames, describe) and ticks them as the selection fills in. An open thread reads like a chat, with your asks as bubbles and the agent's work under them, and follows new work while you're at the bottom. The composer is Le Chat's shape: what it's about, the prompt, then attach, agent, model, effort and Full access, with an orange send button.
+  - **The rest:**
+    - Both side columns collapse, and the layout is remembered.
+    - Light and dark follow the system, on warm neutrals with one orange accent. Canvas selection stays blue so it reads on orange artwork.
+    - Return sends a prompt; Shift+Return starts a new line.
+    - The app's windows have no title bar: the window buttons sit over the sidebar, and the bars drag the window.
+    - The welcome window has New and Open on the left and recent folders on the right.
+  - **Where things moved:**
+    - The scene picker became the sidebar's list.
+    - The requests panel became the sidebar's threads plus the agent panel.
+    - The frame rate readout moved into the top bar.
+    - The keyboard hints moved into a shortcuts popover.
+    - Export opens as a popover under its button.
+
+How it was checked:
+
+- Screenshots of the viewer and the welcome window in light and dark, at 1440 and 1024 wide, with a thread open, a shot selected, the Export popover open, and Claude picked in the composer.
+- A screenshot of the app from source.
+- The browser tests now find scenes in the sidebar, threads in the sidebar and the agent panel, and the frame rate in the top bar.
+- `tests/node/updater.test.ts` covers the feed, versions, checksums, the preconditions and the swap script against plain folders.
+- `tests/browser/packaged-update.test.ts` copies the built app into a temporary Applications folder and serves a 99.0.0 zip and feed locally. It checks that the offer arrives, that a wrong checksum is refused with the app untouched, and the menu's dialogs. Then it installs, checks the bundle on disk is 99.0.0 with nothing left over, and checks the relaunched app runs on its temporary settings.
+- `desktop:release` ran end to end in a scratch copy whose origin was a local bare repo, including its three refusals.
+- Not tried: a real GitHub release and its redirect, `--publish`, and replacing `/Applications/Frame Studio.app` itself.
+- After the fixes: typecheck clean, 1165 unit tests and 116 browser tests pass (12 files, the two packaged suites on a fresh build), with the committed `bear-test.json`.
+
+A review agent read the redesign and found 11 problems. All are fixed:
+
+- A thread that ended while the agent panel was hidden got no notice. The toast now shows then too.
+- A new thread's draft was lost when you opened a thread or hid the panel. The panel now holds the draft, and both side columns stay mounted when hidden.
+- Try again reverted a turn with nothing on screen saying so. A note now says which turn Send reverts.
+- The composer showed a different target than the reply would use. It now follows the App's rule: your selection on the thread's scene only when a layer or range is picked, and for Try again the reverted turn's selection.
+- A thread stopped following new work once late-loading thumbnails grew it. It now follows content resizes while you're at the bottom.
+- At narrow widths the frame readout spilled into the agent panel, and long layer names didn't shorten. The layer chip now shrinks, readouts drop out below set widths, and popovers fit the column.
+- Light-theme contrast was too low:
+  - Muted text is darker, at 5:1.
+  - Buttons with words use a deeper orange (#d4410a) for white text at 4.6:1. The send button, dots and logo keep the brand orange.
+  - Accent text is darker, and the focus ring is solid blue.
+- Keyboard:
+  - Export keeps focus when opened from the keyboard, so Tab reaches the popover.
+  - Attach is a real button.
+  - An invalid scene says so to screen readers.
+  - The shortcuts popover is a region, not a dialog.
+- Return no longer sends while Safari finishes Japanese or Chinese input.
+- The project on screen can be folded.
+- Dead icons, CSS, a prop and stale comments are gone.
 
 ## Next
 
@@ -598,10 +663,11 @@ These are yours to change. Most are a line or two.
 
    Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
 2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
-3. Try the integrated AI: in the viewer, pick Claude or Codex in the Requests panel, select something, and ask for a change.
+3. Try the integrated AI: in the viewer, select something, pick Claude or Codex in the agent panel's composer, and ask for a change.
 4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film from the Export panel.
-5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
-6. The roadmap has no M11 yet. Candidates from ADR 0008 and "Later": signing and notarization, updates, Windows and Linux builds, the timeline editor, selecting inside a shot from its parent.
+5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
+6. **Cut the first release.** Bump `package.json` to 0.1.0, commit and push, then `npm run desktop:release` and `npm run desktop:release -- --publish` (`docs/RELEASING.md`). Installs from that DMG on get updates; the builds made before it have no updater.
+7. The roadmap has no M11 yet. Candidates from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, the timeline editor, selecting inside a shot from its parent, and asking the agent for a new scene from the viewer (a thread needs a scene today).
 
 ## Open questions
 
@@ -635,6 +701,7 @@ These are yours to change. Most are a line or two.
 - A hover probe on a scene that places shots draws each shot in full, so hovering a heavy film costs as much as rendering it.
 - The busy-rig check for a thread on a main scene counts every rig its shots draw with, so an agent on another scene of the project gets asked before editing any of them.
 - The app is unsigned. A copy downloaded from elsewhere needs right-click, Open the first time, and macOS may warn. Windows and Linux builds aren't made or tried.
+- Updates are unsigned too: trust rests on HTTPS to GitHub and the feed's checksum. The app must sit in a folder you can write to, such as /Applications, and every update downloads the whole app, about 124 MB.
 - Rig edits reload without a page reload, but the page and the server both keep old copies of the modules. A page with hundreds of edits behind it should be reloaded now and then (View, Reload in the app).
 - The code host reloads every rig and generator after any change, in the server process. Hot code and a loop at import time would hang the server rather than a worker. The research suggested a worker thread for this, which isn't built.
 - The render worker takes one job at a time, so a long export holds up the agents' renders until it ends.

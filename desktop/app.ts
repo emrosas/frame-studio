@@ -1,19 +1,21 @@
 // The app (ADR 0008). It opens a studio folder, runs the studio server on it
 // in a utility process, shows the viewer the server serves in a window, and
 // keeps a hidden render worker window for the server's jobs. IPC carries only
-// the token handoff and native features: folder pickers, Reveal in Finder and
-// menus. The app's data goes over the server's HTTP and event stream, as in a
-// browser. Electron main process only.
+// the token handoff and native features: folder pickers, Reveal in Finder,
+// menus and updates. The app's data goes over the server's HTTP and event
+// stream, as in a browser. Electron main process only.
 
 import { randomBytes } from 'node:crypto';
-import { createWriteStream, type WriteStream } from 'node:fs';
+import { createWriteStream, existsSync, type WriteStream } from 'node:fs';
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, Menu, shell, utilityProcess, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
+import { pathToFileURL } from 'node:url';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, utilityProcess, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
 import { createStudioFolder, writeTsconfig } from './folders.ts';
 import { appPaths } from './paths.ts';
 import { adoptShellPath } from './shell-path.ts';
+import { checkForUpdates, checkFromMenu, installUpdate, openReleaseNotes, startUpdates, type UpdateState, updatesEnabled, updateState } from './updater.ts';
 import { openWorkerWindow } from './worker.ts';
 
 interface Settings {
@@ -194,6 +196,14 @@ function guard(win: BrowserWindow): void {
   });
 }
 
+/** The page's background under the system's theme, and on macOS no title bar: the pages draw their own, with room for the window buttons. */
+function windowLook(): Electron.BrowserWindowConstructorOptions {
+  return {
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#161615' : '#fbfaf9',
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 16 } } : {}),
+  };
+}
+
 function showViewer(url: string, name: string): void {
   if (!main || main.isDestroyed()) {
     const bounds = settings.bounds;
@@ -201,10 +211,10 @@ function showViewer(url: string, name: string): void {
       width: bounds?.width ?? 1400,
       height: bounds?.height ?? 900,
       ...(bounds ? { x: bounds.x, y: bounds.y } : {}),
-      minWidth: 800,
-      minHeight: 500,
+      minWidth: 960,
+      minHeight: 560,
       title: 'Frame Studio',
-      backgroundColor: '#111213',
+      ...windowLook(),
       webPreferences: { preload: join(paths.desktop, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false },
     });
     guard(main);
@@ -233,11 +243,11 @@ function showWelcome(): void {
     return;
   }
   welcome = new BrowserWindow({
-    width: 560,
-    height: 460,
+    width: 720,
+    height: 480,
     resizable: false,
     title: 'Frame Studio',
-    backgroundColor: '#111213',
+    ...windowLook(),
     webPreferences: { preload: join(paths.desktop, 'welcome-preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false },
   });
   guard(welcome);
@@ -281,8 +291,24 @@ function buildMenu(): void {
   const recent: MenuItemConstructorOptions[] = settings.recent.length
     ? settings.recent.map((path) => ({ label: path, click: () => report(openFolder(path)) }))
     : [{ label: 'No recent folders', enabled: false }];
+  // Electron's own app menu, with Check for Updates… after About.
+  const appMenu: MenuItemConstructorOptions = {
+    label: app.name,
+    submenu: [
+      { role: 'about' },
+      ...(updatesEnabled() ? [{ label: 'Check for Updates…', click: () => void checkFromMenu() }] : []),
+      { type: 'separator' },
+      { role: 'services' },
+      { type: 'separator' },
+      { role: 'hide' },
+      { role: 'hideOthers' },
+      { role: 'unhide' },
+      { type: 'separator' },
+      { role: 'quit' },
+    ],
+  };
   const template: MenuItemConstructorOptions[] = [
-    ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
+    ...(process.platform === 'darwin' ? [appMenu] : []),
     {
       label: 'File',
       submenu: [
@@ -325,6 +351,18 @@ function fromViewer(frameUrl: string | undefined): boolean {
   return session !== null && frameUrl !== undefined && frameUrl.startsWith(`${session.url}/`);
 }
 
+/** The viewer, or the welcome page: the app's own pages. */
+function fromApp(event: IpcMainEvent | IpcMainInvokeEvent): boolean {
+  const url = event.senderFrame?.url;
+  if (fromViewer(url)) return true;
+  return welcome !== null && event.sender === welcome.webContents && url === pathToFileURL(join(paths.desktop, 'welcome.html')).href;
+}
+
+/** Sends an update state to the app's pages. */
+function pushUpdate(state: UpdateState): void {
+  for (const win of [main, welcome]) if (win && !win.isDestroyed()) win.webContents.send('frame-studio:update-changed', state);
+}
+
 function registerIpc(): void {
   ipcMain.on('frame-studio:token', (event) => {
     event.returnValue = fromViewer(event.senderFrame?.url) ? session!.token : '';
@@ -342,6 +380,14 @@ function registerIpc(): void {
   ipcMain.handle('frame-studio:open-folder', () => pickFolder());
   ipcMain.handle('frame-studio:new-folder', () => newFolder());
   ipcMain.handle('frame-studio:open-recent', (_event, path: string) => openFolder(path));
+  // Updates (ADR 0009). The preloads offer them only when the app can update.
+  ipcMain.on('frame-studio:updates', (event) => {
+    event.returnValue = updatesEnabled() && fromApp(event);
+  });
+  ipcMain.handle('frame-studio:update-state', (event) => (updatesEnabled() && fromApp(event) ? updateState() : undefined));
+  ipcMain.handle('frame-studio:update-check', (event) => (updatesEnabled() && fromApp(event) ? checkForUpdates(true) : undefined));
+  ipcMain.handle('frame-studio:update-install', (event) => (updatesEnabled() && fromApp(event) ? installUpdate() : undefined));
+  ipcMain.handle('frame-studio:update-notes', (event) => (updatesEnabled() && fromApp(event) ? openReleaseNotes() : undefined));
 }
 
 export function runApp(): void {
@@ -377,12 +423,14 @@ export function runApp(): void {
   app.on('before-quit', () => void stopSession());
   registerIpc();
   void app.whenReady().then(async () => {
+    if (paths.dockIcon && existsSync(paths.dockIcon)) app.dock?.setIcon(paths.dockIcon);
     const logs = app.getPath('logs');
     await mkdir(logs, { recursive: true });
     mainLog = createWriteStream(join(logs, 'main.log'), { flags: 'a' });
     serverLog = createWriteStream(join(logs, 'server.log'), { flags: 'a' });
     settings = await loadSettings();
     buildMenu();
+    if (updatesEnabled()) startUpdates({ push: pushUpdate, log });
     const last = settings.recent[0];
     if (last && (await isDirectory(last)) && !(await openFolder(last))) return;
     showWelcome();

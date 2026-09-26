@@ -17,6 +17,8 @@ export interface AppPaths {
   samples: string;
   /** The desktop folder: preloads and the welcome page. */
   desktop: string;
+  /** The Dock icon to set, run from the repo; null packaged, where the bundle has it. */
+  dockIcon: string | null;
 }
 
 export function appPaths(): AppPaths {
@@ -28,6 +30,7 @@ export function appPaths(): AppPaths {
       builtins: join(res, 'builtins'),
       samples: join(res, 'samples'),
       desktop: join(app.getAppPath(), 'desktop'),
+      dockIcon: null,
     };
   }
   const repo = resolve(import.meta.dirname, '..');
@@ -37,5 +40,7 @@ export function appPaths(): AppPaths {
     builtins: join(repo, 'src'),
     samples: repo,
     desktop: join(repo, 'desktop'),
+    // Written by npm run desktop (tools/desktop/icon.ts).
+    dockIcon: join(repo, 'build/desktop/icon.png'),
   };
 }

@@ -25,15 +25,58 @@ async function run(action) {
 document.getElementById('new').addEventListener('click', () => run(() => bridge.newFolder()));
 document.getElementById('open').addEventListener('click', () => run(() => bridge.openFolder()));
 
+const FOLDER_ICON =
+  '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg>';
+
+// Each recent folder by name, with its path under it (home as ~).
 const list = document.getElementById('recent');
 for (const path of bridge.recent) {
   const item = document.createElement('li');
   const button = document.createElement('button');
   button.type = 'button';
-  button.textContent = path;
   button.title = path;
+  button.innerHTML = FOLDER_ICON;
+  const name = document.createElement('span');
+  name.className = 'name';
+  name.textContent = path.split('/').filter(Boolean).pop() || path;
+  const where = document.createElement('span');
+  where.className = 'path';
+  where.textContent = path.replace(/^\/Users\/[^/]+/, '~');
+  button.append(name, where);
   button.addEventListener('click', () => run(() => bridge.openRecent(path)));
   item.append(button);
   list.append(item);
 }
-document.getElementById('recent-section').hidden = bridge.recent.length === 0;
+document.getElementById('empty').hidden = bridge.recent.length > 0;
+
+// The app's update (ADR 0009), when it has one: Update installs it and restarts.
+const updateBox = document.getElementById('update');
+const updateText = document.getElementById('update-text');
+const updateGo = document.getElementById('update-go');
+let updateAction = null;
+
+function showUpdate(state) {
+  updateBox.classList.toggle('is-error', state.status === 'error');
+  updateAction = null;
+  if (state.status === 'available') {
+    updateText.textContent = `Frame Studio ${state.version} is available.`;
+    updateGo.textContent = 'Update';
+    updateAction = () => bridge.updates.install();
+  } else if (state.status === 'downloading') {
+    updateText.textContent = `Downloading ${state.version}… ${state.total > 0 ? Math.round((state.done / state.total) * 100) : 0}%`;
+  } else if (state.status === 'restarting') {
+    updateText.textContent = `Installing ${state.version}…`;
+  } else if (state.status === 'error' && state.version) {
+    updateText.textContent = state.message;
+    updateGo.textContent = state.manual ? 'Release page' : 'Try again';
+    updateAction = () => (state.manual ? bridge.updates.openNotes() : bridge.updates.install());
+  }
+  updateGo.hidden = updateAction === null;
+  updateBox.hidden = !['available', 'downloading', 'restarting'].includes(state.status) && !(state.status === 'error' && state.version);
+}
+
+if (bridge.updates) {
+  updateGo.addEventListener('click', () => updateAction?.());
+  bridge.updates.onChange(showUpdate);
+  bridge.updates.state().then(showUpdate, () => {});
+}
