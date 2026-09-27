@@ -143,3 +143,7 @@ npm run test:browser                              # viewer, renders, exports, em
 - Updates are unsigned as well. What protects them is HTTPS to GitHub and a checksum published on the same release. Each update downloads the whole app, about 124 MB.
 - There's no timeline editor yet. Timing lives in the scene JSON, which you or the agent edit.
 - Agent access rules keep a well-behaved agent on track, but they aren't a sandbox. Rig code an agent writes runs in the studio server and the viewer.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
