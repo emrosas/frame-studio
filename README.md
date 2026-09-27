@@ -26,15 +26,14 @@ You need a Mac with Apple Silicon (M1 or later) on macOS 13 or later. There are 
 
 1. Download `Frame-Studio-<version>-arm64.dmg` from the [latest release](https://github.com/emrosas/frame-studio/releases/latest).
 2. Open the DMG and drag Frame Studio into Applications. Run it from Applications, not from the DMG. The app updates itself in place and can't do that from a read-only disk.
-3. Open Frame Studio from Applications. The first time, macOS blocks it, because the app isn't signed with an Apple Developer ID yet.
+3. Open Frame Studio from Applications. The first time, macOS stops it with "Apple could not verify 'Frame Studio' is free of malware", because the app isn't signed with an Apple Developer ID yet. Click Done, not Move to Trash.
+4. Open System Settings › Privacy & Security and scroll down to Security. Click Open Anyway next to the message about Frame Studio, and confirm. The button shows for about an hour after the blocked launch, so if it's gone, open the app again first.
 
-   If macOS says Frame Studio "is damaged and can't be opened", the download is fine. macOS shows that message for unsigned apps from the internet. Clear the download flag in Terminal and open the app again:
+   If you'd rather use Terminal, this clears the download flag, and the app then opens normally:
 
    ```sh
    xattr -dr com.apple.quarantine "/Applications/Frame Studio.app"
    ```
-
-   If macOS says it can't verify the developer instead, click Done, go to System Settings › Privacy & Security, and click Open Anyway next to the message about Frame Studio. The `xattr` command above works for this case too.
 
 You only do this once. Updates install without it.
 
@@ -139,8 +138,8 @@ npm run test:browser                              # viewer, renders, exports, em
 
 ## Known limits
 
-- The app is macOS on Apple Silicon only, and unsigned.
-- Updates are unsigned as well. What protects them is HTTPS to GitHub and a checksum published on the same release. Each update downloads the whole app, about 124 MB.
+- The app is macOS on Apple Silicon only. It has no Apple Developer ID signature or notarization, so macOS blocks the first launch until you allow it.
+- Nothing proves who built an update beyond HTTPS to GitHub and a checksum published on the same release. Each update downloads the whole app, about 124 MB.
 - There's no timeline editor yet. Timing lives in the scene JSON, which you or the agent edit.
 - Agent access rules keep a well-behaved agent on track, but they aren't a sandbox. Rig code an agent writes runs in the studio server and the viewer.
 

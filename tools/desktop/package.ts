@@ -1,5 +1,5 @@
 // npm run desktop:build: builds Frame Studio.app and a DMG for macOS arm64
-// (ADR 0008), unsigned, into build/desktop/dist/. Then checks it
+// (ADR 0008), signed ad hoc, into build/desktop/dist/. Then checks it
 // (tools/desktop/check.ts). With --release it also builds the zip the
 // updater downloads (ADR 0009); npm run desktop:release passes it.
 //
@@ -120,7 +120,10 @@ await electronBuild({
     electronLanguages: ['en'],
     mac: {
       category: 'public.app-category.graphics-design',
-      identity: null,
+      // Ad hoc: no Developer ID, but a valid signature over the whole bundle. Downloaded
+      // unsigned, macOS calls the app damaged and offers only the Trash; signed ad hoc,
+      // it offers Open Anyway in Privacy & Security.
+      identity: '-',
       hardenedRuntime: false,
       target: macTargets,
       icon: icon.icns ?? icon.png,

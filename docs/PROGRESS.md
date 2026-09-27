@@ -653,6 +653,13 @@ A review agent read the redesign and found 11 problems. All are fixed:
 - The project on screen can be folded.
 - Dead icons, CSS, a prop and stale comments are gone.
 
+### Before the first release: a README, a license, and an ad hoc signature
+
+- `README.md` says what Frame Studio is, how to install the DMG and get past Gatekeeper, how updates work, the first steps, connecting an agent, and running from source. The project is MIT licensed (`LICENSE`).
+- `desktop:build` signed nothing (`identity: null`). The only signature was Electron's own on the main binary, named `Electron` and covering none of the bundle, so `codesign --verify` failed. A downloaded copy would have been "damaged" to macOS, with Move to Trash as the only button.
+- The build now signs ad hoc (`identity: '-'`), which signs the helpers and frameworks as `studio.frame.app.*` and seals all 167 files. `tools/desktop/check.ts` fails the build if the signature doesn't verify.
+- Checked: the app and the release zip's copy verify, the two packaged suites pass (8 tests), and a copy flagged as downloaded by Safari opens to "Apple could not verify 'Frame Studio' is free of malware" with Done and Move to Trash, the prompt that Open Anyway clears.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -700,8 +707,8 @@ A review agent read the redesign and found 11 problems. All are fixed:
 - Hit testing stops at the scene layer: a click on a shot selects the whole shot. Selecting inside a shot from its parent is left for later (ADR 0007). Open the shot to select inside it.
 - A hover probe on a scene that places shots draws each shot in full, so hovering a heavy film costs as much as rendering it.
 - The busy-rig check for a thread on a main scene counts every rig its shots draw with, so an agent on another scene of the project gets asked before editing any of them.
-- The app is unsigned. A copy downloaded from elsewhere needs right-click, Open the first time, and macOS may warn. Windows and Linux builds aren't made or tried.
-- Updates are unsigned too: trust rests on HTTPS to GitHub and the feed's checksum. The app must sit in a folder you can write to, such as /Applications, and every update downloads the whole app, about 124 MB.
+- The app has no Developer ID. It is signed ad hoc, so a downloaded copy needs Open Anyway in System Settings › Privacy & Security the first time. Each build's ad hoc signature differs, so after an update macOS may ask again for access to protected folders such as Documents. Windows and Linux builds aren't made or tried.
+- Updates have no Developer ID signature either: trust rests on HTTPS to GitHub and the feed's checksum. The app must sit in a folder you can write to, such as /Applications, and every update downloads the whole app, about 124 MB.
 - Rig edits reload without a page reload, but the page and the server both keep old copies of the modules. A page with hundreds of edits behind it should be reloaded now and then (View, Reload in the app).
 - The code host reloads every rig and generator after any change, in the server process. Hot code and a loop at import time would hang the server rather than a worker. The research suggested a worker thread for this, which isn't built.
 - The render worker takes one job at a time, so a long export holds up the agents' renders until it ends.
