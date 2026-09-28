@@ -429,3 +429,89 @@ export function checkNewRequest(input: unknown, options: { reply?: boolean } = {
   if (input.settings !== undefined) return checkSettings(input.settings);
   return null;
 }
+
+/**
+ * A new, empty scene: paper and no layers. A loose one, in scenes/, needs its own fps and size; one in a
+ * project takes the project's, so it leaves them out.
+ */
+export interface NewScene {
+  id: string;
+  project?: string;
+  fps?: number;
+  size?: [number, number];
+  duration: number;
+}
+
+/** A new project: project.json with a name, fps and size, and an empty main scene, "main". */
+export interface NewProject {
+  id: string;
+  name: string;
+  fps: number;
+  size: [number, number];
+  duration: number;
+}
+
+/** The main scene a new project starts with. */
+export const NEW_PROJECT_MAIN = 'main';
+
+const NEW_SCENE_FIELDS = new Set(['id', 'project', 'fps', 'size', 'duration']);
+const NEW_PROJECT_FIELDS = new Set(['id', 'name', 'fps', 'size', 'duration']);
+const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** A scene or project id from a name as typed: "Bears' Story 2" becomes "bears-story-2". Empty when nothing is left. */
+export function toId(name: string): string {
+  return name
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .toLowerCase()
+    .replace(/['’]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64)
+    .replace(/-+$/, '');
+}
+
+function checkId(id: unknown, what: string): string | null {
+  if (typeof id !== 'string' || id === '') return `${what} needs a name`;
+  if (id.length > 64 || !ID_PATTERN.test(id)) return `${what} id must be lowercase letters, digits and single hyphens, like "opening-shot", got "${String(id)}"`;
+  return null;
+}
+
+function checkFormat(input: Record<string, unknown>): string | null {
+  if (!isInt(input.fps, 1) || (input.fps as number) > 120) return 'fps must be a whole number from 1 to 120';
+  const size = input.size;
+  if (!Array.isArray(size) || size.length !== 2 || !size.every((n) => isInt(n, 16) && n <= 8192)) return 'size must be [width, height], whole pixels from 16 to 8192';
+  return null;
+}
+
+function checkDuration(duration: unknown): string | null {
+  return typeof duration === 'number' && Number.isFinite(duration) && duration > 0 && duration <= 3600 ? null : 'duration must be a number of seconds, above 0 and at most 3600';
+}
+
+/** Why `input` is not a well-formed NewScene, or null when it is. */
+export function checkNewScene(input: unknown): string | null {
+  if (!isObject(input)) return 'a new scene must be a JSON object';
+  for (const key of Object.keys(input)) if (!NEW_SCENE_FIELDS.has(key)) return `unknown field "${key}"`;
+  const problem = checkId(input.id, 'a scene');
+  if (problem) return problem;
+  if (input.project !== undefined) {
+    const inProject = checkId(input.project, 'the project');
+    if (inProject) return inProject;
+    if (input.id === 'project') return 'a scene in a project can\'t be called "project"; project.json is taken';
+    if (input.fps !== undefined || input.size !== undefined) return "a scene in a project takes the project's fps and size; leave them out";
+  } else {
+    const format = checkFormat(input);
+    if (format) return format;
+  }
+  return checkDuration(input.duration);
+}
+
+/** Why `input` is not a well-formed NewProject, or null when it is. */
+export function checkNewProject(input: unknown): string | null {
+  if (!isObject(input)) return 'a new project must be a JSON object';
+  for (const key of Object.keys(input)) if (!NEW_PROJECT_FIELDS.has(key)) return `unknown field "${key}"`;
+  const problem = checkId(input.id, 'a project');
+  if (problem) return problem;
+  if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100) return 'a project needs a name of at most 100 characters';
+  return checkFormat(input) ?? checkDuration(input.duration);
+}

@@ -2,7 +2,7 @@
 // (app.ts) owns all the logic and writes here; components read it and call
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
-import type { AgentId, AgentStatus, ApprovalDecision, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
+import type { AgentId, AgentStatus, ApprovalDecision, NewProject, NewScene, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { UpdateState } from './desktop';
 import type { FrameRange, RangeText } from './selection';
 import type { RequestAction } from './studio-client';
@@ -20,6 +20,17 @@ export interface SceneOption {
   main: boolean;
 }
 
+/** A project, for New scene in it: the fps and size its scenes share, or null while its project.json has errors. */
+export interface ProjectOption {
+  id: string;
+  name: string;
+  fps: number | null;
+  size: readonly [number, number] | null;
+}
+
+/** What the New dialog makes: a scene, loose or in a project, or a project. */
+export type NewWhat = { kind: 'scene'; project: ProjectOption | null } | { kind: 'project' };
+
 /** The scene on screen, for the header: its name in its project, and its format. */
 export interface SceneHeader {
   key: string;
@@ -31,6 +42,8 @@ export interface SceneHeader {
   fps: number | null;
   /** Length in frames; 0 for an invalid scene. */
   frames: number;
+  /** A valid scene with no layers yet, such as one just made with New scene. */
+  empty: boolean;
 }
 
 /** A shot on the scrubber: a scene layer's span in the scene on screen (ADR 0007). */
@@ -100,6 +113,10 @@ export interface ViewerActions {
   scrub(frame: number): void;
   scrubEnd(): void;
   selectScene(key: string): void;
+  /** Creates an empty scene and shows it. Returns an error message, or null. */
+  createScene(input: NewScene): Promise<string | null>;
+  /** Creates a project with an empty main scene and shows that scene. Returns an error message, or null. */
+  createProject(input: NewProject): Promise<string | null>;
   /** Selects a shot's scene layer and its span, from its band on the scrubber. */
   selectShot(layerId: string): void;
   /** Opens a shot (the selected one by default) at the matching frame. */
@@ -197,6 +214,7 @@ export class ViewerUi {
   fps = $state<{ scene: number; measured: number | null } | null>(null);
   sound = $state<SoundState | null>(null);
   scenes = $state<SceneOption[]>([]);
+  projects = $state<ProjectOption[]>([]);
   selectedScene = $state<string | null>(null);
   /** The scene on screen, for the header. */
   header = $state<SceneHeader | null>(null);

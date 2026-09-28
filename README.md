@@ -56,7 +56,9 @@ out/          renders and exports
 
 New studio folder creates `~/Frame Studio` with two samples. `hello` is a bouncing ball, and `bears-story` is a 12-second film cut from three shots.
 
-The window has three columns. The sidebar lists scenes and request threads. The middle has the canvas and the timeline. Space plays, the arrow keys step one frame, and the keyboard button in the top bar lists the other shortcuts. The agent panel is on the right.
+The window has three columns. The sidebar lists scenes, projects and request threads. The middle has the canvas and the timeline. Space plays, the arrow keys step one frame, and the keyboard button in the top bar lists the other shortcuts. The agent panel is on the right.
+
+To start something new, click the + next to Scenes or Projects in the sidebar. Give it a name, a size, a frame rate and a length. The new scene opens empty, with a new thread ready, so you describe what should be in it and the agent draws it. A project is for a longer piece made of shots. Add shots with New scene under the project, then ask the agent to place them in its main scene.
 
 To ask for a change:
 

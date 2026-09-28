@@ -6,6 +6,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
+import type { NewProject, NewScene } from '../../src/studio/protocol.ts';
 import type { StudioQueue } from '../studio/queue.ts';
 import type { Workspace } from './workspace.ts';
 
@@ -17,6 +18,10 @@ const projectId = z.string().describe('Project id, the folder name in projects/,
 /** How long update_project waits for the project's other threads before it refuses. Under Codex's 60 s tool timeout. */
 const PROJECT_WAIT_MS = 50_000;
 const paramValue = z.union([z.number(), z.string(), z.boolean()]);
+const newId = z.string().describe('Lowercase letters, digits and single hyphens, like "opening-shot". It names the file, so it can\'t change later');
+const fps = z.number().int().min(1).max(120).describe('Frames per second, e.g. 12, 24 or 30. With audio it must divide 48000');
+const size = z.tuple([z.number().int(), z.number().int()]).describe('[width, height] in scene pixels, e.g. [1920, 1080]. MP4 needs both even');
+const duration = z.number().positive().max(3600).describe('Length in seconds');
 
 const text = (value: unknown): CallToolResult => ({
   content: [{ type: 'text', text: typeof value === 'string' ? value : JSON.stringify(value, null, 2) }],
@@ -131,6 +136,17 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
   );
 
   server.registerTool(
+    'create_scene',
+    {
+      title: 'Create a scene',
+      description:
+        'Creates a new, empty scene: a paper background and no layers, to fill in with update_scene. A loose scene goes in scenes/<id>.json and needs fps and size. With project, it goes in projects/<project>/<id>.json and takes the project\'s fps and size, so leave them out. Refuses an id that is taken. Returns the scene id to use with the other tools.',
+      inputSchema: { id: newId, project: projectId.optional(), fps: fps.optional(), size: size.optional(), duration },
+    },
+    tool('create_scene', async (w, input: NewScene) => text(await w.createScene(input))),
+  );
+
+  server.registerTool(
     'list_projects',
     {
       title: 'List projects',
@@ -165,6 +181,17 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
       async (w, { id, patch }: { id: string; patch: Record<string, unknown> }) => text(await w.updateProject(id, patch, caller)),
       (w, { id }) => w.waitForProject(id, caller, PROJECT_WAIT_MS),
     ),
+  );
+
+  server.registerTool(
+    'create_project',
+    {
+      title: 'Create a project',
+      description:
+        'Creates a new project: projects/<id>/project.json with its name, fps and size, and an empty main scene, "<id>/main", whose export is the whole video. Add shots with create_scene and project, and place them in main as scene layers. Refuses an id that is taken.',
+      inputSchema: { id: newId, name: z.string().min(1).max(100).describe('The name the sidebar shows, e.g. "Bears\' story"'), fps, size, duration: duration.describe("The main scene's length in seconds") },
+    },
+    tool('create_project', async (w, input: NewProject) => text(await w.createProject(input))),
   );
 
   server.registerTool(

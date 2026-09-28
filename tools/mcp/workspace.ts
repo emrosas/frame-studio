@@ -6,9 +6,10 @@
 // again whenever files changed, so edits an agent makes to files directly show
 // up too.
 
-import { readFile, rm, stat } from 'node:fs/promises';
+import { randomInt } from 'node:crypto';
+import { mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join, relative } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import type { Layer, Params, Rig, RigRegistry, Scene } from '../../src/engine/types.ts';
 import type { SceneEntry, SceneLibrary } from '../../src/viewer/library.ts';
 import type { ContactSheetResult, RenderExportResult, RenderHit } from '../../src/viewer/render-api.ts';
@@ -18,7 +19,7 @@ import { entryPath, libraryFrom, loadModules, readSceneFiles, sceneLibrary, writ
 import type { CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
-import { projectOf, type StudioRequest } from '../../src/studio/protocol.ts';
+import { checkNewProject, checkNewScene, NEW_PROJECT_MAIN, projectOf, type NewProject, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import type { StudioQueue } from '../studio/queue.ts';
 
@@ -327,6 +328,76 @@ export class Workspace {
     await this.checkEdit(modules, entry, next, 'That patch');
     await this.writeScene(path, next, modules);
     return { file: this.show(path), scene: next };
+  }
+
+  /** A scene with nothing in it yet: paper, no layers, and a seed of its own. */
+  private emptyScene(id: string, fps: number, size: readonly [number, number], duration: number) {
+    return { id, fps, duration, size: [size[0], size[1]], seed: randomInt(1, 100_000), background: { rig: 'paper' }, layers: [] };
+  }
+
+  /**
+   * A new, empty scene: loose in scenes/, or in a project, where it takes the project's fps and size. It
+   * refuses an id that is taken, and a scene that wouldn't validate. Returns the scene's id as list_scenes
+   * shows it.
+   */
+  async createScene(input: NewScene): Promise<{ id: string; file: string; scene: unknown }> {
+    const problem = checkNewScene(input);
+    if (problem) throw new Error(problem);
+    const { modules, lib } = await this.library();
+    let key: string;
+    let path: string;
+    let scene: ReturnType<Workspace['emptyScene']>;
+    if (input.project !== undefined) {
+      const project = lib.projects.find((p) => p.id === input.project);
+      if (!project) throw new Error(`No project "${input.project}". Projects: ${lib.projects.map((p) => p.id).join(', ') || 'none yet'}`);
+      if (!project.project) throw new Error(`${project.file} has errors, so the project can't take a new scene until they're fixed:\n${project.errors.join('\n')}`);
+      key = `${project.id}/${input.id}`;
+      path = join(this.folder.projects, project.id, `${input.id}.json`);
+      scene = this.emptyScene(input.id, project.project.fps, project.project.size, input.duration);
+    } else {
+      key = input.id;
+      path = join(this.folder.scenes, `${input.id}.json`);
+      scene = this.emptyScene(input.id, input.fps!, input.size!, input.duration);
+    }
+    if (lib.entries.some((e) => e.key === key) || (await stat(path).catch(() => null))) {
+      throw new Error(`There is already a scene "${key}"${input.project === undefined ? ' in scenes/' : ''}. Pick another name.`);
+    }
+    if (input.project !== undefined) {
+      const broken = await this.projectBreaks(modules, lib, input.project, `/projects/${input.project}/${input.id}.json`, scene);
+      if (broken.length > 0) throw new Error(`The new scene would break the project, so nothing was saved:\n${broken.join('\n')}`);
+    } else {
+      const result = modules.validate(scene, modules.createRegistry());
+      if (!result.ok) throw new Error(`The new scene would be invalid, so nothing was saved:\n${result.errors.join('\n')}`);
+    }
+    await mkdir(dirname(path), { recursive: true });
+    await this.writeScene(path, scene, modules);
+    return { id: key, file: this.show(path), scene };
+  }
+
+  /**
+   * A new project (ADR 0007): projects/<id>/project.json with its name, fps and size, and an empty main
+   * scene. It refuses an id that is taken. Returns the main scene's id, which the viewer opens.
+   */
+  async createProject(input: NewProject): Promise<{ id: string; main: string; file: string }> {
+    const problem = checkNewProject(input);
+    if (problem) throw new Error(problem);
+    const { modules, lib } = await this.library();
+    const dir = join(this.folder.projects, input.id);
+    if (lib.projects.some((p) => p.id === input.id) || (await stat(dir).catch(() => null))) {
+      throw new Error(`There is already a project "${input.id}" in projects/. Pick another name.`);
+    }
+    const project = { name: input.name.trim(), fps: input.fps, size: [input.size[0], input.size[1]], main: NEW_PROJECT_MAIN };
+    const scene = this.emptyScene(NEW_PROJECT_MAIN, input.fps, input.size, input.duration);
+    // Checked as the viewer will build it, on its own.
+    const prefix = `/projects/${input.id}/`;
+    const built = await libraryFrom(modules, { [`${prefix}project.json`]: JSON.stringify(project), [`${prefix}${NEW_PROJECT_MAIN}.json`]: JSON.stringify(scene) });
+    const errors = [...built.projects.flatMap((p) => p.errors), ...built.entries.flatMap((e) => e.errors.map((x) => `${e.file}: ${x}`))];
+    if (errors.length > 0) throw new Error(`The new project would be invalid, so nothing was saved:\n${errors.join('\n')}`);
+    await mkdir(dir, { recursive: true });
+    // The scene first, so project.json never names a main scene that isn't there.
+    await writeFileAtomic(join(dir, `${NEW_PROJECT_MAIN}.json`), modules.engine.formatSceneJson(scene));
+    await this.writeScene(join(dir, 'project.json'), project, modules);
+    return { id: input.id, main: `${input.id}/${NEW_PROJECT_MAIN}`, file: this.show(join(dir, 'project.json')) };
   }
 
   /** Every rig: the global library, then each project's own, marked with its project (ADR 0007). */

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   canRevert,
+  checkNewProject,
   checkNewRequest,
+  checkNewScene,
   checkpointFileName,
   clipboardLine,
   describeTarget,
@@ -12,6 +14,7 @@ import {
   projectOf,
   requestFileName,
   STALL_MS,
+  toId,
   type StudioRequest,
   type Turn,
 } from './protocol';
@@ -244,5 +247,46 @@ describe('checkNewRequest', () => {
   it('takes no agent in a reply, since a thread keeps its agent', () => {
     expect(checkNewRequest(good, { reply: true })).toBeNull();
     expect(checkNewRequest({ ...good, agent: 'codex' }, { reply: true })).toMatch(/unknown field "agent"/);
+  });
+});
+
+describe('new scenes and projects', () => {
+  it('makes an id from a name as typed', () => {
+    expect(toId("Bears' Story 2")).toBe('bears-story-2');
+    expect(toId('  Opening   shot!! ')).toBe('opening-shot');
+    expect(toId('Café Noël')).toBe('cafe-noel');
+    expect(toId('Fox’s winter')).toBe('foxs-winter');
+    expect(toId('!!!')).toBe('');
+    expect(toId('a'.repeat(70))).toHaveLength(64);
+    expect(toId(`${'a'.repeat(63)} b`)).toBe('a'.repeat(63));
+  });
+
+  it('checks a new loose scene: an id, its own fps and size, and a length', () => {
+    const good = { id: 'opening', fps: 24, size: [1920, 1080], duration: 5 };
+    expect(checkNewScene(good)).toBeNull();
+    expect(checkNewScene({ ...good, id: '' })).toMatch(/needs a name/);
+    expect(checkNewScene({ ...good, id: 'Opening' })).toMatch(/lowercase/);
+    expect(checkNewScene({ ...good, id: 'a--b' })).toMatch(/single hyphens/);
+    expect(checkNewScene({ ...good, fps: undefined })).toMatch(/fps/);
+    expect(checkNewScene({ ...good, fps: 24.5 })).toMatch(/fps/);
+    expect(checkNewScene({ ...good, size: [1920] })).toMatch(/size/);
+    expect(checkNewScene({ ...good, size: [8, 8] })).toMatch(/size/);
+    expect(checkNewScene({ ...good, duration: 0 })).toMatch(/duration/);
+    expect(checkNewScene({ ...good, layers: [] })).toMatch(/unknown field "layers"/);
+  });
+
+  it("checks a new project scene, which takes the project's fps and size", () => {
+    expect(checkNewScene({ id: 'shot-1', project: 'story', duration: 3 })).toBeNull();
+    expect(checkNewScene({ id: 'shot-1', project: 'story', fps: 24, duration: 3 })).toMatch(/leave them out/);
+    expect(checkNewScene({ id: 'project', project: 'story', duration: 3 })).toMatch(/project\.json is taken/);
+    expect(checkNewScene({ id: 'shot-1', project: 'Story', duration: 3 })).toMatch(/the project id/);
+  });
+
+  it('checks a new project: an id, a name, fps, size and the main scene\'s length', () => {
+    const good = { id: 'story', name: "Bears' story", fps: 12, size: [1920, 1080], duration: 10 };
+    expect(checkNewProject(good)).toBeNull();
+    expect(checkNewProject({ ...good, name: '  ' })).toMatch(/needs a name/);
+    expect(checkNewProject({ ...good, fps: 0 })).toMatch(/fps/);
+    expect(checkNewProject({ ...good, main: 'film' })).toMatch(/unknown field "main"/);
   });
 });

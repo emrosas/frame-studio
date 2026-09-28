@@ -24,6 +24,9 @@ const ID = `mcp-test-${process.pid}`;
 const SCENE_FILE = join(ROOT, 'scenes', `${ID}.json`);
 const OUT_DIR = join(ROOT, 'out', ID);
 const PROJECT_DIR = join(ROOT, 'projects', ID);
+/** What create_scene and create_project make; gitignored like the rest. */
+const NEW_SCENE_FILE = join(ROOT, 'scenes', `${ID}-new.json`);
+const NEW_PROJECT_DIR = join(ROOT, 'projects', `${ID}-new`);
 /** A throwaway handoff folder, so the tests never see or touch a real queue. */
 const STUDIO = mkdtempSync(join(tmpdir(), 'frame-studio-handoff-'));
 /** The viewer's side of the queue, as its studio server would use it. */
@@ -51,6 +54,9 @@ afterAll(async () => {
   await client?.close();
   rmSync(SCENE_FILE, { force: true });
   rmSync(PROJECT_DIR, { recursive: true, force: true });
+  rmSync(NEW_SCENE_FILE, { force: true });
+  rmSync(NEW_PROJECT_DIR, { recursive: true, force: true });
+  rmSync(`${OUT_DIR}-new`, { recursive: true, force: true });
   rmSync(OUT_DIR, { recursive: true, force: true });
   rmSync(STUDIO, { recursive: true, force: true });
 });
@@ -89,6 +95,8 @@ describe('an agent session', () => {
       [
         'apply_to_selection',
         'complete_request',
+        'create_project',
+        'create_scene',
         'export',
         'get_project',
         'get_request',
@@ -194,6 +202,21 @@ describe('an agent session', () => {
     expect(ok.scene.background.params.tone).toBe('#223344');
     // Formatted the way the studio writes scenes: short objects on one line.
     expect(readFileSync(SCENE_FILE, 'utf8')).toContain('"size": [1920, 1080]');
+  });
+
+  it('creates an empty scene that renders, and refuses a taken or malformed name', async () => {
+    const made = json<{ id: string; file: string }>(await call('create_scene', { id: `${ID}-new`, fps: 12, size: [640, 360], duration: 2 }));
+    expect(made).toMatchObject({ id: `${ID}-new`, file: `scenes/${ID}-new.json` });
+    const scene = JSON.parse(readFileSync(NEW_SCENE_FILE, 'utf8'));
+    expect(scene).toMatchObject({ id: `${ID}-new`, fps: 12, duration: 2, size: [640, 360], background: { rig: 'paper' }, layers: [] });
+    const listed = json<{ id: string; frameCount: number; errors: string[] }[]>(await call('list_scenes')).find((s) => s.id === `${ID}-new`);
+    expect(listed).toMatchObject({ frameCount: 24, errors: [] });
+    expect((await call('render_frame', { sceneId: `${ID}-new`, frame: 0, maxWidth: 320 })).isError).toBeFalsy();
+
+    expect(textOf(await call('create_scene', { id: ID, fps: 12, size: [640, 360], duration: 2 }))).toMatch(/already a scene/);
+    expect(textOf(await call('create_scene', { id: 'Not An Id', fps: 12, size: [640, 360], duration: 2 }))).toMatch(/lowercase letters, digits and single hyphens/);
+    expect(textOf(await call('create_scene', { id: `${ID}-nofps`, duration: 2 }))).toMatch(/fps/);
+    expect(existsSync(join(ROOT, 'scenes', `${ID}-nofps.json`))).toBe(false);
   });
 
   it('shows a readable error for a bad scene id or frame', async () => {
@@ -379,6 +402,25 @@ describe('projects (M9)', () => {
     const breaking = await call('update_project', { id: P, patch: { cast: { pip: null } } });
     expect(textOf(breaking)).toMatch(/would break the project[\s\S]*pip\.json: [^\n]*no cast member "pip"/);
     expect(readFileSync(projectFile, 'utf8')).toBe(text);
+  });
+
+  it("adds a scene to a project with the project's fps and size, and creates a project with an empty main scene", async () => {
+    const shot = json<{ id: string; file: string }>(await call('create_scene', { id: 'extra', project: P, duration: 3 }));
+    expect(shot).toMatchObject({ id: scene('extra'), file: `projects/${P}/extra.json` });
+    expect(JSON.parse(readFileSync(shotFile('extra'), 'utf8'))).toMatchObject({ id: 'extra', fps: 12, size: [1920, 1080], duration: 3, layers: [] });
+    expect(json<{ id: string; scenes: string[] }[]>(await call('list_projects')).find((p) => p.id === P)?.scenes).toContain(scene('extra'));
+    expect(textOf(await call('create_scene', { id: 'other', project: P, fps: 24, duration: 3 }))).toMatch(/takes the project's fps and size/);
+    expect(textOf(await call('create_scene', { id: 'project', project: P, duration: 3 }))).toMatch(/project\.json is taken/);
+    expect(textOf(await call('create_scene', { id: 'extra', project: P, duration: 3 }))).toMatch(/already a scene/);
+
+    const N = `${ID}-new`;
+    const made = json<{ id: string; main: string }>(await call('create_project', { id: N, name: 'A new film', fps: 24, size: [1280, 720], duration: 6 }));
+    expect(made).toMatchObject({ id: N, main: `${N}/main` });
+    expect(JSON.parse(readFileSync(join(NEW_PROJECT_DIR, 'project.json'), 'utf8'))).toEqual({ name: 'A new film', fps: 24, size: [1280, 720], main: 'main' });
+    const listed = json<{ id: string; name: string; main: string; scenes: string[]; errors: string[] }[]>(await call('list_projects')).find((p) => p.id === N);
+    expect(listed).toMatchObject({ name: 'A new film', main: `${N}/main`, scenes: [`${N}/main`], errors: [] });
+    expect((await call('render_frame', { sceneId: `${N}/main`, frame: 0, maxWidth: 320 })).isError).toBeFalsy();
+    expect(textOf(await call('create_project', { id: N, name: 'Again', fps: 24, size: [1280, 720], duration: 6 }))).toMatch(/already a project/);
   });
 
   it("waits to change project.json while another agent's request in the project works, then goes ahead", async () => {

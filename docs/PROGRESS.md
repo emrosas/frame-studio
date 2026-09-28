@@ -660,6 +660,19 @@ A review agent read the redesign and found 11 problems. All are fixed:
 - The build now signs ad hoc (`identity: '-'`), which signs the helpers and frameworks as `studio.frame.app.*` and seals all 167 files. `tools/desktop/check.ts` fails the build if the signature doesn't verify.
 - Checked: the app and the release zip's copy verify, the two packaged suites pass (8 tests), and a copy flagged as downloaded by Safari opens to "Apple could not verify 'Frame Studio' is free of malware" with Done and Move to Trash, the prompt that Open Anyway clears.
 
+### New scenes and projects from the sidebar
+
+You found that the app had no way to start anything new: the sidebar only listed what was in the folder, and the MCP tools could only edit. Now:
+
+- The + next to Scenes opens a New scene dialog: name, size (landscape 1920×1080, portrait 1080×1920, square 1080×1080), frame rate (12, 24 or 30) and length. The name becomes the id and the file, so "Opening shot" is `scenes/opening-shot.json`. The scene starts with paper and no layers.
+- The + next to Projects makes `projects/<id>/project.json` (name, fps, size, `main`) and an empty main scene, `main`. New scene at the end of each project's scenes adds one with the project's fps and size.
+- The viewer opens the new scene with a new thread. On a scene with no layers, the panel asks "What goes in this scene?" instead of listing the point-and-select steps.
+- The studio server does the writing (`POST /__studio/scenes` and `/__studio/projects`) through the same workspace code as two new MCP tools, `create_scene` and `create_project`, and in turn with the other tools. Both refuse a taken or malformed id and a scene that wouldn't validate. The in-studio agents get the tools too, and creating doesn't ask, since it can't touch an existing scene.
+- The rules for the input, and `toId`, which turns a typed name into an id, are in `src/studio/protocol.ts`, shared by the viewer and the server.
+- Fixed on the way: a modal dialog now keeps the viewer's shortcuts off, so Escape closes the dialog rather than clearing the selection.
+
+How it was checked: unit tests for the ids and input checks; MCP tests that create a loose scene, a project scene and a project, render them, and see each refusal; a browser test in a temporary studio folder that creates all three from the sidebar, checks the files and what the viewer opens, and checks that Escape closes the dialog. Screenshots of the dialog in light and dark, and of an empty scene with its new thread.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -674,7 +687,7 @@ A review agent read the redesign and found 11 problems. All are fixed:
 4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film from the Export panel.
 5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
 6. **Install 0.1.0 from GitHub.** [v0.1.0](https://github.com/emrosas/frame-studio/releases/tag/v0.1.0) is published with the DMG, the zip and the feed. Download the DMG in a browser and install it the README's way, to try the real Open Anyway flow and the release redirect. Builds made before 0.1.0 have no updater, so replace them by hand.
-7. The roadmap has no M11 yet. Candidates from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, the timeline editor, selecting inside a shot from its parent, and asking the agent for a new scene from the viewer (a thread needs a scene today).
+7. The roadmap has no M11 yet. Candidates from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, the timeline editor, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 
 ## Open questions
 

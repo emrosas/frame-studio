@@ -186,6 +186,7 @@ Users can attach reference images to a prompt. References are **input to the age
 `tools/mcp/server.ts`, over stdio, a shim that forwards to the studio server running on the folder, or starts a headless one (ADR 0008). The repo's `.mcp.json` registers it for Claude Code, and the app ships it as `frame-studio-mcp`. Setup and the full tool reference are in `docs/MCP.md`. Keep inputs and outputs simple JSON. Tools:
 - `list_scenes()`, `get_scene(id)`, `update_scene(id, patch)`: JSON merge patch, validated before saving. Project scenes take qualified ids, `<project>/<scene>`
 - `list_projects()`, `get_project(id)`, `update_project(id, patch)`: projects, and validated merge patches to `project.json`, which wait while another thread in the project works (ADR 0007)
+- `create_scene(id, project?, fps?, size?, duration)`, `create_project(id, name, fps, size, duration)`: an empty scene (paper, no layers), loose or in a project, and a project with an empty main scene. The viewer's sidebar makes the same through the studio server
 - `list_rigs()`: each rig's param schema, parts, and variants, with `project` on a project's own rig
 - `list_generators()`: each audio generator's param schema
 - `render_frame(sceneId, frame | timecode)`: returns a PNG so the agent can see its work

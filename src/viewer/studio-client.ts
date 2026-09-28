@@ -11,7 +11,9 @@ import {
   type AgentStatus,
   type ApprovalDecision,
   type CurrentSelection,
+  type NewProject,
   type NewRequest,
+  type NewScene,
   type Reply,
   type StudioRequest,
   type TurnEvent,
@@ -82,6 +84,16 @@ export class StudioClient {
 
   async create(request: NewRequest): Promise<StudioRequest> {
     return (await call<{ request: StudioRequest }>('/requests', jsonBody(request))).request;
+  }
+
+  /** Creates an empty scene; returns its id as the library keys it. */
+  async createScene(scene: NewScene): Promise<string> {
+    return (await call<{ id: string }>('/scenes', jsonBody(scene))).id;
+  }
+
+  /** Creates a project with an empty main scene; returns the main scene's id. */
+  async createProject(project: NewProject): Promise<string> {
+    return (await call<{ main: string }>('/projects', jsonBody(project))).main;
   }
 
   async reply(id: number, reply: Reply): Promise<StudioRequest> {

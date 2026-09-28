@@ -512,6 +512,21 @@ kbd {
   font-size: 12px;
 }
 
+/* The + by a section's label, and New scene at the end of a project's scenes. */
+.side-label .side-add {
+  margin-left: auto;
+  margin-right: -4px;
+}
+
+.side-item.is-add {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.side-item.is-add .icon {
+  color: var(--faint);
+}
+
 /* A thread in the sidebar: its status, its first prompt, and where it is. */
 .thread-item {
   height: auto;
@@ -1407,6 +1422,112 @@ progress::-moz-progress-bar {
   overflow-wrap: anywhere;
   color: var(--muted);
   font: 11px/1.4 var(--mono);
+}
+
+/* The New scene and New project dialog, from the sidebar. */
+.new-dialog {
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-lg);
+}
+
+.new-dialog::backdrop {
+  background: rgba(28, 27, 25, 0.28);
+}
+
+@media (prefers-color-scheme: dark) {
+  .new-dialog::backdrop {
+    background: rgba(0, 0, 0, 0.5);
+  }
+}
+
+.new-dialog form {
+  display: grid;
+  gap: 14px;
+}
+
+.new-dialog header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.new-dialog h2 {
+  margin: 0;
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.new-dialog header .icon-btn {
+  margin-left: auto;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field-label {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.field-hint {
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.new-dialog input[type='text'],
+.new-dialog input[type='number'] {
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+}
+
+.new-dialog input[type='number'] {
+  width: 88px;
+}
+
+.new-dialog input[type='text']:focus-visible,
+.new-dialog input[type='number']:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+
+.new-dialog footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.new-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12.5px;
+  white-space: pre-line;
 }
 
 .export-error {

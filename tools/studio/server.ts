@@ -13,7 +13,9 @@ import type { AddressInfo } from 'node:net';
 import { extname, join, relative, resolve, sep } from 'node:path';
 import type { ViteDevServer } from 'vite';
 import {
+  checkNewProject,
   checkNewRequest,
+  checkNewScene,
   checkRetry,
   EXPORT_EVENT,
   LIBRARY_EVENT,
@@ -23,7 +25,9 @@ import {
   type AgentStatus,
   type ApprovalDecision,
   type CurrentSelection,
+  type NewProject,
   type NewRequest,
+  type NewScene,
   type Reply,
   type TurnSettings,
 } from '../../src/studio/protocol.ts';
@@ -173,7 +177,18 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         workspace = null;
         throw err;
       }));
-  const endpoint = new McpEndpoint(ws, createSerial(), options.token, queue);
+  // The MCP tools and the viewer's New scene and New project take turns on the scene files.
+  const serial = createSerial();
+  const endpoint = new McpEndpoint(ws, serial, options.token, queue);
+  /** Runs a create in turn with the tools. What it refuses, such as a taken name, goes back to the viewer as a 409. */
+  const created = <T>(fn: () => Promise<T>): Promise<T> =>
+    serial(async () => {
+      try {
+        return await fn();
+      } catch (err) {
+        throw new HttpError(409, err instanceof Error ? err.message : String(err));
+      }
+    });
   const agents = options.agents ?? false;
   const runner = new AgentRunner({
     queue,
@@ -436,6 +451,20 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     if (req.method === 'POST' && parts[0] === 'export' && parts[2] === 'cancel') {
       exports.get(parts[1])?.abort();
       return send(res, 200, { ok: true });
+    }
+
+    // New scenes and projects from the viewer's sidebar, the same operations as create_scene and create_project.
+    if (req.method === 'POST' && path === '/scenes') {
+      const input = await json<NewScene>(req);
+      const problem = checkNewScene(input);
+      if (problem) throw new HttpError(400, problem);
+      return send(res, 201, await created(() => ws().then((w) => w.createScene(input))));
+    }
+    if (req.method === 'POST' && path === '/projects') {
+      const input = await json<NewProject>(req);
+      const problem = checkNewProject(input);
+      if (problem) throw new HttpError(400, problem);
+      return send(res, 201, await created(() => ws().then((w) => w.createProject(input))));
     }
 
     // The request queue (ADR 0003, ADR 0006).

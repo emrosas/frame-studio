@@ -1,7 +1,8 @@
 <!--
   A new thread: how the studio is used (point at the canvas, pick frames,
   say what should change), each step ticked as the selection fills in, and
-  the composer. For the external agent, sending queues the request and copies
+  the composer. On an empty scene there is nothing to point at yet, so it
+  asks what goes in it instead. For the external agent, sending queues the request and copies
   a line to paste into it; for an agent the studio runs, the thread opens.
   The draft belongs to the agent panel, which keeps it while this is away.
 -->
@@ -41,6 +42,7 @@
   });
 
   const sel = $derived(ui.selection);
+  const empty = $derived(ui.header?.empty ?? false);
   const target = $derived.by(() => {
     if (!sel.sceneId) return 'No valid scene';
     const what = sel.layer === '' ? (sel.range ? 'All layers' : 'The whole scene') : sel.layer;
@@ -91,9 +93,14 @@
 <div class="panel-body">
   <div class="intro">
     <Logo size={40} />
-    <h2>What should change?</h2>
-    <p>Point at what you see, pick the frames, and describe it. The agent edits the scene and shows you the frames.</p>
-    <ol class="steps">
+    {#if empty}
+      <h2>What goes in this scene?</h2>
+      <p>It's empty so far. Describe what should be in it and what happens, and attach reference images if you have them. The agent draws it and shows you the frames.</p>
+    {:else}
+      <h2>What should change?</h2>
+      <p>Point at what you see, pick the frames, and describe it. The agent edits the scene and shows you the frames.</p>
+    {/if}
+    <ol class="steps" hidden={empty}>
       <li class:is-done={sel.layer !== ''}>
         <Icon name={sel.layer !== '' ? 'check' : 'pointer'} size={15} />
         <span>{sel.layer !== '' ? `Selected ${sel.layer}` : 'Click something on the canvas'}</span>
@@ -120,7 +127,7 @@
     bind:settings
     agents={ui.studio.agents}
     label="Prompt"
-    placeholder="Make pip look sad here…"
+    placeholder={empty ? 'A fox trots across a snowy field, then looks back…' : 'Make pip look sad here…'}
     {target}
     sendLabel="Send to agent"
     canSend={prompt.trim() !== '' && !sending && sel.sceneId !== null && ready}

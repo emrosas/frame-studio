@@ -183,6 +183,8 @@ export class App {
   private pendingFrameParam: string | null;
   /** ?scene=, ?frame= and the selection from the URL when no scene matched; shown as an error and opened if the scene appears. */
   private missingRequest: { scene: string; frame: string | null; selection: SelectionParams | null } | null = null;
+  /** A scene just created, to show as soon as the library has it. */
+  private openWhenLoaded: string | null = null;
 
   // ---- selection ----
   private layerId: string | null = null;
@@ -276,6 +278,8 @@ export class App {
         const next = findEntry(this.library, key);
         if (next) this.userSelect(next);
       },
+      createScene: (input) => this.create(() => this.studio.createScene(input)),
+      createProject: (input) => this.create(() => this.studio.createProject(input)),
       selectShot: (layerId) => {
         const shot = this.shots().find((s) => s.layerId === layerId);
         if (!shot) return;
@@ -408,7 +412,11 @@ export class App {
     this.library = library;
     // The scene the URL asked for now exists (its file was just written): open it at the requested frame.
     const requested = this.missingRequest ? findEntry(library, this.missingRequest.scene) : null;
-    if (requested && this.missingRequest) {
+    const created = this.openWhenLoaded !== null ? findEntry(library, this.openWhenLoaded) : null;
+    if (created) {
+      this.openWhenLoaded = null;
+      this.userSelect(created);
+    } else if (requested && this.missingRequest) {
       this.pendingFrameParam = this.missingRequest.frame;
       this.pendingSelection = this.missingRequest.selection;
       this.missingRequest = null;
@@ -482,6 +490,16 @@ export class App {
 
   // ---- scene selection ----
 
+  /** Creates a scene or project on the studio server, then shows the new scene: now if the library has it, else once it does. */
+  private create(make: () => Promise<string>): Promise<string | null> {
+    return attempt(async () => {
+      const key = await make();
+      const entry = findEntry(this.library, key);
+      if (entry && entry.key === key) this.userSelect(entry);
+      else this.openWhenLoaded = key;
+    });
+  }
+
   private userSelect(entry: SceneEntry): void {
     this.shotReturn = null;
     this.pendingFrameParam = null;
@@ -523,6 +541,7 @@ export class App {
     this.errors.set('render', null);
     this.syncErrors();
     this.ui.scenes = this.sceneOptions();
+    this.ui.projects = this.library.projects.map((p) => ({ id: p.id, name: p.name, fps: p.project?.fps ?? null, size: p.project?.size ?? null }));
     this.ui.selectedScene = entry?.key ?? null;
     const project = entry && entry.project !== null ? this.library.projects.find((p) => p.id === entry.project) : undefined;
     this.ui.header = entry
@@ -533,6 +552,7 @@ export class App {
           size: scene ? scene.size : null,
           fps: scene?.fps ?? null,
           frames: this.total,
+          empty: scene !== null && scene.layers.length === 0,
         }
       : null;
     document.title = entry ? `${entry.key} · Frame Studio` : 'Frame Studio';
@@ -803,7 +823,8 @@ export class App {
   }
 
   private readonly onKey = (e: KeyboardEvent): void => {
-    if (e.defaultPrevented || e.isComposing) return;
+    // A modal dialog (New scene) owns the keyboard; Escape there must close it, not clear the selection.
+    if (e.defaultPrevented || e.isComposing || document.querySelector('dialog:modal')) return;
     const action = keyAction(e, this.entry?.scene?.fps ?? 1);
     if (!action || focusKeepsKey(e.target, e.key)) return;
     e.preventDefault();

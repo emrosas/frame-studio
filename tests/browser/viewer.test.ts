@@ -226,7 +226,9 @@ describe('projects (ADR 0007)', () => {
     await expect.poll(() => readout(page)).toBe('frame 12 of 48');
     expect(await currentScene(page)).toBe('bears-story/pip');
     const project = sidebar(page).getByRole('group', { name: "Bears' story" });
-    expect(await project.getByRole('listitem').getByRole('button').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['film', 'meet', 'pip', 'together']);
+    expect(await project.locator('button[data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['film', 'meet', 'pip', 'together']);
+    // Then a row to add a scene to the project.
+    expect(await project.getByRole('listitem').last().getByRole('button').textContent()).toContain('New scene');
     expect(await project.getByRole('button', { name: 'film', exact: true }).textContent()).toContain('main');
     // Loose scenes stay outside the project.
     expect(await sidebar(page).getByRole('region', { name: 'Scenes' }).getByRole('button', { name: 'bear-test', exact: true }).count()).toBe(1);

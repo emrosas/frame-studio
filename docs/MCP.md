@@ -39,10 +39,12 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `list_scenes()` | Every scene, loose ones first: id, project, file, fps, duration, frame count, size, layers (with the rig, cast member or placed scene each draws) and any validation errors. |
 | `get_scene(id)` | The scene JSON exactly as it is in its file. |
 | `update_scene(id, patch)` | Applies an RFC 7386 JSON merge patch. Objects merge, `null` deletes a key, and arrays are replaced whole. The result is validated first, and nothing is saved when it is invalid. In a project, it also refuses an edit that would break a scene placing this one, such as shortening a shot below its trim. |
+| `create_scene(id, project?, fps?, size?, duration)` | A new, empty scene: a paper background and no layers, to fill with `update_scene`. A loose one goes in `scenes/<id>.json` and needs `fps` and `size`. With `project`, it goes in `projects/<project>/<id>.json` and takes the project's fps and size. The id is lowercase letters, digits and single hyphens, and a taken id is refused. |
 | `list_rigs()` | Each rig's param schema, the parts it declares, its variants and, for a variant, its base. A project's own rig carries `project`, and only that project's scenes can use it. |
 | `list_projects()` | Every project: name, fps, size, main scene, cast, its scenes by qualified id, its own rigs, and any errors in `project.json`. |
 | `get_project(id)` | The project's `project.json` exactly as it is in its file. |
 | `update_project(id, patch)` | A merge patch to `project.json`, such as a cast change. The result must be a valid project, and every scene in the project must stay valid under it. It changes every scene in the project, so it waits while another request in the project is working, for up to about 50 s, and then refuses. Because every scene must match the project's `fps` and `size`, changing either means editing `project.json` and every scene file by hand. |
+| `create_project(id, name, fps, size, duration)` | A new project: `projects/<id>/project.json` with its name, fps and size, and an empty main scene, `<id>/main`, `duration` seconds long. A taken id is refused. |
 | `list_generators()` | Each audio generator's param schema, for the scene's `audio` cues. |
 | `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` (`out/<project>/<scene>/` in a project) and returns a preview up to `maxWidth` wide (1280 by default). |
 | `render_contact_sheet(sceneId, from?, to?, every?, columns?)` | A labelled grid of every Nth frame, returned as an image and written to `out/<scene>/`. |
@@ -83,7 +85,7 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 
 ## A typical loop
 
-1. `list_scenes`, then `render_frame` to see where things stand. In a project, `list_projects` shows the cast and which scene is the main one.
+1. `list_scenes`, then `render_frame` to see where things stand. For something new, `create_scene` or `create_project` first. In a project, `list_projects` shows the cast and which scene is the main one.
 2. `hit_test` on the thing to change, to get its layer.
 3. `apply_to_selection` for a change over some frames, or `update_scene` for a change to the whole scene. Sound is `update_scene` on the scene's `audio` cues, with generators from `list_generators`. The agent can't hear it, so place cues by frame: a cue starts on the frame its `start` falls in.
 4. `render_frame` or `render_contact_sheet` again to check it. Frames outside the edited range are untouched.

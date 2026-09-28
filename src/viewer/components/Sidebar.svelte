@@ -3,14 +3,16 @@
   folder's scenes (loose ones, then each project's under its name, main scene
   first), and the threads, newest first. At the bottom, the app's update when
   it has one. Clicking a scene shows it; clicking a thread opens it in the
-  agent panel.
+  agent panel. The + by Scenes and by Projects, and New scene in a project,
+  open the New dialog.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
   import { currentTurn, displayStatus, type StudioRequest } from '../../studio/protocol';
-  import type { SceneOption, ViewerActions, ViewerUi } from '../ui.svelte';
+  import type { NewWhat, SceneOption, ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
   import Logo from './Logo.svelte';
+  import NewDialog from './NewDialog.svelte';
   import UpdateCard from './UpdateCard.svelte';
 
   let {
@@ -52,6 +54,8 @@
     const project = current;
     if (project !== null) untrack(() => (folded[project] = false));
   });
+
+  let creating = $state<NewWhat | null>(null);
 
   const threads = $derived([...ui.studio.requests].reverse());
   const yours = $derived(ui.studio.requests.filter((r) => r.status === 'your_turn').length);
@@ -135,18 +139,32 @@
   </div>
 
   <div class="sidebar-scroll">
-    {#if loose.length > 0}
-      <section class="side-section" aria-label="Scenes">
-        <div class="side-label">Scenes</div>
+    <section class="side-section" aria-label="Scenes">
+      <div class="side-label">
+        Scenes
+        <button type="button" class="icon-btn is-small side-add" aria-label="New scene" title="New scene" onclick={() => (creating = { kind: 'scene', project: null })}>
+          <Icon name="plus" size={14} />
+        </button>
+      </div>
+      {#if loose.length === 0}
+        <p class="side-empty">No scenes yet.</p>
+      {:else}
         <ul class="side-list">
           {#each loose as option (option.key)}{@render sceneItem(option, 'scene')}{/each}
         </ul>
-      </section>
-    {/if}
+      {/if}
+    </section>
 
-    {#if projects.length > 0}
-      <section class="side-section" aria-label="Projects">
-        <div class="side-label">Projects</div>
+    <section class="side-section" aria-label="Projects">
+      <div class="side-label">
+        Projects
+        <button type="button" class="icon-btn is-small side-add" aria-label="New project" title="New project" onclick={() => (creating = { kind: 'project' })}>
+          <Icon name="plus" size={14} />
+        </button>
+      </div>
+      {#if projects.length === 0}
+        <p class="side-empty">No projects yet. A project's scenes share a size and frame rate, and place each other as shots.</p>
+      {:else}
         <ul class="side-list">
           {#each projects as project (project.id)}
             <li role="group" aria-label={project.name}>
@@ -158,13 +176,23 @@
               {#if !folded[project.id]}
                 <ul class="side-list side-children">
                   {#each project.scenes as option (option.key)}{@render sceneItem(option, null)}{/each}
+                  <li>
+                    <button
+                      type="button"
+                      class="side-item is-add"
+                      onclick={() => (creating = { kind: 'scene', project: ui.projects.find((p) => p.id === project.id) ?? { id: project.id, name: project.name, fps: null, size: null } })}
+                    >
+                      <Icon name="plus" size={14} />
+                      <span class="name">New scene</span>
+                    </button>
+                  </li>
                 </ul>
               {/if}
             </li>
           {/each}
         </ul>
-      </section>
-    {/if}
+      {/if}
+    </section>
 
     <section class="side-section" aria-label="Threads">
       <div class="side-label">
@@ -204,6 +232,18 @@
       {/if}
     </section>
   </div>
+
+  {#if creating}
+    <NewDialog
+      what={creating}
+      {actions}
+      onclose={() => (creating = null)}
+      ondone={() => {
+        actions.openThread(null);
+        onthread();
+      }}
+    />
+  {/if}
 
   {#if ui.update && ui.update.status !== 'idle' && ui.update.status !== 'checking'}
     <footer class="sidebar-foot">

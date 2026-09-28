@@ -431,6 +431,8 @@ A project is a folder, `projects/<id>/`, for a piece made of several scenes (ADR
 | `main` | Optional. The scene that places the shots. Exporting it exports the whole video. |
 | `cast` | Optional. Named characters, each a rig and params, that layers use by name. |
 
+The sidebar's + next to Projects makes a new one: `project.json` with a name, fps and size, and an empty main scene, `main`. New scene at the end of a project's scenes adds a scene with the project's fps and size. Agents use `create_project` and `create_scene`.
+
 Each scene is `projects/<id>/<scene>.json`, named after its id like a loose scene. Inside the project a scene names a sibling by its bare id, such as `"scene": "pip"`. Everywhere else, including the viewer's URL, threads, the render commands and every MCP tool, a project scene has a qualified id: `bears-story/pip`.
 
 ### The cast
@@ -486,6 +488,8 @@ A rig that only one project needs goes in `projects/<id>/rigs/`, as a module tha
 ## Opening a scene in the viewer
 
 In the app, the viewer is the main window. In the repo, run `npm run dev` and open the link it prints, which ends in `#token=...`: the page pairs with the studio server once and keeps the pairing, so later visits work without it. Add `?scene=<id>&frame=<n>` to land on a scene and frame, for example `http://127.0.0.1:5173/?scene=shapes-test&frame=36`. A project scene takes its qualified id, `?scene=bears-story/film`. The sidebar lists loose scenes first, then each project's scenes under the project's name, with its main scene first. `frame` also takes a timecode such as `00:03:00`, and `scene` also takes the file name without `.json`. If `scene` matches nothing, the viewer shows the first scene with an error and opens the requested one as soon as its file exists. The URL follows along as you scrub, so a reload returns to the same place. Space plays and pauses, the arrow keys step one frame, Shift with an arrow steps one second, and Home and End jump to the ends. The keyboard button in the top bar lists every shortcut.
+
+The + next to Scenes in the sidebar makes a new scene: a name, a size (landscape, portrait or square), a frame rate and a length. The name becomes the id and the file name, so "Opening shot" is `scenes/opening-shot.json`. The scene starts empty, with a paper background and no layers, and the viewer opens it with a new thread, so the next step is telling the agent what goes in it.
 
 Click the canvas to select the layer under the pointer. The viewer outlines it and shows its id in a tag above it. Clicking the same spot again steps down through the layers painted there and wraps back to the top. Alt with a click picks the part of the layer, such as `bruno › nose`. While paused, hovering shows a fainter outline on the layer the pointer is over. The selection is hidden during playback, since redrawing it costs several times the render, and it comes back on pause. I marks the frame on screen as the start of the frame range and O marks it as the last frame. You can also type a frame number or a timecode into the from and to fields. Ranges are `[from, to)`, so O on frame 30 stores `to: 31`. Escape clears the hover, then the layer, then the range. The URL carries the selection as `layer`, `part`, `from` and `to`.
 
