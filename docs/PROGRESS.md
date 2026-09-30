@@ -686,7 +686,7 @@ How it was checked: unit tests for the ids and input checks; MCP tests that crea
 3. Try the integrated AI: in the viewer, select something, pick Claude or Codex in the agent panel's composer, and ask for a change.
 4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film from the Export panel.
 5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
-6. **Install 0.1.0 from GitHub.** [v0.1.0](https://github.com/emrosas/frame-studio/releases/tag/v0.1.0) is published with the DMG, the zip and the feed. Download the DMG in a browser and install it the README's way, to try the real Open Anyway flow and the release redirect. Builds made before 0.1.0 have no updater, so replace them by hand.
+6. **Update to 0.1.1.** [v0.1.1](https://github.com/emrosas/frame-studio/releases/tag/v0.1.1) adds New scene and New project. It's the first release an installed app (0.1.0) can update to, so it's also the first real run of the updater: Frame Studio › Check for Updates…, then Update.
 7. The roadmap has no M11 yet. Candidates from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, the timeline editor, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 
 ## Open questions
