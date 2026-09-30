@@ -145,6 +145,51 @@ Default fill `#f2b134`. The first tip points straight up.
 | `outerRadius` | 110 | 0 to 5000 | Centre to tip, at scale 1. |
 | `innerRadius` | 48 | 0 to 5000 | Centre to the notch between tips, at scale 1. |
 
+### text
+
+Text drawn as vector outlines from a typeface module (ADR 0010). No font is loaded and the canvas measures nothing, so the letters, the kerning and the line breaks are the same in the viewer, every export and on every machine.
+
+| Param | Default | Range | Meaning |
+| --- | --- | --- | --- |
+| `text` | `Hello` | | The text. `\n` starts a new line. A character the typeface lacks draws its missing-glyph box. |
+| `font` | `inter` | see below | The typeface. |
+| `size` | 96 | 1 to 2000 | Font size in scene pixels per em. |
+| `x`, `y` | 960, 540 | -10000 to 10000 | The anchor. |
+| `align` | `center` | `left`, `center`, `right` | Each line starts at the anchor, centres on it, or ends at it. |
+| `valign` | `middle` | `top`, `middle`, `baseline`, `bottom` | Which part of the block sits on the anchor: its top, middle, first baseline or bottom. `baseline` lines text up across layers. |
+| `width` | 0 | 0 to 10000 | Wrap at this width, at spaces and after hyphens. A word wider than the line breaks between letters. 0 breaks only at newlines. |
+| `lineHeight` | 1.2 | 0.5 to 4 | Line height as a multiple of the size. The ascender and descender sit centred in each line, as in CSS. |
+| `tracking` | 0 | -300 to 1000 | Letter spacing in thousandths of an em. Capitals often want 50 to 150. |
+| `case` | `none` | `none`, `upper`, `lower` | Draw the text as written, in capitals or in lower case. |
+| `fill` | `#1c1b19` | colour | `none` skips the fill. |
+| `stroke`, `strokeWidth` | `none`, 0 | colour, 0 to 100 | An outline. With `fill: "none"` it draws outlined letters. |
+| `opacity`, `rotation`, `scale` | 1, 0, 1 | | As for the shapes, about the anchor. |
+| `reveal` | 1 | 0 to 1 | How much of the text shows, in reading order. Key it from 0 to 1 to type text on; the layout never moves while it does. |
+
+The built-in typefaces, all under the SIL Open Font License 1.1 (`src/rigs/type/faces/OFL.txt`):
+
+| `font` | Typeface |
+| --- | --- |
+| `inter` | Inter Regular, for body text. The default. |
+| `inter-bold` | Inter Bold. |
+| `inter-display` | Inter Display Black, for big headlines. |
+| `instrument-serif` | Instrument Serif, a condensed display serif. |
+| `instrument-serif-italic` | Instrument Serif Italic. |
+| `fraunces` | Fraunces Semibold at its 72 pt design, a warm old-style serif. |
+| `jetbrains-mono` | JetBrains Mono, monospaced, for code. |
+
+Each keeps ASCII, Latin-1, Latin Extended-A, curly quotes, dashes, the ellipsis, bullet, euro and arrows. Instrument Serif lacks some symbols (`±`, `µ`, fractions) and Fraunces the arrows. There is no shaping, so scripts that need it, such as Arabic or Devanagari, and ligatures such as `fi`, are out of reach for now.
+
+A rig can draw text of its own, a label on a sign, say, with `drawText(ctx, face, text, x, y, options)` from `@frame-studio/rigs/type/layout` (in `src/`, `./type/layout`), and the typefaces from `@frame-studio/rigs/type/faces/index`. `layoutText` returns the lines and widths without drawing, for fitting a box around text. A rig must never call `fillText`, `strokeText` or `measureText`, or set `ctx.font`: those use the fonts of whatever machine draws the frame, and `tests/runtime-budget.test.ts` refuses them.
+
+To add a typeface, convert an open-licensed font file:
+
+```sh
+npm run typeface -- MyFont-Bold.ttf --id my-font-bold --name "My Font Bold" --license "My Font: Copyright 2024 The My Font Authors. SIL Open Font License 1.1, https://openfontlicense.org"
+```
+
+It writes `src/rigs/type/faces/my-font-bold.ts`; add it to `typefaces` in `faces/index.ts`. `--axis wght=700` fixes a variable font at one instance, but prefer a font's static builds: a variable font keeps overlapping contours, which show as seams when text is outlined. `npm run typeface -- --builtins` downloads and regenerates the built-ins (`tools/type/builtins.ts`). A typeface costs 100 to 200 KB of code in the viewer. The HTML export carries only the typefaces a scene names, plus `inter`, each cut to the characters in the scene's strings: a few words come to about 35 KB. A rig of a studio folder that imports `rigs/type/` itself turns the cut off, since its text is in code the export doesn't read.
+
 ### bear
 
 A tall tombstone-shaped bear painted to look like gouache. It has rounded head corners, a body that runs off the bottom of the stage, round or oval ears, dot eyes or small eye whites with a pupil, brow dashes, a pale muzzle, a glossy black nose and a line smile. `scenes/bears.json` stacks four of them.
@@ -560,6 +605,8 @@ The render worker is `render.html?worker` in a hidden Electron window, with CPU 
 `bear-test` is the M2 character scene, 1920 by 1080 at 12 fps for 8 seconds on the orange of `bears`. `bruno`, a big white bear, eases in from the left over the first 2 seconds, then waves at 2 s, cheers at 5 s and rests at 7 s, going neutral, happy, surprised and neutral with it. An override swaps him to `bear.bandaged` over frames `[48, 72)`. `pip`, a smaller red bear in front of him with `stepFps: 6`, starts shy and sad and waves happily from 4 s. Both blink. The paper around them is left clear, so a click on empty paper has room to land.
 
 `audio-test` is the M7 sound scene: 640 by 360 at 30 fps for 4 seconds. A circle swells on the three blips at 0.5, 1 and 1.5 s, a star spins while a buzz plays from 2.2 s to 3.2 s, and a minor pad fades in under it from 2 s. The browser tests use the blips to check audio alignment.
+
+`type-test` is the M11 type scene, 1920 by 1080 at 12 fps for 4 seconds: every built-in typeface, a tracked capital kicker, kerned pairs (`AVATAR`, `Wave`, `To`), outlined rotated text, a paragraph wrapped at 560 px and centred, a terminal line typed on with `reveal` from 0.5 s to 3 s, and a character no typeface has, which draws the missing-glyph box.
 
 `bears-story` is the sample project, at 12 fps and 1920 by 1080. Its cast is `bruno` and `pip` from `bear-test`. Three shots each open with a blip: `meet` (4 s, bruno walks in and waves), `pip` (4 s, pip goes from shy to waving) and `together` (5 s, both wave, then cheer). The main scene, `film`, runs 12 s. It cuts from `meet` to `pip` at 3 s, crossfades to `together` from 6 s to 7 s, and at 10 s opens the project's `iris` rig onto `meet` again, trimmed to start 1 s in, so meet's first blip stays out. A pad under the whole film ducks while `pip` plays. The tests check that a shot showing in full draws the same pixels in `film` as alone, and that the blips at the cuts land within a frame in the MP4.
 

@@ -5,20 +5,26 @@
 // deep, its project's cast, and the project rigs they draw with (ADR 0007).
 // The file makes no requests and needs no runtime library.
 //
+// Text (ADR 0010): the text rig's typefaces are cut to the typefaces and
+// characters the scene's strings use, so an embed carries only those glyphs.
+//
 // Scenes are validated here, at export time, so the embed ships without the
 // validator. Scene keys resolve exactly as in the viewer and render page
 // (buildLibrary and findEntry). Rolldown bundles it, on its own, so the app
 // needs no Vite (ADR 0008); it reads the built-ins and the folder's rigs from
 // disk. Node only; runs as TypeScript through Node's type stripping.
 
+import { readFile } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { rolldown, type Plugin } from 'rolldown';
 import { parseAst } from 'rolldown/parseAst';
 import { transformSync } from 'rolldown/utils';
 import type { Scene, World } from '../../src/engine/types.ts';
+import type { Typeface } from '../../src/rigs/type/typeface.ts';
 import { loadModules, sceneLibrary } from '../scene-files.ts';
 import type { CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
+import { collectStrings, typefacesFor } from '../type/subset.ts';
 
 export interface EmbedBuild {
   html: string;
@@ -134,13 +140,31 @@ function stripDescriptionsPlugin(folder: StudioFolder): Plugin {
   };
 }
 
+const FACES = 'rigs/type/faces/index.ts';
+
+/**
+ * Swaps the built-in typeface index for one with only the typefaces and
+ * characters in `data`'s strings, when the text rig is bundled. A rig of the
+ * folder's that imports the type modules itself may draw text from its own
+ * code, which the scene's strings don't show, so then the typefaces go in whole.
+ */
+async function typefacePlugin(files: readonly string[], folder: StudioFolder, code: CodeHost, data: unknown): Promise<Plugin | null> {
+  const textRig = join(folder.builtins, 'rigs/type/text.ts');
+  if (!files.includes(textRig)) return null;
+  for (const file of files) if (file !== textRig && /rigs\/type\//.test(await readFile(file, 'utf8'))) return null;
+  const all = (await code.importBuiltin(FACES)).typefaces as readonly Typeface[];
+  const source = `export const typefaces = ${JSON.stringify(typefacesFor(all, collectStrings(data))).replace(/</g, '\\u003c')};`;
+  const path = join(folder.builtins, FACES);
+  return { name: 'frame-studio-typefaces', load: (id) => (id === path ? source : null) };
+}
+
 /** Bundles `code` as a minified IIFE and returns its text. */
-async function bundle(code: string, folder: StudioFolder): Promise<string> {
+async function bundle(code: string, folder: StudioFolder, extra: Plugin | null = null): Promise<string> {
   const build = await rolldown({
     input: ENTRY,
     platform: 'browser',
     logLevel: 'silent',
-    plugins: [entryPlugin(code), stripDescriptionsPlugin(folder)],
+    plugins: [entryPlugin(code), ...(extra ? [extra] : []), stripDescriptionsPlugin(folder)],
     resolve: { alias: { '@frame-studio': folder.builtins } },
   });
   try {
@@ -267,7 +291,13 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
   ].join('\n');
   const runtimeOnly = `import { mountEmbed, optionsFromQuery } from ${importPath(player)};\nwindow.studio = [mountEmbed, optionsFromQuery];`;
 
-  const script = inlineSafe(await bundle(code, folder));
+  const faces = await typefacePlugin(
+    ids.map((id) => rigFiles.get(id)!.file),
+    folder,
+    options.code,
+    [scene, ...placed.values(), cast],
+  );
+  const script = inlineSafe(await bundle(code, folder, faces));
   const html = page(scene, script);
   const runtime = options.measureRuntime ? Buffer.byteLength(await bundle(runtimeOnly, folder)) : undefined;
   return {

@@ -18,7 +18,8 @@
     "desktop": "node tools/desktop/run.ts",
     "desktop:build": "node tools/desktop/package.ts",
     "desktop:check": "node tools/desktop/check.ts",
-    "desktop:release": "node tools/desktop/release.ts"
+    "desktop:release": "node tools/desktop/release.ts",
+    "typeface": "node tools/type/cli.ts"
   },
   "devDependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.282",
@@ -29,6 +30,7 @@
     "electron": "^44.4.5",
     "electron-builder": "^26.15.3",
     "es-module-lexer": "^2.3.2",
+    "fontkit": "^2.0.4",
     "playwright": "1.63.0",
     "rolldown": "^1.2.9",
     "svelte": "5.57.1",

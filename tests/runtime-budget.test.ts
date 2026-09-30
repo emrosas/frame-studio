@@ -72,6 +72,9 @@ const BANNED: { name: string; re: RegExp; fix?: string }[] = [
   },
 ];
 
+/** fillText, strokeText, measureText or setting ctx.font, which rigs may not use (ADR 0010). */
+const CANVAS_TEXT = /\b(?:fillText|strokeText|measureText)\s*\(|\.font\s*=[^=]/;
+
 /** Resolve a relative specifier against a root-relative file path like /src/rigs/circle.ts. */
 function resolveSpecifier(file: string, spec: string): string {
   const parts = file.split('/').slice(0, -1);
@@ -156,11 +159,14 @@ export function findViolations(file: string, source: string): string[] {
     }
   }
   const player = file === '/src/embed/player.ts';
+  const rig = /^\/(?:src\/)?rigs\/|^\/projects\/[^/]+\/rigs\//.test(file);
   source.split('\n').forEach((text, i) => {
     for (const { name, re, fix = CLOCK_FIX } of BANNED) {
       if (player && PLAYBACK_CLOCK_ALLOWED.includes(name)) continue;
       if (re.test(text)) problems.push(`${file}:${i + 1}: uses ${name}; ${fix}`);
     }
+    // Canvas text depends on the fonts of the machine drawing it (ADR 0010).
+    if (rig && CANVAS_TEXT.test(text)) problems.push(`${file}:${i + 1}: draws or measures text with the canvas's fonts; draw it with the text rig or drawText from src/rigs/type/layout.ts`);
   });
   return problems;
 }
@@ -305,6 +311,16 @@ describe('runtime budget scanner (self-test)', () => {
     expect(check(`import { hat } from '../../projects/story/rigs/hat';`, '/src/rigs/index.ts').join('\n')).toMatch(/only that project's own rigs/);
     expect(check(`import { ui } from '../../../src/viewer/ui';`, own).join('\n')).toMatch(/src\/viewer/);
     expect(check(`const r = Math.random();`, own).join('\n')).toMatch(/Math\.random/);
+  });
+
+  it("forbids rigs from drawing or measuring text with the canvas's fonts", () => {
+    for (const code of [`ctx.fillText('hi', 0, 0);`, `ctx.strokeText(t, x, y);`, `const w = ctx.measureText(t).width;`, `ctx.font = '40px serif';`]) {
+      expect(check(code, '/src/rigs/label.ts').join('\n'), code).toMatch(/canvas's fonts/);
+      expect(check(code, '/projects/story/rigs/label.ts').join('\n'), code).toMatch(/canvas's fonts/);
+    }
+    expect(check(`if (face.font === 'x') drawText(ctx, face, 'hi', 0, 0, { size: 10 });`, '/src/rigs/label.ts')).toEqual([]);
+    // The engine resets the context's font between layers; that isn't a rig drawing text.
+    expect(check(`ctx.font = '10px sans-serif';`, '/src/engine/render.ts')).toEqual([]);
   });
 
   it('forbids the engine from importing rigs', () => {

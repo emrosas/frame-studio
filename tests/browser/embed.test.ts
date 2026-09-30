@@ -42,7 +42,7 @@ beforeAll(async () => {
   studio = await renderClient(server, 'bear-test');
   dir = mkdtempSync(join(tmpdir(), 'frame-studio-embed-'));
   const built = { folder: server.server.folder, code: server.server.code };
-  for (const key of ['bear-test', 'shapes-test', 'audio-test']) {
+  for (const key of ['bear-test', 'shapes-test', 'audio-test', 'type-test']) {
     const build = await buildEmbed(key, { ...built, measureRuntime: true });
     const path = join(dir, `${key}.html`);
     writeFileSync(path, build.html);
@@ -111,6 +111,15 @@ describe('the embed file', () => {
     } finally {
       await context.close();
     }
+  });
+
+  it("carries only the typefaces and characters a scene's text uses, with their licenses (ADR 0010)", () => {
+    const type = embeds.get('type-test')!.build;
+    expect(type.rigs).toContain('text');
+    // All seven typefaces in full come to over 1 MB of code.
+    expect(type.bytes.total).toBeLessThan(300 * 1024);
+    for (const family of ['Inter', 'Instrument Serif', 'Fraunces', 'JetBrains Mono']) expect(type.html).toContain(`${family}: Copyright`);
+    expect(embeds.get('bear-test')!.build.html).not.toContain('Open Font License');
   });
 
   it('keeps the engine and player under 50 KB minified', () => {
@@ -200,6 +209,7 @@ describe('pixel parity with the render worker, in Electron', () => {
   it.each([
     ['bear-test', [0, 12, 47, 48, 60, 71, 72, 95]],
     ['shapes-test', [0, 10, 11, 23, 35, 36, 47, 48, 71]],
+    ['type-test', [0, 6, 18, 30, 47]],
   ] as const)('%s frames match the render worker byte for byte', async (key, frames) => {
     await studio.load(key);
     const electron = await electronPage();

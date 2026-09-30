@@ -38,7 +38,7 @@ The whole system rests on one rule: **the image at frame N is a pure function of
 - `src/engine`, `src/rigs`, `src/audio` and `src/embed` have **zero third-party runtime dependencies**. Validation libraries (zod or similar), Playwright, ffmpeg, and the MCP SDK are tooling only and must never be imported from the runtime path.
 - Runtime TypeScript is **erasable**: no enums, namespaces or constructor parameter properties, since the studio server strips types with Node's own stripping instead of a bundler (ADR 0008). `npm run typecheck` enforces it. Rigs and generators outside `src/` (a studio folder's `rigs/` and `audio/`, a project's `rigs/`) import the built-ins as `@frame-studio/rigs/...`, `@frame-studio/engine/...` and `@frame-studio/audio/...`; inside `src/`, imports stay relative.
 - The embed player (`src/embed/player.ts`) is the one runtime file allowed to read the wall clock, to pick the frame to show during playback. render() never sees time.
-- No fonts, images, or base64 blobs. Text is drawn as vector paths in code or uses generic system font families.
+- No fonts, images, or base64 blobs. Text is drawn as vector paths from typeface modules: the `text` rig, or `drawText` in `src/rigs/type/layout.ts` (ADR 0010). `npm run typeface` turns an open-licensed font into such a module. Rigs never call `fillText`, `strokeText` or `measureText`, or set `ctx.font`; a test enforces it.
 - Target: engine under ~50 KB minified. Drawing code is expected to be the bulk of a file's size, and that's fine.
 
 ## Time model
@@ -77,8 +77,10 @@ tools/
   render/     CLI rendering through a studio server's render worker: frame -> PNG,
               range -> MP4/GIF, contact sheets. npm run render / export / contact-sheet.
   bundle/     Single-file HTML builder: validates the scene, bundles only the rigs
-              it uses with the player, inlines all, with Rolldown.
-              npm run export -- --target html.
+              it uses with the player, and only the glyphs its text uses, and
+              inlines all, with Rolldown. npm run export -- --target html.
+  type/       npm run typeface: font file -> typeface module (fontkit, dev only),
+              the built-in typefaces' sources, and the embed's glyph cut.
   mcp/        The MCP tools (docs/MCP.md), and server.ts, the stdio shim an
               external agent starts, which forwards to a studio server.
   studio/     The studio server (ADR 0008): the viewer, pairing, the file

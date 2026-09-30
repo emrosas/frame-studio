@@ -109,6 +109,11 @@ export class CodeHost {
     return this.loaded;
   }
 
+  /** A built-in module, loaded as the rigs are, e.g. "rigs/type/faces/index.ts". */
+  importBuiltin(path: string): Promise<Record<string, unknown>> {
+    return this.importFile(join(this.folder.builtins, path), this.version);
+  }
+
   private shown(file: string): string {
     const { root, builtins } = this.folder;
     const inside = (dir: string) => !relative(dir, file).startsWith('..');

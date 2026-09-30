@@ -168,6 +168,24 @@ Acceptance:
 8. `npm run render`, `export` and `contact-sheet` and the pixel tests render in Electron through the render worker, and the HTML embed matches the worker's pixels.
 9. Every earlier test passes on the new paths.
 
+## M11: Type
+
+Typography drawn entirely from code (ADR 0010), for explainers and still graphics.
+
+- `npm run typeface` turns a font file into a typeface module: glyph outlines, advances, kerning and metrics as plain data.
+- Built-in typefaces from open-licensed fonts, with their licenses.
+- A layout module of our own: kerning, tracking, wrapping, alignment and line height, the same on every machine.
+- A `text` rig that draws it, with `reveal` for typing text on.
+- The HTML embed carries only the typefaces and glyphs a scene uses.
+
+Acceptance:
+1. `scenes/type-test.json` shows every built-in typeface, wrapped and aligned text, tracking and a typed-on line. Its frames draw the same pixels played or seeked, and in the embed as in the render worker.
+2. Unit tests cover the layout: kerning, tracking, wrapping at a width, explicit newlines, alignment, line height and the missing-glyph fallback.
+3. Every built-in typeface has every ASCII character, outlines that trace to finite points, well-formed kerning and sane metrics. The converter reports what each lacks of its set.
+4. The embed of a scene with a few words is a small fraction of the typefaces' full size.
+5. No rig calls `measureText`, `fillText` or sets `ctx.font` to draw scene text.
+6. `docs/SCENES.md` documents the `text` rig, the typefaces and how to add one.
+
 ## Later
 
 - Retiming shots (speed, freeze, reverse), selecting inside a shot from its parent, and a library of transitions (ADR 0007, out of scope for M9).

@@ -673,6 +673,28 @@ You found that the app had no way to start anything new: the sidebar only listed
 
 How it was checked: unit tests for the ids and input checks; MCP tests that create a loose scene, a project scene and a project, render them, and see each refusal; a browser test in a temporary studio folder that creates all three from the sidebar, checks the files and what the viewer opens, and checks that Escape closes the dialog. Screenshots of the dialog in light and dark, and of an empty scene with its new thread.
 
+### M11: Type
+
+You wanted real typography, for explainers and for still graphics such as social posts. ADR 0010 settles it: type is drawn from typefaces compiled to code.
+
+- **Typefaces as code.** `npm run typeface` (`tools/type/`) reads a font with fontkit, a dev dependency, and writes a module of plain data: each glyph's advance and outline in font units, the vertical metrics, and pair kerning stored as classes, the way fonts store it. Classes cut the kerning from about 180 KB to 25 KB per face. It keeps ASCII, Latin-1, Latin Extended-A and common punctuation.
+- **Seven built-ins,** all SIL OFL 1.1 with no Reserved Font Name: `inter`, `inter-bold`, `inter-display` (Black), `instrument-serif`, `instrument-serif-italic`, `fraunces` (Semibold, 72 pt) and `jetbrains-mono`. They come from each project's static builds (`tools/type/builtins.ts`). The first try used Google Fonts' variable files, whose overlapping contours showed as seams inside outlined letters. The static builds have them merged. `OFL.txt` sits beside the modules, and each module carries its copyright and license line.
+- **Layout of our own** (`src/rigs/type/layout.ts`): advances, kerning, tracking, breaks at newlines, spaces and hyphens, a word wider than the line broken between letters, left, centre or right alignment on an anchor, and CSS-style line height. It never measures with the canvas.
+- **The `text` rig:** text, font, size, anchor, align, valign (top, middle, baseline, bottom), width, lineHeight, tracking, case, fill, stroke, opacity, rotation, scale, and `reveal` for typing text on without moving it. Other rigs can use `drawText` and `layoutText`.
+- **The embed** swaps the typeface index for one holding only the typefaces the scene names, plus `inter`, cut to the characters of the scene's strings in both cases. `type-test`, with all seven faces, exports at 232 KB; a scene with two words in Fraunces adds about 35 KB to a scene with no text. The full set is about 1.1 MB. A folder rig that imports `rigs/type/` itself turns the cut off.
+- **A rule:** `tests/runtime-budget.test.ts` refuses `fillText`, `strokeText`, `measureText` and `ctx.font =` in any rig, built-in, folder or project.
+
+How each acceptance criterion was verified:
+
+1. `scenes/type-test.json` renders every face, kerned pairs, a tracked capital kicker, rotated outlined text, a paragraph wrapped at 560 px and centred, a line typed on, and the missing-glyph box. I looked at frames 18 and 47 through the render worker. `tests/browser/render.test.ts` checks it played against seeked, and the embed test checks frames 0, 6, 18, 30 and 47 against the render worker, byte for byte.
+2. `src/rigs/type/layout.test.ts` covers advances and kerning, tracking, wrapping at a width with hanging spaces, hyphens and long words, alignment, line height and valign, the missing glyph, reveal and the outline flip, on a made-up typeface.
+3. `src/rigs/type/faces/faces.test.ts` checks every built-in: every ASCII character, sane metrics, the license line, every outline traced to finite points, and well-formed kerning classes. The converter prints what each lacks: Instrument Serif lacks 47 symbols (±, µ, fractions…), and Fraunces the arrows.
+4. The embed test caps `type-test` at 300 KB and checks each family's license line is in it and none is in `bear-test`'s. `tests/node/typeface.test.ts` checks the cut keeps kerning exact for the characters it keeps and comes to under a twentieth of the face.
+5. The runtime-budget rule, with its own test.
+6. `docs/SCENES.md` has the text rig, the typefaces, `drawText`, and how to add a typeface.
+
+After it: typecheck clean, 1208 unit tests and 122 browser tests pass, with the committed `bear-test.json`.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -687,7 +709,8 @@ How it was checked: unit tests for the ids and input checks; MCP tests that crea
 4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film from the Export panel.
 5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
 6. **Update to 0.1.1.** [v0.1.1](https://github.com/emrosas/frame-studio/releases/tag/v0.1.1) adds New scene and New project. It's the first release an installed app (0.1.0) can update to, so it's also the first real run of the updater: Frame Studio › Check for Updates…, then Update.
-7. The roadmap has no M11 yet. Candidates from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, the timeline editor, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
+7. **Next for type:** typefaces of your own in a studio folder, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer), then the stills work from the feasibility talk: PNG and JPEG export, a Still option in New scene, and social size presets.
+8. The roadmap has no M12 yet. Candidates from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, the timeline editor, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 
 ## Open questions
 

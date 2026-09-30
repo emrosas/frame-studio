@@ -1,0 +1,25 @@
+{
+  "id": "type-test",
+  "fps": 12,
+  "duration": 4,
+  "size": [1920, 1080],
+  "seed": 11,
+  "background": { "rig": "paper", "params": { "tone": "#f4efe6" } },
+  "layers": [
+    { "id": "title", "rig": "text", "params": { "text": "Type drawn in code", "font": "inter-display", "size": 132, "x": 120, "y": 110, "align": "left", "valign": "top", "tracking": -25 } },
+    { "id": "kicker", "rig": "text", "params": { "text": "Frame Studio · M11", "font": "inter-bold", "size": 30, "x": 124, "y": 96, "align": "left", "valign": "bottom", "tracking": 160, "case": "upper", "fill": "#d4410a" } },
+    { "id": "serif", "rig": "text", "params": { "text": "Instrument Serif, kerned: AVATAR, Wave, To", "font": "instrument-serif", "size": 72, "x": 120, "y": 380, "align": "left", "valign": "baseline" } },
+    { "id": "italic", "rig": "text", "params": { "text": "and its italic, for a quieter voice", "font": "instrument-serif-italic", "size": 72, "x": 120, "y": 470, "align": "left", "valign": "baseline", "fill": "#57534e" } },
+    { "id": "fraunces", "rig": "text", "params": { "text": "Fraunces for warm headlines", "font": "fraunces", "size": 84, "x": 120, "y": 580, "align": "left", "valign": "baseline", "fill": "#7a2e12" } },
+    { "id": "inter", "rig": "text", "params": { "text": "Inter regular and bold carry the body copy at any size.", "font": "inter", "size": 40, "x": 120, "y": 660, "align": "left", "valign": "baseline" } },
+    {
+      "id": "typed",
+      "rig": "text",
+      "params": { "text": "$ npm run typeface -- --builtins", "font": "jetbrains-mono", "size": 40, "x": 120, "y": 760, "align": "left", "valign": "baseline", "fill": "#15803d" },
+      "tracks": [{ "param": "reveal", "keys": [{ "t": 0.5, "v": 0 }, { "t": 3, "v": 1 }] }]
+    },
+    { "id": "paragraph", "rig": "text", "params": { "text": "A paragraph wraps at a width, at spaces and hyphens, with the same line breaks on every machine. Centred lines sit on the anchor.", "font": "inter", "size": 34, "x": 1560, "y": 880, "width": 560, "align": "center", "valign": "middle", "lineHeight": 1.4, "fill": "#2b2b2b" } },
+    { "id": "outline", "rig": "text", "params": { "text": "Outlined", "font": "inter-display", "size": 150, "x": 1790, "y": 440, "align": "right", "valign": "baseline", "fill": "none", "stroke": "#1c1b19", "strokeWidth": 3, "rotation": -6 } },
+    { "id": "missing", "rig": "text", "params": { "text": "Missing glyph: 漢", "font": "inter", "size": 28, "x": 120, "y": 1000, "align": "left", "valign": "baseline", "fill": "#6f6a63" } }
+  ]
+}

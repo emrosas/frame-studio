@@ -1,0 +1,171 @@
+// Turns a font file into a typeface module (ADR 0010): the glyphs of a Latin
+// character set as outlines in font units, their advances, the pair kerning
+// between them, and the vertical metrics, written as a TypeScript module of
+// plain data that src/rigs/type/ draws. A variable font is fixed at one
+// instance. fontkit reads the font; it is a dev dependency and never reaches
+// the runtime. Node only.
+
+import * as fontkit from 'fontkit';
+
+/** The characters a typeface module keeps: ASCII, Latin-1, Latin Extended-A, and common punctuation and symbols. */
+export const CHARSET: string = (() => {
+  const codes: number[] = [];
+  const range = (from: number, to: number) => {
+    for (let c = from; c <= to; c++) codes.push(c);
+  };
+  range(0x20, 0x7e);
+  range(0xa0, 0xff);
+  range(0x100, 0x17f);
+  // Quotes, dashes, ellipsis, bullet, primes, guillemets, euro, trademark, minus, arrows.
+  codes.push(0x2013, 0x2014, 0x2018, 0x2019, 0x201a, 0x201c, 0x201d, 0x201e, 0x2022, 0x2026, 0x2032, 0x2033, 0x2039, 0x203a);
+  codes.push(0x20ac, 0x2122, 0x2212, 0x2190, 0x2191, 0x2192, 0x2193);
+  return String.fromCodePoint(...codes);
+})();
+
+export interface ConvertOptions {
+  /** The id scenes name it by, e.g. "inter-bold". */
+  id: string;
+  /** The name to show, e.g. "Inter Bold". */
+  name: string;
+  /** Copyright and license, e.g. "Copyright 2020 The Inter Project Authors. SIL Open Font License 1.1." */
+  license: string;
+  /** A variable font's instance, e.g. { wght: 700 }. */
+  axes?: Record<string, number>;
+  /** Where the font came from, for the module's header. */
+  source?: string;
+}
+
+export interface Converted {
+  code: string;
+  glyphs: number;
+  missing: string[];
+  kerningPairs: number;
+}
+
+const round = (n: number) => Math.round(n);
+
+/** A glyph's outline as path text in font units, y up: "M9 0L532 1490Q…Z". */
+export function outlineText(commands: readonly fontkit.PathCommand[]): string {
+  const letter = { moveTo: 'M', lineTo: 'L', quadraticCurveTo: 'Q', bezierCurveTo: 'C', closePath: 'Z' } as const;
+  return commands.map((c) => letter[c.command] + c.args.map(round).join(' ')).join('');
+}
+
+/** A missing-glyph box for a font whose .notdef is empty: a frame 0.6 em wide, cap height tall. */
+function box(unitsPerEm: number, capHeight: number): [number, string] {
+  const w = round(unitsPerEm * 0.5);
+  const h = round(capHeight || unitsPerEm * 0.7);
+  const x = round(unitsPerEm * 0.05);
+  const t = round(unitsPerEm * 0.06);
+  const outer = `M${x} 0L${x + w} 0L${x + w} ${h}L${x} ${h}Z`;
+  const inner = `M${x + t} ${t}L${x + t} ${h - t}L${x + w - t} ${h - t}L${x + w - t} ${t}Z`;
+  return [round(unitsPerEm * 0.6), outer + inner];
+}
+
+/** "inter-bold" -> "interBold". */
+export function exportName(id: string): string {
+  return id.replace(/-([a-z0-9])/g, (_, c: string) => c.toUpperCase());
+}
+
+export function convertFont(file: string, options: ConvertOptions): Converted {
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(options.id)) throw new Error(`typeface id "${options.id}" must be lowercase letters, digits and single hyphens`);
+  const base = fontkit.openSync(file);
+  const axes = options.axes ?? {};
+  for (const axis of Object.keys(axes)) {
+    if (!(axis in (base.variationAxes ?? {}))) throw new Error(`${file} has no "${axis}" axis; its axes are ${Object.keys(base.variationAxes ?? {}).join(', ') || 'none'}`);
+  }
+  const font = Object.keys(axes).length > 0 ? base.getVariation(axes) : base;
+
+  const glyphs: [string, number, string][] = [];
+  const missing: string[] = [];
+  const ids = new Map<string, number>();
+  for (const char of CHARSET) {
+    const glyph = font.glyphForCodePoint(char.codePointAt(0)!);
+    if (glyph.id === 0) {
+      missing.push(char);
+      continue;
+    }
+    ids.set(char, glyph.id);
+    glyphs.push([char, round(glyph.advanceWidth), outlineText(glyph.path.commands)]);
+  }
+  const notdef = font.getGlyph(0);
+  const notdefOutline = outlineText(notdef.path.commands);
+  const missingGlyph: [number, string] = notdefOutline ? [round(notdef.advanceWidth), notdefOutline] : box(font.unitsPerEm, font.capHeight);
+
+  // Pair kerning, as the font's own layout applies it between two characters, with substitutions off.
+  const noSubstitutions = { liga: false, clig: false, calt: false, rlig: false, dlig: false, ccmp: false };
+  const pairs = new Map<string, number>();
+  const chars = [...ids.keys()].filter((c) => c.trim() !== '');
+  for (const a of chars) {
+    for (const b of chars) {
+      const run = font.layout(a + b, noSubstitutions);
+      if (run.glyphs.length !== 2 || run.glyphs[0].id !== ids.get(a) || run.glyphs[1].id !== ids.get(b)) continue;
+      const kern = round(run.positions[0].xAdvance - run.glyphs[0].advanceWidth);
+      if (kern !== 0) pairs.set(a + b, kern);
+    }
+  }
+  const kerning = kerningClasses(chars, pairs);
+
+  const instance = Object.entries(axes).map(([k, v]) => `${k} ${v}`).join(', ');
+  const q = (s: string) => JSON.stringify(s);
+  const lines = [
+    `// Generated by npm run typeface from ${options.source ?? file}${instance ? ` (${instance})` : ''}. Don't edit it; run the converter again.`,
+    `// ${options.license}`,
+    `import type { Typeface } from '../typeface';`,
+    '',
+    `export const ${exportName(options.id)}: Typeface = {`,
+    `  id: ${q(options.id)},`,
+    `  name: ${q(options.name)},`,
+    `  license: ${q(options.license)},`,
+    `  unitsPerEm: ${font.unitsPerEm},`,
+    `  ascender: ${round(font.ascent)},`,
+    `  descender: ${round(font.descent)},`,
+    `  capHeight: ${round(font.capHeight)},`,
+    `  xHeight: ${round(font.xHeight)},`,
+    `  missing: [${missingGlyph[0]}, ${q(missingGlyph[1])}],`,
+    '  glyphs: {',
+    ...glyphs.map(([char, advance, outline]) => `    ${q(char)}: [${advance}, ${q(outline)}],`),
+    '  },',
+    '  kerning: {',
+    `    left: [${kerning.left.map(q).join(', ')}],`,
+    `    right: [${kerning.right.map(q).join(', ')}],`,
+    '    pairs: [',
+    ...chunk(kerning.pairs, 30).map((row) => `      ${row.join(', ')},`),
+    '    ],',
+    '  },',
+    '};',
+    '',
+  ];
+  return { code: lines.join('\n'), glyphs: glyphs.length, missing, kerningPairs: pairs.size };
+}
+
+/**
+ * Pair kerning as classes, the way fonts store it: characters whose kerning
+ * against every other character is the same share a class, on each side.
+ * pairs is flat triples of left class, right class and value.
+ */
+export function kerningClasses(chars: readonly string[], pairs: ReadonlyMap<string, number>): { left: string[]; right: string[]; pairs: number[] } {
+  const group = (keys: readonly string[], signature: (c: string) => string) => {
+    const classes = new Map<string, string>();
+    for (const c of keys) {
+      const sig = signature(c);
+      if (!/[^0,]/.test(sig)) continue;
+      classes.set(sig, (classes.get(sig) ?? '') + c);
+    }
+    return [...classes.values()];
+  };
+  const kern = (a: string, b: string) => pairs.get(a + b) ?? 0;
+  const left = group(chars, (a) => chars.map((b) => kern(a, b)).join(','));
+  const right = group(chars, (b) => left.map((cls) => kern(cls[0], b)).join(','));
+  const out: number[] = [];
+  left.forEach((l, li) => right.forEach((r, ri) => {
+    const k = kern(l[0], r[0]);
+    if (k !== 0) out.push(li, ri, k);
+  }));
+  return { left, right, pairs: out };
+}
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
