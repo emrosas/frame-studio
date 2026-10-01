@@ -1,28 +1,34 @@
 // Folds a turn's events into what the thread view shows (ADR 0006): the
 // agent's text in paragraphs between its steps, each step at its latest
-// state, rendered frames grouped, and approval cards with their answers.
+// state, rendered frames grouped, approval cards with their answers, and
+// question cards (ADR 0011).
 // Pure, so it is unit tested without a browser.
 
-import type { ApprovalDecision, ApprovalKind, TurnEvent, TurnUsage } from '../studio/protocol';
+import type { AgentQuestion, ApprovalDecision, ApprovalKind, QuestionAnswers, TurnEvent, TurnUsage } from '../studio/protocol';
 
 export type TranscriptItem =
   | { kind: 'text'; text: string }
   | { kind: 'step'; id: string; label: string; status: 'running' | 'done' | 'failed'; detail?: string }
   | { kind: 'frames'; frames: { file: string; frame: number }[] }
   | { kind: 'approval'; id: string; approvalKind: ApprovalKind; summary: string; detail?: string; decision: ApprovalDecision | null }
+  /** answers: undefined while it waits for the user, null when it went unanswered. */
+  | { kind: 'questions'; id: string; questions: AgentQuestion[]; answers: QuestionAnswers | null | undefined }
   | { kind: 'note'; text: string; error: boolean };
 
 export interface Transcript {
   items: TranscriptItem[];
   usage: TurnUsage | null;
-  /** Approval cards still waiting for an answer. */
+  /** Approval and question cards still waiting for an answer. */
   open: number;
+  /** The question card waiting for the user, if any: the panel shows it above the composer. */
+  asking: Extract<TranscriptItem, { kind: 'questions' }> | null;
 }
 
 export function foldTurn(events: readonly TurnEvent[]): Transcript {
   const items: TranscriptItem[] = [];
   const steps = new Map<string, Extract<TranscriptItem, { kind: 'step' }>>();
   const approvals = new Map<string, Extract<TranscriptItem, { kind: 'approval' }>>();
+  const cards = new Map<string, Extract<TranscriptItem, { kind: 'questions' }>>();
   let usage: TurnUsage | null = null;
   for (const e of [...events].sort((a, b) => a.seq - b.seq)) {
     const last = items[items.length - 1];
@@ -59,6 +65,17 @@ export function foldTurn(events: readonly TurnEvent[]): Transcript {
         if (card) card.decision = e.decision;
         break;
       }
+      case 'questions': {
+        const item = { kind: 'questions' as const, id: e.id, questions: e.questions, answers: undefined };
+        cards.set(e.id, item);
+        items.push(item);
+        break;
+      }
+      case 'questions-answered': {
+        const card = cards.get(e.id);
+        if (card) card.answers = e.answers;
+        break;
+      }
       case 'usage':
         usage = e.usage;
         break;
@@ -71,7 +88,13 @@ export function foldTurn(events: readonly TurnEvent[]): Transcript {
     }
   }
   for (const item of items) if (item.kind === 'text') item.text = item.text.trim();
-  return { items: items.filter((i) => i.kind !== 'text' || i.text !== ''), usage, open: [...approvals.values()].filter((a) => a.decision === null).length };
+  const asking = [...cards.values()].filter((c) => c.answers === undefined);
+  return {
+    items: items.filter((i) => i.kind !== 'text' || i.text !== ''),
+    usage,
+    open: [...approvals.values()].filter((a) => a.decision === null).length + asking.length,
+    asking: asking.at(-1) ?? null,
+  };
 }
 
 /** "1.2k in · 340 out", with the cost when the provider reports one. */

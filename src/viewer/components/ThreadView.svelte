@@ -1,6 +1,7 @@
 <!--
   One thread (ADR 0006), in the agent panel: each turn's ask, what the agent
-  did (streamed text, steps, the frames it rendered, approval cards) and how
+  did (streamed text, steps, the frames it rendered, approval and question
+  cards) and how
   it ended, with "Revert to here" on each finished turn. It follows the newest
   work while you're at the bottom. Below, what you can do now: stop a working
   turn, reply, settle, try again. The files in .frame-studio/ are the truth;
@@ -24,6 +25,7 @@
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
+  import QuestionCard from './QuestionCard.svelte';
 
   let { ui, actions, thread, onhide }: { ui: ViewerUi; actions: ViewerActions; thread: StudioRequest; onhide: () => void } = $props();
 
@@ -62,6 +64,8 @@
   });
 
   const shown = $derived(displayStatus(thread, ui.studio.now));
+  // The question card the working turn waits on (ADR 0011), shown above the actions.
+  const asking = $derived(thread.status === 'working' ? foldTurn(ui.turnEvents[`${thread.id}:${thread.turns.length - 1}`] ?? []).asking : null);
   const external = $derived(thread.agent === 'external');
   const agentLabel = $derived(ui.studio.agents.find((a) => a.id === thread.agent)?.label ?? thread.agent);
   const agentReady = $derived(external || (ui.studio.agents.find((a) => a.id === thread.agent)?.ready ?? false));
@@ -186,6 +190,20 @@
                     <p class="approval-answer">{item.decision === 'accept' ? 'Allowed' : item.decision === 'decline' ? 'Declined' : 'Not answered before the turn ended'}</p>
                   {/if}
                 </div>
+              {:else if item.kind === 'questions'}
+                <div class="asked" role="group" aria-label="Questions">
+                  {#each item.questions as question (question.id)}
+                    <p class="asked-q">{question.question}</p>
+                    {#if item.answers}
+                      <p class="asked-a">{(item.answers[question.id] ?? []).join(', ')}</p>
+                    {/if}
+                  {/each}
+                  {#if item.answers === undefined}
+                    <p class="approval-answer">{turn.status === 'working' ? 'Waiting for your answer below' : 'Not answered before the turn ended'}</p>
+                  {:else if item.answers === null}
+                    <p class="approval-answer">Skipped: the agent decides</p>
+                  {/if}
+                </div>
               {:else}
                 <p class="work-note" class:is-error={item.error}>{item.text}</p>
               {/if}
@@ -209,6 +227,11 @@
   </div>
 
   <footer class="panel-foot">
+    {#if asking}
+      {#key asking.id}
+        <QuestionCard questions={asking.questions} onanswer={(answers) => actions.answer(thread.id, asking.id, answers)} />
+      {/key}
+    {/if}
     {#if problem}<p class="panel-note is-error" role="status">{problem}</p>{/if}
     {#if thread.status === 'pending' && !agentReady}
       <p class="panel-note" role="status">{agentLabel} isn't ready, so this waits. Pick it in a new thread to see why.</p>

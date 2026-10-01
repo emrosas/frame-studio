@@ -28,6 +28,7 @@ import {
   type NewProject,
   type NewRequest,
   type NewScene,
+  type QuestionAnswers,
   type Reply,
   type TurnSettings,
 } from '../../src/studio/protocol.ts';
@@ -547,6 +548,20 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       const decision = input?.decision;
       if (decision !== 'accept' && decision !== 'decline') throw new HttpError(400, 'decision must be "accept" or "decline"');
       if (!runner.respond(id, parts[3], decision as ApprovalDecision)) throw new HttpError(409, 'That approval is no longer open.');
+      return send(res, 200, { ok: true });
+    }
+    if (req.method === 'POST' && Number.isInteger(id) && parts[2] === 'questions' && parts.length === 4) {
+      // A question card's answers, by question id, or { answers: null } to skip it (ADR 0011).
+      const input = await json<{ answers?: unknown } | null>(req);
+      const answers = input?.answers;
+      if (answers !== null && (typeof answers !== 'object' || answers === undefined)) throw new HttpError(400, 'answers must be an object of question id to answers, or null to skip');
+      let open: boolean;
+      try {
+        open = runner.answer(id, parts[3], answers as QuestionAnswers | null);
+      } catch (err) {
+        throw new HttpError(400, err instanceof Error ? err.message : String(err));
+      }
+      if (!open) throw new HttpError(409, 'Those questions are no longer open.');
       return send(res, 200, { ok: true });
     }
     if (req.method === 'POST' && path === '/references') {

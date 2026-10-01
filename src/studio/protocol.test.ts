@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   canRevert,
+  checkAnswers,
   checkNewProject,
   checkNewRequest,
   checkNewScene,
@@ -288,5 +289,22 @@ describe('new scenes and projects', () => {
     expect(checkNewProject({ ...good, name: '  ' })).toMatch(/needs a name/);
     expect(checkNewProject({ ...good, fps: 0 })).toMatch(/fps/);
     expect(checkNewProject({ ...good, main: 'film' })).toMatch(/unknown field "main"/);
+  });
+});
+
+describe('answers to a question card', () => {
+  const questions = [
+    { id: 'font', header: 'Font', question: 'Which typeface?', options: [{ label: 'Fraunces' }, { label: 'Inter' }] },
+    { id: 'extras', header: 'Extras', question: 'What else?', multiSelect: true, options: [{ label: 'A kicker' }, { label: 'A rule' }] },
+  ];
+
+  it('takes one answer per question, several where it allows them, and typed answers', () => {
+    expect(checkAnswers(questions, { font: ['Fraunces'], extras: ['A kicker', 'my own'] })).toBeNull();
+    expect(checkAnswers(questions, { font: ['Something else'], extras: ['A rule'] })).toBeNull();
+    expect(checkAnswers(questions, { font: ['Fraunces', 'Inter'], extras: ['A rule'] })).toMatch(/takes one answer/);
+    expect(checkAnswers(questions, { font: ['Fraunces'] })).toMatch(/"Extras" needs an answer/);
+    expect(checkAnswers(questions, { font: [' '], extras: ['A rule'] })).toMatch(/non-empty/);
+    expect(checkAnswers(questions, { font: ['Fraunces'], extras: ['A rule'], size: ['big'] })).toMatch(/no question "size"/);
+    expect(checkAnswers(questions, null)).toMatch(/must be an object/);
   });
 });

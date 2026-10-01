@@ -2,7 +2,7 @@
 // (app.ts) owns all the logic and writes here; components read it and call
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
-import type { AgentId, AgentStatus, ApprovalDecision, NewProject, NewScene, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
+import type { AgentId, AgentStatus, ApprovalDecision, NewProject, NewScene, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { UpdateState } from './desktop';
 import type { FrameRange, RangeText } from './selection';
 import type { RequestAction } from './studio-client';
@@ -152,6 +152,8 @@ export interface ViewerActions {
   retry(id: number, prompt: string, files: File[], settings?: TurnSettings): Promise<string | null>;
   /** "Revert to here" on a turn, or with no turn, the whole thread. Returns an error message, or null. */
   revert(id: number, turn?: number): Promise<string | null>;
+  /** Answers a question card, or skips it with null. Returns an error message, or null. */
+  answer(id: number, card: string, answers: QuestionAnswers | null): Promise<string | null>;
   /** Answers an approval card. Returns an error message, or null. */
   respond(id: number, approval: string, decision: ApprovalDecision): Promise<string | null>;
   clearFinished(): Promise<void>;
@@ -189,7 +191,8 @@ export interface StudioState {
 
 export interface Toast {
   id: number;
-  status: 'done' | 'failed' | 'interrupted';
+  /** A turn ended, or one waits on the user: a question card or an approval (ADR 0011). */
+  status: 'done' | 'failed' | 'interrupted' | 'asking';
   text: string;
 }
 

@@ -5,7 +5,7 @@
 // sees a token. Node only.
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { AgentId, AgentStatus, StudioRequest, TurnEventBody, TurnSettings, TurnUsage } from '../../../src/studio/protocol.ts';
+import type { AgentId, AgentQuestion, AgentStatus, QuestionAnswers, StudioRequest, TurnEventBody, TurnSettings, TurnUsage } from '../../../src/studio/protocol.ts';
 
 /** Something an agent wants to do, in the terms the access rules decide on. */
 export type Action =
@@ -42,6 +42,11 @@ export interface TurnCallbacks {
   emit(event: TurnEventBody): void;
   /** Asks the access rules, and the user through an approval card when they say to. Resolves true when allowed. */
   decide(action: Action): Promise<boolean>;
+  /**
+   * Shows the user a question card and waits for the answers, by question id (ADR 0011). Null when the
+   * turn stops first, or the user skips: the agent should then carry on with its best guess, or end its turn.
+   */
+  ask(questions: AgentQuestion[]): Promise<QuestionAnswers | null>;
   /** The provider's session id, as soon as it is known, so a later turn can resume it. */
   session(id: string): void;
 }

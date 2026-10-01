@@ -2,7 +2,8 @@
  * M8: agents inside the studio (ADR 0006), end to end in the viewer, with the
  * scripted test agent (tools/studio/agents/fake.ts). It reaches the real studio
  * tools over the studio server's MCP endpoint, so everything but the model is
- * real: threads, turns, streamed events, frame thumbnails, approvals, stop,
+ * real: threads, turns, streamed events, frame thumbnails, approvals, question
+ * cards (ADR 0011), stop,
  * restarts and one working thread per scene. Runs on a throwaway handoff
  * folder and throwaway scenes.
  */
@@ -87,6 +88,28 @@ function writeScripts(): void {
         { say: 'Wrote the rig.' },
       ],
     },
+    {
+      match: 'ask about the title',
+      steps: [
+        {
+          ask: [
+            {
+              id: 'font',
+              header: 'Font',
+              question: 'Which typeface for the title?',
+              options: [
+                { label: 'Fraunces (Recommended)', description: 'A warm old-style serif', preview: 'Fraunces\nAa Bb Cc' },
+                { label: 'Inter Display', description: 'A heavy sans' },
+              ],
+            },
+            { id: 'extras', header: 'Extras', question: 'What else goes with it?', multiSelect: true, options: [{ label: 'A kicker' }, { label: 'A rule' }, { label: 'A date' }] },
+          ],
+        },
+        { say: 'Set the title.' },
+      ],
+    },
+    { match: 'ask one thing', steps: [{ ask: [{ id: 'colour', header: 'Colour', question: 'Which colour?', options: [{ label: 'Red' }, { label: 'Blue' }] }] }, { say: 'Painted.' }] },
+    { match: 'ask and wait', steps: [{ wait: 1500 }, { ask: [{ id: 'colour', header: 'Colour', question: 'Which colour?', options: [{ label: 'Red' }, { label: 'Blue' }] }] }, { say: 'never' }] },
     { match: 'slow edit', steps: [ball('#ff8800'), { say: 'Orange so far.' }, { wait: 20000 }, { say: 'never' }] },
     { match: 'long wait', steps: [{ say: 'Waiting.' }, { wait: 20000 }, { say: 'never' }] },
     { match: 'slow', steps: [{ wait: 1500 }, { say: 'Took my time.' }] },
@@ -218,6 +241,59 @@ describe('an agent in the studio', () => {
     expect(existsSync(DOC_FILE)).toBe(true);
     rmSync(DOC_FILE, { force: true });
     rmSync(RIG_FILE, { force: true });
+  });
+
+  it('asks questions on a card: one pick moves on, several picks and a typed answer send, keys pick, Skip lets the agent decide', async () => {
+    const card = () => panel().getByRole('region', { name: 'Questions from the agent' });
+    await send('ask about the title');
+    await expectText(card(), 'Which typeface for the title?');
+    await expectText(card(), '1 of 2');
+    // The preview shows for the option with focus.
+    await card().getByRole('radio', { name: /Fraunces/ }).focus();
+    await expectText(card(), 'Aa Bb Cc');
+    await card().getByRole('radio', { name: /Fraunces/ }).click();
+    await expectText(card(), 'What else goes with it?');
+    await card().getByRole('checkbox', { name: /A kicker/ }).click();
+    await card().getByRole('checkbox', { name: /A date/ }).click();
+    await card().getByRole('textbox').fill('A logo');
+    await card().getByRole('button', { name: 'Send' }).click();
+    await expectText(turn(1), 'You chose: Font Fraunces (Recommended); Extras A kicker + A date + A logo.');
+    await expectText(turn(1), 'Set the title.');
+    expect(await card().count()).toBe(0);
+    // The thread keeps what was asked and answered.
+    await expectText(turn(1).getByRole('group', { name: 'Questions' }), 'A kicker, A date, A logo');
+
+    await send('ask one thing');
+    await card().getByRole('radio', { name: /Red/ }).focus();
+    await page.keyboard.press('2');
+    await expectText(turn(1), 'You chose: Colour Blue.');
+
+    await send('ask one thing');
+    await card().getByRole('button', { name: 'Skip' }).click();
+    await expectText(turn(1), 'No answer, so I picked for you.');
+    await expectText(turn(1), 'Skipped: the agent decides');
+
+    // Answers that don't fit the card are refused; Stop ends the wait.
+    // A card that opens while its thread isn't showing gets a toast, and Answer brings it up.
+    await send('ask and wait');
+    await thread().getByRole('button', { name: 'New thread' }).click();
+    const toast = page.getByRole('status', { name: 'Agent waits for you' });
+    await expectText(toast, 'needs you: Which colour?');
+    await toast.getByRole('button', { name: 'Answer' }).click();
+    await card().waitFor();
+    const [t] = (await queue.list()).filter((r) => r.status === 'working');
+    // The turn's log reaches the disk shortly after the viewer hears of it.
+    const askedEvent = async () => (await readTurnEvents(join(queue.threadDir(t.id), 'turn-0.jsonl'))).find((e) => e.type === 'questions');
+    await expect.poll(askedEvent).toBeDefined();
+    const asked = (await askedEvent()) as { id: string };
+    const post = (answers: unknown) =>
+      fetch(`${vite.base}__studio/requests/${t.id}/questions/${asked.id}`, { method: 'POST', headers: { ...vite.auth, 'Content-Type': 'application/json' }, body: JSON.stringify({ answers }) });
+    expect((await post({ colour: ['Red', 'Blue'] })).status).toBe(400);
+    expect((await post({ shade: ['Red'] })).status).toBe(400);
+    await thread().getByRole('button', { name: 'Stop' }).click();
+    await expectText(threadStatus(), 'your turn');
+    expect(await card().count()).toBe(0);
+    expect((await post({ colour: ['Red'] })).status).toBe(409);
   });
 
   it('works one thread per scene at a time, and threads on other scenes in parallel', async () => {

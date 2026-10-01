@@ -14,6 +14,7 @@ import {
   type NewProject,
   type NewRequest,
   type NewScene,
+  type QuestionAnswers,
   type Reply,
   type StudioRequest,
   type TurnEvent,
@@ -94,6 +95,11 @@ export class StudioClient {
   /** Creates a project with an empty main scene; returns the main scene's id. */
   async createProject(project: NewProject): Promise<string> {
     return (await call<{ main: string }>('/projects', jsonBody(project))).main;
+  }
+
+  /** Answers a question card in a working turn, or skips it with null (ADR 0011). */
+  async answer(id: number, card: string, answers: QuestionAnswers | null): Promise<void> {
+    await call(`/requests/${id}/questions/${encodeURIComponent(card)}`, jsonBody({ answers }));
   }
 
   async reply(id: number, reply: Reply): Promise<StudioRequest> {

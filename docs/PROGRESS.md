@@ -695,6 +695,24 @@ How each acceptance criterion was verified:
 
 After it: typecheck clean, 1208 unit tests and 122 browser tests pass, with the committed `bear-test.json`.
 
+### Question cards (ADR 0011)
+
+You liked T3 Code's question UI and wanted the agents to use it, so choices take a click instead of a typed reply.
+
+- When an agent asks, a card shows above the thread's actions: the question's header, the question, numbered options with the recommended first and a description each, and a line to type an answer of your own. A single-choice pick moves on and the last one sends. Multi-select questions take several picks plus a typed answer. Keys 1 to 9 pick, Enter moves on, Back goes back, Skip lets the agent decide. A preview, when an option has one, shows for the option with focus. The thread keeps each card with its answers.
+- Claude's own `AskUserQuestion` and Codex's `request_user_input` both become this card through the turn's new `ask` callback. Before, the studio denied the first and answered the second with nothing. The runner waits on the card the way it waits on an approval, and Stop resolves it as skipped.
+- Codex needs `features.default_mode_request_user_input`, which the adapter sets; the tool is experimental in Codex.
+- The standing instructions tell agents to ask when a choice changes the result, and not otherwise.
+- When a card or an approval opens in a thread that isn't showing, a toast says "#N needs you" with the question, and Answer opens the thread.
+- The scripted test agent has an `ask` step.
+
+How it was checked:
+
+- Unit tests for the transcript fold and for `checkAnswers`.
+- A browser test with the test agent: a two-question card answered with a pick, then two picks and a typed answer; a card answered by pressing 2; a skipped card; answers that don't fit refused with 400; Stop closing an open card, after which answering is refused with 409; and the toast and its Answer button when the thread isn't showing.
+- Live, one turn each against the real CLIs with a stub answering "Blue": Claude (Haiku) asked through the card and replied "Blue"; Codex asked through the card and replied "Blue" once the prompt named request_user_input. The standing instructions name both tools.
+- Screenshots in light and dark. They caught two bugs, both fixed: a preview shown on hover grew the card and moved the option away from the pointer, over and over; and the hover style hid a picked option's highlight. A third bug, the card resetting its picks whenever the thread view refreshed, was found by reading the code.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -720,6 +738,9 @@ After it: typecheck clean, 1208 unit tests and 122 browser tests pass, with the 
 - Only a test enforces the rule that a scene file is named after its id. The viewer now opens a scene by file name too, and gives a shared id to the file named after it, but it does not flag a mismatch. Should the viewer or validator flag one? MCP `get_scene(id)` in M5 will need to map an id to a file.
 
 ## Known issues
+
+- The sidebar shows a thread whose turn waits on a question card or an approval as Working. A toast says so when it happens, with Answer, but once dismissed only opening the thread shows it.
+- Question cards work for agents the studio runs. An external agent over MCP asks in its own interface.
 
 - URL writes are throttled to one per 400 ms. During playback, or just after switching scenes, `location.search` trails what is on screen until the next write. A reload still lands on the right frame, because `pagehide` stores the frame in sessionStorage and the reloaded page reads it. `pagehide` also flushes the URL, which covers Back and Forward. A copied URL can still be a few frames behind.
 - Pausing freezes on the last frame drawn. That frame can be one behind the wall clock if the next animation frame had not fired yet, as in the 23 versus 24 frames seen after 2.0 s.

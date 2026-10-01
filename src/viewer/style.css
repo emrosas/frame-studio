@@ -1584,6 +1584,10 @@ progress::-moz-progress-bar {
   background: var(--ok);
 }
 
+.toast.is-asking .status-dot {
+  background: var(--accent);
+}
+
 .toast.is-failed .status-dot,
 .toast.is-interrupted .status-dot {
   background: var(--warn);
@@ -2240,4 +2244,209 @@ progress::-moz-progress-bar {
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
+}
+
+/* ---- question cards (ADR 0011) ---- */
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.questions {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 10px;
+  padding: 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+@media (prefers-color-scheme: dark) {
+  .questions {
+    background: var(--surface-2);
+  }
+}
+
+.questions header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.q-chip {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-text);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.q-step {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.q-skip {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.q-skip:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.q-text {
+  margin: 0;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 500;
+  line-height: 1.4;
+}
+
+.q-options {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.q-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.q-option:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--surface-2);
+}
+
+.q-option.is-on,
+.q-option.is-on:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.q-option:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+.q-key {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--border-strong);
+  border-radius: 5px;
+  color: var(--muted);
+  font: 11px/1 var(--mono);
+}
+
+.q-option.is-on .q-key {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.q-label {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.q-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.q-desc {
+  color: var(--text-2);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.q-preview {
+  max-height: 160px;
+  margin: 0;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font: 11.5px/1.45 var(--mono);
+  white-space: pre-wrap;
+}
+
+.q-other input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  box-sizing: border-box;
+}
+
+.q-other input:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -1px;
+}
+
+.questions footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.q-hint {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+/* A question card in the transcript, once asked. */
+.asked {
+  display: grid;
+  gap: 3px;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  background: var(--surface-2);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.asked p {
+  margin: 0;
+}
+
+.asked-q {
+  color: var(--text-2);
+  font-size: 12.5px;
+}
+
+.asked-a {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
 }

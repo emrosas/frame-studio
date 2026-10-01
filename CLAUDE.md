@@ -204,6 +204,7 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 - It runs locally in the studio server. Providers launch the user's own signed-in CLI: `claude` through Anthropic's Agent SDK (dev-only package, pointed at the installed binary) and `codex app-server`. Never offer a login screen, never read or store the user's tokens, and never call it Claude Code. A missing or signed-out CLI shows the command to run.
 - Its tools are the studio operations the MCP server offers. By default it may also write in `scenes/`, `rigs/`, `audio/`, projects' `rigs/`, and in the repo `src/rigs/` and `src/audio/`; anything else asks first through an approval card, unless the thread is in full access.
 - One working thread per scene. Each agent turn gets a checkpoint, and only the user settles a thread.
+- An agent asks the user to choose through a question card (ADR 0011): Claude's `AskUserQuestion` and Codex's `request_user_input` both become the same card, and the turn waits for the answers, as it does for an approval.
 - Only the studio server the viewer uses runs agents: the app's, or `npm run dev`'s. Headless servers (the CLI's, the MCP shim's, the tests') run with agents off, so a render or an MCP session never claims a thread. The server strips `ELECTRON_RUN_AS_NODE` from every agent CLI it starts, and the app reads PATH from the login shell so a Finder launch finds `claude` and `codex`. The scripted test agent appears with `FRAME_STUDIO_FAKE_AGENT=1`.
 
 ## Conventions

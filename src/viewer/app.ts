@@ -339,6 +339,7 @@ export class App {
         }),
       revert: (id, turn) => attempt(() => this.studio.revert(id, turn)),
       respond: (id, approval, decision) => attempt(() => this.studio.respond(id, approval, decision)),
+      answer: (id, card, answers) => attempt(() => this.studio.answer(id, card, answers)),
       clearFinished: async () => {
         await this.studio.clearFinished().catch(() => {});
       },
@@ -1122,7 +1123,13 @@ export class App {
       pushed = true;
       apply(requests);
     });
-    this.studio.onTurnEvent(({ id, turn, event }) => this.addEvents(id, turn, [event]));
+    this.studio.onTurnEvent(({ id, turn, event }) => {
+      this.addEvents(id, turn, [event]);
+      // An agent waits on the user in a thread that isn't showing: say so, as for a turn that ended.
+      if ((event.type === 'questions' || event.type === 'approval') && (this.ui.studio.open !== id || !this.ui.layout.panel)) {
+        this.ui.toast = { id, status: 'asking', text: event.type === 'questions' ? (event.questions[0]?.question ?? '') : event.summary };
+      }
+    });
     this.studio.onExport((event) => {
       const state = this.ui.exporting;
       if (state.running?.id !== event.id) return;

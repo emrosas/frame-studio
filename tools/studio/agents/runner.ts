@@ -11,11 +11,14 @@ import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
+  checkAnswers,
   currentTurn,
   TURN_EVENT,
   type AgentId,
+  type AgentQuestion,
   type AgentStatus,
   type ApprovalDecision,
+  type QuestionAnswers,
   type StudioRequest,
   type TurnEvent,
   type TurnEventBody,
@@ -159,6 +162,8 @@ interface Running {
   token: string;
   log: TurnLog;
   approvals: Map<string, (decision: ApprovalDecision) => void>;
+  /** Open question cards, by id, with the questions they asked. */
+  questions: Map<string, { questions: AgentQuestion[]; resolve: (answers: QuestionAnswers | null) => void }>;
   stopping: boolean;
   /** Stopped because the studio server is closing, not by the user. */
   interrupted: boolean;
@@ -293,7 +298,7 @@ export class AgentRunner {
     const log = new TurnLog(queue.threadDir(thread.id), k, (e) => this.pushEvent(thread.id, k, e));
     await log.resume();
     const provider = this.providers.get(thread.agent)!;
-    const running: Running = { thread: thread.id, turn: k, handle: null, token: '', log, approvals: new Map(), stopping: false, interrupted: false, ended: false };
+    const running: Running = { thread: thread.id, turn: k, handle: null, token: '', log, approvals: new Map(), questions: new Map(), stopping: false, interrupted: false, ended: false };
     const hooks = this.toolHooks(thread, settings, running);
     running.token = this.options.endpoint.issue(hooks);
     this.running.set(thread.id, running);
@@ -318,6 +323,7 @@ export class AgentRunner {
         {
           emit: (event) => log.append(event),
           decide: (action) => this.decide(thread, settings, running, action),
+          ask: (questions) => this.ask(running, questions),
           session: (id) => void queue.setSession(thread.id, id).catch(() => {}),
         },
       );
@@ -331,6 +337,7 @@ export class AgentRunner {
       running.ended = true;
       this.options.endpoint.revoke(running.token);
       for (const resolve of running.approvals.values()) resolve('decline');
+      for (const open of running.questions.values()) open.resolve(null);
       if (this.running.get(thread.id) === running) this.running.delete(thread.id);
     }
     if (outcome.usage) log.append({ type: 'usage', usage: outcome.usage });
@@ -433,6 +440,34 @@ export class AgentRunner {
     return decision === 'accept' ? null : `${verdict.summary} was declined.`;
   }
 
+  /** Shows a question card and waits for the user (ADR 0011). Null once the turn is stopping. */
+  private async ask(running: Running, questions: AgentQuestion[]): Promise<QuestionAnswers | null> {
+    if (running.stopping || questions.length === 0) return null;
+    const id = randomBytes(6).toString('hex');
+    const answers = await new Promise<QuestionAnswers | null>((resolve) => {
+      running.questions.set(id, { questions, resolve });
+      running.log.append({ type: 'questions', id, questions });
+    });
+    running.questions.delete(id);
+    running.log.append({ type: 'questions-answered', id, answers });
+    return answers;
+  }
+
+  /**
+   * The user's answers to a question card, or null to skip it. Throws with the reason when they don't answer
+   * its questions; false when there is no such open card.
+   */
+  answer(thread: number, card: string, answers: QuestionAnswers | null): boolean {
+    const open = this.running.get(thread)?.questions.get(card);
+    if (!open) return false;
+    if (answers !== null) {
+      const problem = checkAnswers(open.questions, answers);
+      if (problem) throw new Error(problem);
+    }
+    open.resolve(answers);
+    return true;
+  }
+
   /** The user's answer to an approval card. False when there is no such open card. */
   respond(thread: number, approval: string, decision: ApprovalDecision): boolean {
     const resolve = this.running.get(thread)?.approvals.get(approval);
@@ -452,6 +487,7 @@ export class AgentRunner {
     if (!running) return false;
     running.stopping = true;
     for (const resolve of running.approvals.values()) resolve('decline');
+    for (const open of running.questions.values()) open.resolve(null);
     await running.handle?.stop();
     return true;
   }

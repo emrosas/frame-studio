@@ -7,8 +7,8 @@
 // through canUseTool, which asks the access rules. Node only.
 
 import { relative } from 'node:path';
-import { query, type CanUseTool, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { TurnUsage } from '../../../src/studio/protocol.ts';
+import { query, type CanUseTool, type PermissionResult, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentQuestion, TurnUsage } from '../../../src/studio/protocol.ts';
 import { agentEnv, findExecutable, run } from './exec.ts';
 import type { Action, AgentProvider, TurnCallbacks, TurnHandle, TurnInput, TurnOutcome } from './types.ts';
 
@@ -110,14 +110,35 @@ export function claudeProvider(): AgentProvider {
   };
 }
 
+/**
+ * Claude's own AskUserQuestion, shown as the studio's question card (ADR 0011). The answers go back in the
+ * tool's input, keyed by question text, multi-select answers joined with commas, which is how the tool
+ * reports them to the model.
+ */
+async function askUser(toolInput: Record<string, unknown>, cb: TurnCallbacks): Promise<PermissionResult> {
+  const raw = Array.isArray(toolInput.questions) ? (toolInput.questions as Record<string, unknown>[]) : [];
+  const questions: AgentQuestion[] = raw.map((q, i) => ({
+    id: String(i),
+    header: String(q.header ?? ''),
+    question: String(q.question ?? ''),
+    options: (Array.isArray(q.options) ? (q.options as Record<string, unknown>[]) : []).map((o) => ({
+      label: String(o.label ?? ''),
+      ...(typeof o.description === 'string' ? { description: o.description } : {}),
+      ...(typeof o.preview === 'string' ? { preview: o.preview } : {}),
+    })),
+    ...(q.multiSelect === true ? { multiSelect: true } : {}),
+  }));
+  const answers = await cb.ask(questions);
+  if (!answers) return { behavior: 'deny', message: "The user didn't answer. Carry on with your best judgement and say what you chose, or end your turn and ask in your reply." };
+  return { behavior: 'allow', updatedInput: { ...toolInput, answers: Object.fromEntries(questions.map((q) => [q.question, (answers[q.id] ?? []).join(', ')])) } };
+}
+
 async function runTurn(input: TurnInput, cb: TurnCallbacks, abort: AbortController): Promise<TurnOutcome> {
   const bin = await findExecutable('claude');
   if (!bin) throw new Error('The claude command is not installed.');
   const { cwd, settings } = input;
   const canUseTool: CanUseTool = async (tool, toolInput) => {
-    if (tool === 'AskUserQuestion') {
-      return { behavior: 'deny', message: 'The user reads your reply in the studio; ask your question there and end the turn.' };
-    }
+    if (tool === 'AskUserQuestion') return askUser(toolInput, cb);
     const action = claudeAction(tool, toolInput, cwd);
     if (!action || (await cb.decide(action))) return { behavior: 'allow', updatedInput: toolInput };
     return { behavior: 'deny', message: 'The user did not allow this. Carry on without it, or explain in your reply what you need.' };

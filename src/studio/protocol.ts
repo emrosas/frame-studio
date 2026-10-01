@@ -137,6 +137,10 @@ export type TurnEventBody =
   /** The agent wants to do something the thread's access doesn't cover. */
   | { type: 'approval'; id: string; kind: ApprovalKind; summary: string; detail?: string }
   | { type: 'approval-resolved'; id: string; decision: ApprovalDecision }
+  /** The agent asks the user to choose, and waits (ADR 0011). */
+  | { type: 'questions'; id: string; questions: AgentQuestion[] }
+  /** The user's answers, by question; null when the turn ended first or the user skipped. */
+  | { type: 'questions-answered'; id: string; answers: QuestionAnswers | null }
   | { type: 'usage'; usage: TurnUsage }
   /** A notice from the studio, e.g. "Resuming the session". */
   | { type: 'status'; message: string }
@@ -145,6 +149,27 @@ export type TurnEventBody =
 export type TurnEvent = TurnEventBody & { seq: number; at: string };
 export type ApprovalKind = 'write' | 'command' | 'network' | 'read' | 'scene' | 'project' | 'tool';
 export type ApprovalDecision = 'accept' | 'decline';
+
+/**
+ * A question an agent asks the user (ADR 0011), in the shape Claude's
+ * AskUserQuestion and Codex's request_user_input share: a short header, the
+ * question, and 2 to 4 options, the recommended one first. The user can
+ * always type an answer of their own instead.
+ */
+export interface AgentQuestion {
+  /** Stable within its card: the provider's id, or the question's index. */
+  id: string;
+  /** A short label, e.g. "Font". */
+  header: string;
+  question: string;
+  /** The choices, recommended first. None: the user types the answer. */
+  options: { label: string; description?: string; preview?: string }[];
+  /** More than one option may be picked. */
+  multiSelect?: boolean;
+}
+
+/** Answers by question id: the labels picked, or the user's own text. */
+export type QuestionAnswers = Record<string, string[]>;
 
 /** An agent the studio can run, as the agent picker shows it. */
 export interface AgentStatus {
@@ -514,4 +539,19 @@ export function checkNewProject(input: unknown): string | null {
   if (problem) return problem;
   if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100) return 'a project needs a name of at most 100 characters';
   return checkFormat(input) ?? checkDuration(input.duration);
+}
+
+const QUESTION_ANSWER_LIMIT = 2000;
+
+/** Why `answers` don't answer `questions`, or null when they do: every question once, with one or more non-empty answers (one unless multiSelect). */
+export function checkAnswers(questions: readonly AgentQuestion[], answers: unknown): string | null {
+  if (!isObject(answers)) return 'answers must be an object of question id to a list of answers';
+  for (const key of Object.keys(answers)) if (!questions.some((q) => q.id === key)) return `no question "${key}" on this card`;
+  for (const q of questions) {
+    const a = answers[q.id];
+    if (!Array.isArray(a) || a.length === 0) return `question "${q.header}" needs an answer`;
+    if (!a.every((x) => typeof x === 'string' && x.trim() !== '' && x.length <= QUESTION_ANSWER_LIMIT)) return `answers to "${q.header}" must be short, non-empty text`;
+    if (!q.multiSelect && a.length > 1) return `question "${q.header}" takes one answer`;
+  }
+  return null;
 }

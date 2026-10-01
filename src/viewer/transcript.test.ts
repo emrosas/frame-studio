@@ -59,3 +59,32 @@ describe('describeUsage', () => {
     expect(describeUsage({ inputTokens: 45_000, outputTokens: 2000, costUsd: 0.0412 })).toBe('45k in · 2.0k out · $0.041');
   });
 });
+
+describe('question cards in a turn (ADR 0011)', () => {
+  const at = '2026-10-01T12:00:00.000Z';
+  const questions = [{ id: 'font', header: 'Font', question: 'Which typeface?', options: [{ label: 'Fraunces' }, { label: 'Inter' }] }];
+
+  it('is open, and the one to show, until answered', () => {
+    const open = foldTurn([{ seq: 1, at, type: 'questions', id: 'q1', questions }]);
+    expect(open.items).toEqual([{ kind: 'questions', id: 'q1', questions, answers: undefined }]);
+    expect(open.open).toBe(1);
+    expect(open.asking?.id).toBe('q1');
+
+    const answered = foldTurn([
+      { seq: 1, at, type: 'questions', id: 'q1', questions },
+      { seq: 2, at, type: 'questions-answered', id: 'q1', answers: { font: ['Fraunces'] } },
+    ]);
+    expect(answered.items).toEqual([{ kind: 'questions', id: 'q1', questions, answers: { font: ['Fraunces'] } }]);
+    expect(answered.open).toBe(0);
+    expect(answered.asking).toBeNull();
+  });
+
+  it('records a skipped card as answered with null', () => {
+    const skipped = foldTurn([
+      { seq: 1, at, type: 'questions', id: 'q1', questions },
+      { seq: 2, at, type: 'questions-answered', id: 'q1', answers: null },
+    ]);
+    expect(skipped.items[0]).toMatchObject({ kind: 'questions', answers: null });
+    expect(skipped.asking).toBeNull();
+  });
+});

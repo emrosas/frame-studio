@@ -12,6 +12,8 @@
 //   { "write": { "path": "src/rigs/x.ts", "content": "..." } }   a file edit
 //   { "command": "npm test" }             a shell command (never run)
 //   { "wait": 500 }                       a pause that Stop cuts short
+//   { "ask": [ { "id", "header", "question", "options": [ { "label" } ] } ] }
+//                                         a question card; says the answers back
 //   { "fail": "why" }                     ends the turn as failed
 //   { "summary": "text" }                 the turn's summary (default: the last say)
 // Node only.
@@ -20,7 +22,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { currentTurn } from '../../../src/studio/protocol.ts';
+import { currentTurn, type AgentQuestion } from '../../../src/studio/protocol.ts';
 import type { AgentProvider, TurnCallbacks, TurnHandle, TurnInput, TurnOutcome } from './types.ts';
 
 type Step =
@@ -29,6 +31,7 @@ type Step =
   | { write: { path: string; content: string } }
   | { command: string }
   | { wait: number }
+  | { ask: AgentQuestion[] }
   | { fail: string }
   | { summary: string };
 
@@ -121,6 +124,11 @@ export function fakeProvider(studioDir: string): AgentProvider {
             const timer = setTimeout(resolveWait, step.wait);
             signal.addEventListener('abort', () => (clearTimeout(timer), resolveWait()), { once: true });
           });
+        } else if ('ask' in step) {
+          const answers = await cb.ask(step.ask);
+          const text = answers ? `You chose: ${step.ask.map((q) => `${q.header} ${(answers[q.id] ?? []).join(' + ')}`).join('; ')}. ` : 'No answer, so I picked for you. ';
+          cb.emit({ type: 'text', text });
+          said = text;
         } else if ('fail' in step) {
           cb.emit({ type: 'text', text: step.fail });
           return { status: 'failed', summary: step.fail, usage: { inputTokens: 100, outputTokens: 20 } };

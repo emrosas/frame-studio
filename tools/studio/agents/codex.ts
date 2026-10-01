@@ -10,7 +10,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { relative } from 'node:path';
 import { createInterface } from 'node:readline';
-import type { TurnUsage } from '../../../src/studio/protocol.ts';
+import type { AgentQuestion, TurnUsage } from '../../../src/studio/protocol.ts';
 import { summaryOf } from './claude.ts';
 import { agentEnv, findExecutable, run } from './exec.ts';
 import type { AgentProvider, TurnCallbacks, TurnHandle, TurnInput, TurnOutcome } from './types.ts';
@@ -182,7 +182,15 @@ async function runTurn(input: TurnInput, cb: TurnCallbacks, signal: AbortSignal)
   const { cwd, settings } = input;
   const server = new AppServer(
     bin,
-    ['-c', `mcp_servers.${STUDIO}.url=${JSON.stringify(input.mcp.url)}`, '-c', `mcp_servers.${STUDIO}.bearer_token_env_var=${JSON.stringify(TOKEN_ENV)}`],
+    [
+      '-c',
+      `mcp_servers.${STUDIO}.url=${JSON.stringify(input.mcp.url)}`,
+      '-c',
+      `mcp_servers.${STUDIO}.bearer_token_env_var=${JSON.stringify(TOKEN_ENV)}`,
+      // request_user_input outside plan mode, so Codex can ask through the question card (ADR 0011). Experimental in Codex.
+      '-c',
+      'features.default_mode_request_user_input=true',
+    ],
     agentEnv({ [TOKEN_ENV]: input.mcp.token }),
     cwd,
   );
@@ -267,7 +275,22 @@ async function runTurn(input: TurnInput, cb: TurnCallbacks, signal: AbortSignal)
       // Anything else a server asks the user is declined rather than shown half-understood.
       return { action: 'decline', content: null, _meta: null };
     }
-    if (method === 'item/tool/requestUserInput') return { answers: {} };
+    if (method === 'item/tool/requestUserInput') {
+      // Codex's request_user_input, shown as the studio's question card (ADR 0011). A question without
+      // options takes a typed answer; a skipped card answers nothing, which Codex reads as no answer.
+      const raw = Array.isArray(params.questions) ? (params.questions as Json[]) : [];
+      const questions: AgentQuestion[] = raw.map((q, i) => ({
+        id: typeof q.id === 'string' ? q.id : String(i),
+        header: String(q.header ?? ''),
+        question: String(q.question ?? ''),
+        options: (Array.isArray(q.options) ? (q.options as Json[]) : []).map((o) => ({
+          label: String(o.label ?? ''),
+          ...(typeof o.description === 'string' ? { description: o.description } : {}),
+        })),
+      }));
+      const answers = await cb.ask(questions);
+      return { answers: Object.fromEntries(Object.entries(answers ?? {}).map(([id, list]) => [id, { answers: list }])) };
+    }
     if (method === 'execCommandApproval' || method === 'applyPatchApproval') {
       const command = Array.isArray(params.command) ? (params.command as string[]).join(' ') : '';
       const allowed =
