@@ -812,7 +812,7 @@ How each acceptance criterion was verified:
 3. Try the integrated AI: in the viewer, select something, pick Claude or Codex in the agent panel's composer, and ask for a change.
 4. Try compositions: Open the sample project in the app (or convert Bears' story from Films), open `film`, double-click a clip, and make a composition that places `film`.
 5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
-6. **Try 0.3.0.** [v0.3.0](https://github.com/emrosas/frame-studio/releases/tag/v0.3.0) adds sound files (M12): import voiceover and music, place them at the playhead, see their waveforms, and export them in MP4.
+6. **Try 0.4.0.** [v0.4.0](https://github.com/emrosas/frame-studio/releases/tag/v0.4.0) adds the project switcher (M13) and compositions (M14): one project on screen at a time, compositions that arrange scenes on tracks, "Used in" on scenes, and Convert to a project for older films.
 7. **M15, the timeline as an editor** (ADR 0012, ADR 0013): tracks and clips you drag, trim and cut on the timeline, sound files on tracks. Then M16, stills.
 8. **Next for type:** typefaces of your own in a project folder, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer).
 9. Other candidates, from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
