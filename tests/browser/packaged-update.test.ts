@@ -128,7 +128,7 @@ describe.skipIf(!existsSync(BUILT))('updating the packaged app', () => {
     // The welcome page's calls get past main's check on who is asking.
     const first = await welcome.evaluate(() => (window as unknown as { frameStudioWelcome: { updates?: DesktopUpdates } }).frameStudioWelcome.updates?.state());
     expect(first?.status).toMatch(/^(idle|available)$/);
-    await welcome.getByRole('button', { name: 'New studio folder' }).click();
+    await welcome.getByRole('button', { name: 'Open the sample project' }).click();
     const viewer = await viewerWindow(app);
     viewer.on('console', (message) => {
       const text = message.text();

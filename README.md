@@ -47,22 +47,25 @@ The app checks GitHub Releases 10 seconds after it starts and every 4 hours afte
 
 ## Getting started
 
-The first launch offers New studio folder and Open folder. A studio folder holds your work:
+Each project is a folder of its own, and the switcher at the top left of the window moves between them. The first launch offers New project, which asks for a name and a place (`~/Frame Studio Projects` by default), Open project, and the sample project. A project folder holds everything it uses:
 
 ```
-scenes/       loose scenes, one JSON file each
-projects/     projects, whose scenes share a size and frame rate and can place each other as shots
-rigs/         your own rigs
-audio/        your own sound generators
+scenes/       its scenes, one JSON file each
+projects/     films made of shots, whose scenes share a size and frame rate (compositions replace these soon)
+rigs/         its own rigs
+audio/        its own sound generators
+media/        its sound files: voiceover, music
 references/   reference images for the agent, never exported
 out/          renders and exports
 ```
 
-New studio folder creates `~/Frame Studio` with two samples. `hello` is a bouncing ball, and `bears-story` is a 12-second film cut from three shots.
+The sample project has two pieces: `hello` is a bouncing ball, and `bears-story` is a 12-second film cut from three shots.
 
-The window has three columns. The sidebar lists scenes, projects and request threads. The middle has the canvas and the timeline. Space plays, the arrow keys step one frame, and the keyboard button in the top bar lists the other shortcuts. The agent panel is on the right.
+The window has three columns. The sidebar lists the project's scenes, films, sound files and request threads. The middle has the canvas and the timeline. Space plays, the arrow keys step one frame, and the keyboard button in the top bar lists the other shortcuts. The agent panel is on the right.
 
-To start something new, click the + next to Scenes or Projects in the sidebar. Give it a name, a size, a frame rate and a length. The new scene opens empty, with a new thread ready, so you describe what should be in it and the agent draws it. A project is for a longer piece made of shots. Add shots with New scene under the project, then ask the agent to place them in its main scene.
+An agent keeps working in a project after you switch to another. The switcher shows each project's threads that are working, waiting on your input, or your turn, and a dot on it says when another project needs a look.
+
+To start something new, click the + next to Scenes in the sidebar. Give it a name, a size, a frame rate and a length. The new scene opens empty, with a new thread ready, so you describe what should be in it and the agent draws it.
 
 To ask for a change:
 

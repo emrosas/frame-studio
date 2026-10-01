@@ -370,6 +370,9 @@ export class App {
       refreshAgents: () => this.refreshAgents(true),
       dismissToast: () => (this.ui.toast = null),
       openFolder: () => void desktop()?.openFolder(),
+      projects: async () => (await desktop()?.projects().catch(() => [])) ?? [],
+      openProject: async (path) => (await desktop()?.openProject(path).catch((err: unknown) => errorText(err).message)) ?? null,
+      newProject: async () => (await desktop()?.newProject().catch((err: unknown) => errorText(err).message)) ?? null,
       installUpdate: () => void desktop()?.updates?.install(),
       checkForUpdate: () => void desktop()?.updates?.check(),
       openUpdateNotes: () => void desktop()?.updates?.openNotes(),
@@ -797,13 +800,10 @@ export class App {
       'project',
       project && project.errors.length > 0 ? { title: `Project "${project.id}" has errors (${project.file})`, lines: project.errors } : null,
     );
+    // A project with no scenes yet isn't an error: the stage offers to start one (ADR 0013).
+    this.ui.emptyProject = lib.entries.length === 0;
     if (lib.entries.length === 0) {
-      this.errors.set('scene', {
-        title: 'No scenes yet',
-        lines: [
-          'This folder has no scenes. Ask an agent with the frame-studio MCP server to make one, or add a scene file to scenes/, such as scenes/my-scene.json.',
-        ],
-      });
+      this.errors.set('scene', null);
     } else if (this.entry && this.entry.errors.length > 0) {
       const n = this.entry.errors.length;
       this.errors.set('scene', { title: `${this.entry.file} is invalid (${n} error${n === 1 ? '' : 's'})`, lines: this.entry.errors });

@@ -237,6 +237,16 @@
         color: var(--muted);
         font-size: 12.5px;
       }
+      .hint .link {
+        padding: 0;
+        border: none;
+        background: none;
+        color: inherit;
+        font: inherit;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        cursor: pointer;
+      }
     </style>
   </head>
   <body>
@@ -247,27 +257,27 @@
         <circle cx="412" cy="412" r="116" fill="#ff5a1f" />
       </svg>
       <h1>Frame Studio</h1>
-      <p class="tagline">Animations drawn in code. Point at what you see, and an agent changes it.</p>
+      <p class="tagline">Videos and images drawn in code. Point at what you see, and an agent changes it.</p>
       <div class="actions">
         <button type="button" class="action primary" id="new">
           <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
-          New studio folder
+          New project…
         </button>
         <button type="button" class="action" id="open">
           <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" />
           </svg>
-          Open folder…
+          Open project…
         </button>
       </div>
-      <p class="hint">A new folder starts with two samples: a simple scene, and a short film made of shots.</p>
+      <p class="hint">Each project is a folder of its own. New to Frame Studio? <button type="button" class="link" id="sample">Open the sample project</button>: a simple scene, and a short film made of shots.</p>
       <p class="error" id="error" role="alert" hidden></p>
       <div class="update" id="update" role="status" aria-label="Update" hidden><span id="update-text"></span><button type="button" id="update-go"></button></div>
     </main>
-    <aside class="recent" aria-label="Recent folders">
+    <aside class="recent" aria-label="Recent projects">
       <h2>Recent</h2>
       <ul id="recent"></ul>
-      <p class="empty" id="empty" hidden>Folders you open show up here.</p>
+      <p class="empty" id="empty" hidden>Projects you open show up here.</p>
     </aside>
     <script src="welcome.js"></script>
   </body>

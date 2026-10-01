@@ -22,13 +22,14 @@ async function run(action) {
   }
 }
 
-document.getElementById('new').addEventListener('click', () => run(() => bridge.newFolder()));
+document.getElementById('new').addEventListener('click', () => run(() => bridge.newProject()));
 document.getElementById('open').addEventListener('click', () => run(() => bridge.openFolder()));
+document.getElementById('sample').addEventListener('click', () => run(() => bridge.sampleProject()));
 
 const FOLDER_ICON =
   '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 7.5a2 2 0 0 1 2-2h3.6l2 2h7.4a2 2 0 0 1 2 2v7.5a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round"/></svg>';
 
-// Each recent folder by name, with its path under it (home as ~).
+// Each recent project by name, with its path under it (home as ~).
 const list = document.getElementById('recent');
 for (const path of bridge.recent) {
   const item = document.createElement('li');

@@ -204,17 +204,44 @@ Acceptance:
 5. A missing file is an error the viewer shows, and its cue is silent.
 6. `docs/SCENES.md` and `docs/MCP.md` document sound files.
 
-## M13: The timeline as an editor
+## M13: Projects on screen
 
-A simple video editor's timeline under the canvas (ADR 0012).
+One project at a time, switched from the top left, with agents working on in the others (ADR 0013).
 
-- Tracks for the shots a scene places and for its sound cues, with waveforms.
+- The app opens a studio server and render worker per project, shows one, and keeps others running while a thread there is working or waiting, then stops them.
+- A project switcher at the top left of the viewer: recent projects, each with its working, waiting-for-input and your-turn threads; New project, which asks for a name and place; Open project folder.
+- The welcome window and the app menu speak of projects: New Project, Open Project, recent projects.
+- The browser viewer (npm run dev) shows the project's name, without switching.
+
+Acceptance:
+1. Switching projects shows the other project's scenes, media and threads, and nothing of the first.
+2. A thread working in project A keeps working after switching to B, and the switcher shows A as working, then as your turn when it ends. A's server stops once nothing runs there.
+3. A thread waiting on a question card in A shows A as waiting for input in B's switcher, and switching back shows the card.
+4. New project makes a folder where the user says, and opens it empty.
+5. Every earlier test passes on the new paths.
+
+## M14: Project folders and compositions
+
+The project format and compositions (ADR 0013).
+
+- `project.json` at a project folder's top: name, default fps and size, cast.
+- Compositions in `compositions/`: their own size and fps, tracks of clips (scenes or compositions, nested as deep as wanted, loops refused), sound files on tracks, transitions between clips.
+- Scenes no longer place scenes; scene layers become composition clips.
+- "Used in" on a scene: the compositions that place it.
+- Converting a folder's `projects/<id>/` into project folders, on request.
+- MCP tools for compositions.
+
+## M15: The timeline as an editor
+
+A simple video editor's timeline for compositions (ADR 0012, ADR 0013).
+
+- Tracks for clips and sound files, with waveforms.
 - Move, trim either edge, split at the playhead, duplicate and delete, snapping to frames, the playhead and other edges.
-- Fades on sound, and transition presets between shots (crossfade, wipe, iris) written as masks and opacity keys.
+- Fades on sound, and transition presets between clips (crossfade, wipe, iris).
 - Undo and redo for the timeline's edits.
-- Read-only while an agent works on the scene.
+- Read-only while an agent works on the composition.
 
-## M14: Stills
+## M16: Stills
 
 - PNG and JPG export of a frame, from the viewer and the tools.
 - A still option in New scene, social size presets, and a timeline that steps aside for a one-frame scene.

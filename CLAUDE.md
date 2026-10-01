@@ -100,7 +100,7 @@ Rules:
 - The canvas renders at the scene's fixed resolution and is scaled with CSS for display. Handle devicePixelRatio for preview only; exports are always native resolution.
 - UI is regular HTML/CSS positioned over the canvas, never drawn into it.
 - The studio ships as a web app and as an Electron app from one viewer (`docs/adr/0001-web-and-electron-targets.md`, ADR 0008). `src/viewer` uses web platform APIs only. Anything that needs the machine goes through the studio server, which serves the viewer, and the app's preload adds only native features (`src/viewer/desktop.ts`).
-- The app and the tools work on a **studio folder** (ADR 0008): `scenes/`, `projects/`, `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
+- **A project is a folder** (ADR 0013), the studio folder the app and the tools work on (ADR 0008): `scenes/`, `projects/` (until M14 turns them into compositions), `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The app shows one project at a time, switched from the top left, and keeps a project's server running while a thread there works. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
 - The viewer stays plain TypeScript until M6, then its UI moves to Svelte 5 with Vite, not SvelteKit (`docs/adr/0002-svelte-from-m6.md`). The runtime never imports Svelte.
 
 ## Scene format (JSON)
@@ -139,6 +139,7 @@ Scenes are data, so the agent, the selection UI, and any future timeline editor 
 - Key times are in seconds. Numeric params interpolate with named easings; non-numeric params (strings, booleans) step.
 - The background is a layer like any other (it can have tracks and overrides), so "change the background for frames 1 to 14" is an ordinary scoped edit.
 - **`overrides`** express scoped edits: over a frame range, a layer may swap to a rig variant and/or apply param overrides. This keeps "change this element for frames 36 to 48" a contained change instead of forking drawing code. Overlapping overrides on one layer are invalid.
+- **Compositions (ADR 0013, M14)** replace scene layers: scenes draw and never place anything; compositions arrange clips (scenes or compositions, nested freely), sound files and transitions. Until M14, the M9 model below holds.
 - **Projects (M9, ADR 0007).** A project is a folder, `projects/<id>/`, with scenes that share one fps and size. A scene can place another scene of its project as a **scene layer**: a start, a trim, and trackable placement and opacity. A shot renders identically inside its parent and on its own. Any layer can take an animated **mask**, which covers transitions. `project.json` holds a **cast**: named characters (rig plus params) that layers use with `"cast": "bruno"` and can override. Outside a project, its scenes have qualified ids, `<project>/<scene>`.
 - Validate scenes on load and surface clear errors in the viewer.
 

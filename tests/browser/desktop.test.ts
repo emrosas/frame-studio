@@ -4,15 +4,18 @@
  * folder so yours stay untouched. It starts the way Finder starts it, with
  * launchd's short PATH.
  *
- * - The welcome screen makes a studio folder with the samples, and the viewer
- *   opens on it, paired with the studio server through the preload bridge.
+ * - The welcome screen opens the sample project, and the viewer opens on it,
+ *   paired with the studio server through the preload bridge.
  * - The server refuses requests without the pairing, and tells tools where
  *   it is, so a tool on the folder reuses it.
  * - The server finds `claude` through the login shell's PATH. HOME stays
  *   yours for that, since the shell reads its profile there; new folders go
  *   to FRAME_STUDIO_HOME instead.
  * - A test agent turn writes a rig into the folder's rigs/ and uses it.
- * - The next launch reopens the folder.
+ * - Projects on screen (ADR 0013): New project makes a folder, the switcher
+ *   switches, and an agent at work in one project keeps working while another
+ *   is on screen, its server stopping once it's done.
+ * - The next launch reopens the last project.
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -27,7 +30,8 @@ import { REPO, studioFolder } from '../../tools/studio/folder';
 import { StudioQueue } from '../../tools/studio/queue';
 
 const home = mkdtempSync(join(tmpdir(), 'frame-studio-home-'));
-const folder = join(home, 'Frame Studio');
+const projects = join(home, 'Frame Studio Projects');
+const folder = join(projects, 'Sample');
 let app: ElectronApplication | null = null;
 
 function launch(): Promise<ElectronApplication> {
@@ -61,10 +65,10 @@ afterAll(async () => {
 });
 
 describe('the app', () => {
-  it('makes a studio folder with the samples from the welcome screen and opens the viewer on it', async () => {
+  it('opens the sample project from the welcome screen, and the viewer on it', async () => {
     app = await launch();
     const welcome = await app.firstWindow();
-    await welcome.getByRole('button', { name: 'New studio folder' }).click();
+    await welcome.getByRole('button', { name: 'Open the sample project' }).click();
     const viewer = await viewerWindow(app);
     const state = await viewer.evaluate(() => {
       const w = window as unknown as { studio: { scenes: string[]; errors: string[] }; frameStudioDesktop?: object };
@@ -73,7 +77,7 @@ describe('the app', () => {
     expect(state.scenes).toEqual(['hello', 'bears-story/film', 'bears-story/meet', 'bears-story/pip', 'bears-story/together']);
     expect(state.errors).toEqual([]);
     // Only the bridge reaches the page: no Node, no Electron.
-    expect(state.bridge).toEqual(['openFolder', 'reveal', 'token']);
+    expect(state.bridge).toEqual(['newProject', 'openFolder', 'openProject', 'projects', 'reveal', 'token']);
     expect(state.node).toBe('undefined');
     const tsconfig = JSON.parse(readFileSync(join(folder, 'tsconfig.json'), 'utf8')) as { compilerOptions: { paths: Record<string, string[]> } };
     expect(tsconfig.compilerOptions.paths['@frame-studio/*']).toEqual([`${join(REPO, 'src')}/*`]);
@@ -163,7 +167,76 @@ export const twinkle: Rig = {
       .toContain('twinkle');
   });
 
-  it('reopens the last folder on the next launch', async () => {
+  it('switches projects from the top left, and an agent keeps working in the project left behind', async () => {
+    const film = join(projects, 'My Film');
+    // The save panel, answered as if the user named the project "My Film".
+    await app!.evaluate(({ dialog }, path) => {
+      dialog.showSaveDialog = (async () => ({ canceled: false, filePath: path })) as unknown as typeof dialog.showSaveDialog;
+    }, film);
+    writeFileSync(join(folder, '.frame-studio/fake-agent.json'), JSON.stringify({ scripts: [{ match: 'take your time', steps: [{ say: 'Starting. ' }, { wait: 8000 }, { say: 'Finished.' }] }] }));
+    const queue = new StudioQueue(join(folder, '.frame-studio'), async () => join(folder, 'scenes/hello.json'));
+    const slow = await queue.create({ selection: { sceneId: 'hello', from: 0, to: 72 }, frame: 0, prompt: 'take your time', references: [], agent: 'fake', settings: { access: 'studio' } });
+    await expect.poll(async () => (await queue.get(slow.id)).status, { timeout: 30_000 }).toBe('working');
+    const sample = discovery();
+    const alive = () => fetch(`${sample.url}/__studio/files`, { headers: { Authorization: `Bearer ${sample.token}` } }).then((r) => r.ok, () => false);
+
+    const viewer = await viewerWindow(app!);
+    const switcher = viewer.locator('.switcher-btn');
+    await switcher.click();
+    await viewer.getByRole('menuitem', { name: 'New project…' }).click();
+    await expect.poll(() => viewer.url(), { timeout: 30_000 }).not.toContain(new URL(sample.url).host);
+    await viewer.waitForFunction(() => (window as unknown as { studio?: { scenes: string[] } }).studio?.scenes !== undefined, undefined, { timeout: 30_000 });
+    expect(await viewer.evaluate(() => (window as unknown as { studio: { scenes: string[] } }).studio.scenes)).toEqual([]);
+    for (const sub of ['scenes', 'rigs', 'audio', 'media']) expect(statSync(join(film, sub)).isDirectory()).toBe(true);
+    await expect.poll(() => switcher.textContent()).toContain('My Film');
+
+    // Sample's agent is still at it, and the switcher says so.
+    expect(await alive()).toBe(true);
+    await switcher.click();
+    const sampleItem = viewer.getByRole('menuitem', { name: /Sample/ });
+    await expect.poll(async () => (await sampleItem.locator('[title$="working"]').count()) > 0, { timeout: 10_000 }).toBe(true);
+    await viewer.keyboard.press('Escape');
+    await expect.poll(async () => (await queue.get(slow.id)).status, { timeout: 30_000 }).toBe('your_turn');
+    expect((await queue.get(slow.id)).turns[0].summary).toBe('Finished.');
+    // Done, Sample's server stops, and the switcher shows the finished thread as your turn.
+    await expect.poll(alive, { timeout: 20_000 }).toBe(false);
+    await switcher.click();
+    await expect.poll(async () => (await sampleItem.locator('[title$="your turn"]').count()) > 0, { timeout: 10_000 }).toBe(true);
+
+    await sampleItem.click();
+    await expect.poll(() => viewer.evaluate(() => (window as unknown as { studio?: { scenes: string[] } }).studio?.scenes ?? []), { timeout: 30_000 }).toContain('bears-story/film');
+    await expect.poll(() => switcher.textContent()).toContain('Sample');
+  });
+
+  it("shows a question card waiting in a project left behind as input, and the card is there on switching back", async () => {
+    writeFileSync(
+      join(folder, '.frame-studio/fake-agent.json'),
+      JSON.stringify({ scripts: [{ match: 'ask me', steps: [{ ask: [{ id: 'c', header: 'Colour', question: 'Which colour?', options: [{ label: 'Red' }, { label: 'Blue' }] }] }, { say: 'Done.' }] }] }),
+    );
+    const queue = new StudioQueue(join(folder, '.frame-studio'), async () => join(folder, 'scenes/hello.json'));
+    const asking = await queue.create({ selection: { sceneId: 'hello', from: 0, to: 72 }, frame: 0, prompt: 'ask me', references: [], agent: 'fake', settings: { access: 'studio' } });
+    await expect.poll(async () => (await queue.get(asking.id)).turns[0].waitingSince !== undefined, { timeout: 30_000 }).toBe(true);
+
+    const viewer = await viewerWindow(app!);
+    const switcher = viewer.locator('.switcher-btn');
+    await switcher.click();
+    await viewer.getByRole('menuitem', { name: /My Film/ }).click();
+    await expect.poll(() => switcher.textContent(), { timeout: 30_000 }).toContain('My Film');
+    await expect.poll(() => switcher.locator('[aria-label="Another project waits on your input"]').count(), { timeout: 10_000 }).toBe(1);
+    await switcher.click();
+    const sampleItem = viewer.getByRole('menuitem', { name: /Sample/ });
+    await expect.poll(async () => sampleItem.locator('[title$="waiting on your input"]').count(), { timeout: 10_000 }).toBe(1);
+    await sampleItem.click();
+    await expect.poll(() => switcher.textContent(), { timeout: 30_000 }).toContain('Sample');
+    await viewer.waitForFunction(() => (window as unknown as { studio?: { scenes: string[] } }).studio?.scenes !== undefined, undefined, { timeout: 30_000 });
+    // The thread waits where it was; open it and answer.
+    await viewer.getByRole('navigation', { name: 'Studio' }).getByRole('article', { name: `Request ${asking.id}` }).getByRole('button').click();
+    const card = viewer.getByRole('region', { name: 'Questions from the agent' });
+    await card.getByRole('radio', { name: /Blue/ }).click();
+    await expect.poll(async () => (await queue.get(asking.id)).status, { timeout: 30_000 }).toBe('your_turn');
+  });
+
+  it('reopens the last project on the next launch', async () => {
     await app!.close();
     app = await launch();
     const viewer = await viewerWindow(app);

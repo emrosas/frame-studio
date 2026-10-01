@@ -76,6 +76,13 @@
       <!-- The canvas and the overlay share one box, so the overlay lines up with the canvas exactly. -->
       <div class="stage-frame"></div>
       <ErrorPanel errors={ui.errors} />
+      {#if ui.emptyProject}
+        <div class="empty-stage">
+          <h2>Nothing here yet</h2>
+          <p>A project starts with a scene: something drawn, which agents fill in from what you describe. Sound files can come in any time.</p>
+          <button type="button" class="btn is-primary" onclick={() => (ui.newRequest = { kind: 'scene', project: null })}>New scene</button>
+        </div>
+      {/if}
       <Toast toast={ui.toast} {actions} onview={showPanel} />
     </div>
     <footer class="timeline">

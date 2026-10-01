@@ -23,7 +23,7 @@ const APP = join(REPO, 'build/desktop/dist/mac-arm64/Frame Studio.app');
 const BINARY = join(APP, 'Contents/MacOS/Frame Studio');
 const MCP = join(APP, 'Contents/Resources/bin/frame-studio-mcp');
 const home = mkdtempSync(join(tmpdir(), 'frame-studio-packaged-'));
-const folder = join(home, 'Frame Studio');
+const folder = join(home, 'Frame Studio Projects', 'Sample');
 let app: ElectronApplication | null = null;
 
 function env(): Record<string, string> {
@@ -56,7 +56,7 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
   it('starts from its own files, makes a studio folder, and plays a sample drawn by its render worker', async () => {
     app = await _electron.launch({ executablePath: BINARY, args: [], env: env() });
     const welcome = await app.firstWindow();
-    await welcome.getByRole('button', { name: 'New studio folder' }).click();
+    await welcome.getByRole('button', { name: 'Open the sample project' }).click();
     const viewer = await viewerWindow(app);
     expect(await viewer.evaluate(() => (window as unknown as { studio: { errors: string[] } }).studio.errors)).toEqual([]);
     await viewer.evaluate(() => (window as unknown as { studio: { selectScene(id: string): void } }).studio.selectScene('bears-story/film'));

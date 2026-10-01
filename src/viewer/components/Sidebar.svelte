@@ -11,7 +11,7 @@
   import { currentTurn, displayStatus, type StudioRequest } from '../../studio/protocol';
   import type { NewWhat, SceneOption, ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
-  import Logo from './Logo.svelte';
+  import ProjectSwitcher from './ProjectSwitcher.svelte';
   import NewDialog from './NewDialog.svelte';
   import UpdateCard from './UpdateCard.svelte';
 
@@ -33,7 +33,6 @@
     cancelled: 'Cancelled',
   };
 
-  const folderName = $derived(ui.folder ? (ui.folder.path.split(/[\\/]/).filter(Boolean).pop() ?? ui.folder.path) : '');
 
   // Loose scenes, then each project's. The App orders them, so a project's scenes are one run.
   const loose = $derived(ui.scenes.filter((s) => s.project === null));
@@ -57,6 +56,13 @@
   });
 
   let creating = $state<NewWhat | null>(null);
+  // The empty stage's New scene opens the same dialog.
+  $effect(() => {
+    if (ui.newRequest) {
+      creating = ui.newRequest;
+      ui.newRequest = null;
+    }
+  });
 
   // Sound files (ADR 0012): import by picker, list, and place at the playhead.
   let picker = $state<HTMLInputElement | null>(null);
@@ -126,24 +132,11 @@
 
 <nav class="sidebar" aria-label="Studio" {hidden}>
   <header class="sidebar-head">
-    <span class="brand"><Logo size={20} /> Frame Studio</span>
+    <ProjectSwitcher {ui} {actions} />
     <button type="button" class="icon-btn" aria-label="Hide sidebar" title="Hide sidebar" onclick={onhide}><Icon name="sidebar" /></button>
   </header>
 
   <div class="sidebar-top">
-    {#if ui.folder}
-      <button
-        type="button"
-        class="side-item folder-btn"
-        title={ui.folder.canSwitch ? `${ui.folder.path}\nOpen another studio folder` : ui.folder.path}
-        disabled={!ui.folder.canSwitch}
-        onclick={() => actions.openFolder()}
-      >
-        <Icon name="folder" size={15} />
-        <span class="name">{folderName}</span>
-        {#if ui.folder.canSwitch}<Icon name="chevronDown" size={14} />{/if}
-      </button>
-    {/if}
     <button
       type="button"
       class="side-item"

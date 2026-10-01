@@ -751,6 +751,27 @@ Also: the studio server's upload, list and serve routes, the clean names and num
 
 While testing, another project's Playwright install had removed this repo's headless Chromium from the shared cache (`~/Library/Caches/ms-playwright`), and reinstalling it removed that project's. Each project reinstalls its own when it next runs, with `npx playwright install`.
 
+### M13: Projects on screen
+
+You wanted the app organised around one project at a time, switched from the top left, with agents free to keep working in others. ADR 0013 records the model: a project is a folder; scenes draw and compositions arrange (compositions come in M14). The roadmap is now M13 projects on screen, M14 project folders and compositions, M15 the timeline editor, M16 stills.
+
+- **Several projects open at once.** The app keeps a studio server and render worker per open project (`desktop/app.ts`) and shows one. A project you switch away from keeps running while an agent the studio runs has a thread there working or waiting to start, and a sweep every 5 s stops the ones with nothing left (`desktop/projects.ts`). Switching back to a running project comes back to it as it is, mid-turn.
+- **The project switcher** (`ProjectSwitcher.svelte`) replaces the "Frame Studio" title and the folder button at the top left: the logo and the project's name. It opens a list of recent projects, each with its threads working, waiting on your input, and your turn, read straight from each project's thread files, so it works for projects whose server isn't running. New project… and Open project folder… sit under the list. A dot on the button flags another project: blue for input, orange for your turn or working. In a browser it only names the project.
+- **New project** asks for a name and place in the system save panel, `~/Frame Studio Projects/` by default, and makes an empty project (`scenes/`, `rigs/`, `audio/`, `media/`). A folder with files in it is refused. **Open the sample project** makes `~/Frame Studio Projects/Sample` with the samples, the first time.
+- The welcome window and the File menu speak of projects: New Project…, Open Project…, Open Recent, Open Sample Project, Reveal Project Folder.
+- A project with no scenes shows "Nothing here yet" and a New scene button on the stage, not a red error.
+- Fixed on the way: the app wrote its settings without waiting and not atomically, so quitting right after a switch could leave a truncated file and the next launch would forget the recent projects. Settings now go through a temporary file, and quitting writes them at once.
+
+How each acceptance criterion was verified, in `tests/browser/desktop.test.ts`, the app from source in Electron:
+
+1. New project switches the viewer to the new project's server, with no scenes and nothing of the sample's.
+2. A test-agent thread working in Sample keeps working after switching to the new project; the switcher shows Sample with one working thread; the thread finishes ("Finished."), Sample's server stops within the sweep, and the switcher shows it as your turn. Switching back starts Sample again with its scenes.
+3. A test-agent question card waiting in Sample: in My Film the switcher's dot reads "Another project waits on your input" and Sample's row counts one waiting; switching back, the thread's card is there, and answering it finishes the turn.
+4. New project with the save panel stubbed makes the folder with its subfolders.
+5. Typecheck clean, 1216 unit tests and 134 browser tests, and the installed-app tests on a fresh build.
+
+Screenshots of the open switcher and the empty project.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -765,7 +786,7 @@ While testing, another project's Playwright install had removed this repo's head
 4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film from the Export panel.
 5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
 6. **Try 0.3.0.** [v0.3.0](https://github.com/emrosas/frame-studio/releases/tag/v0.3.0) adds sound files (M12): import voiceover and music, place them at the playhead, see their waveforms, and export them in MP4.
-7. **M13, the timeline as an editor** (ADR 0012): tracks for shots and sound, move, trim, split, duplicate, fades, transition presets, undo, and a lock while an agent works. Then M14, stills.
+7. **M14, project folders and compositions** (ADR 0013): `project.json` at a folder's top, compositions in `compositions/` that nest freely, scenes that no longer place scenes, "Used in" on scenes, and converting `projects/<id>/` into project folders. Then M15, the timeline editor, and M16, stills.
 8. **Next for type:** typefaces of your own in a studio folder, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer), which fits with M14.
 9. Other candidates, from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 

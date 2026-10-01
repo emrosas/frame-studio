@@ -27,13 +27,34 @@ export interface DesktopUpdates {
   openNotes(): Promise<void>;
 }
 
+/** A recent project, as the switcher shows it (ADR 0013). */
+export interface ProjectEntry {
+  path: string;
+  name: string;
+  /** The project on screen. */
+  current: boolean;
+  /** Its studio server runs, on screen or in the background. */
+  open: boolean;
+  missing?: boolean;
+  /** Its threads working, waiting on the user's input, and the user's turn. */
+  working: number;
+  input: number;
+  yours: number;
+}
+
 export interface DesktopBridge {
   /** The studio server's pairing token, handed over once. */
   readonly token: string;
   /** Shows a file in Finder. */
   reveal(path: string): Promise<void>;
-  /** Opens a studio folder picker, then switches the app to the folder chosen. */
-  openFolder(): Promise<void>;
+  /** Opens a folder picker, then switches the app to the project chosen. Resolves to why it failed, or null. */
+  openFolder(): Promise<string | null>;
+  /** The recent projects with their threads' status. */
+  projects(): Promise<ProjectEntry[]>;
+  /** Asks for a name and place, makes the project, and switches to it. */
+  newProject(): Promise<string | null>;
+  /** Switches to a recent project. */
+  openProject(path: string): Promise<string | null>;
   /** Missing when the app can't update, such as when it runs from the repo. */
   readonly updates?: DesktopUpdates;
 }

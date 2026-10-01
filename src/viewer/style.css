@@ -2564,3 +2564,189 @@ progress::-moz-progress-bar {
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+
+/* ---- the project switcher (ADR 0013) ---- */
+
+.switcher {
+  position: relative;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.switcher-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  height: 32px;
+  padding: 0 8px 0 6px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+button.switcher-btn:hover,
+.switcher-btn[aria-expanded='true'] {
+  background: var(--surface-3);
+}
+
+.switcher-btn .icon {
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.switcher-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher-dot {
+  position: absolute;
+  top: 4px;
+  left: 22px;
+  width: 7px;
+  height: 7px;
+  box-shadow: 0 0 0 2px var(--sidebar);
+}
+
+.switcher-menu {
+  top: calc(100% + 4px);
+  left: 0;
+  width: 320px;
+  max-width: calc(100vw - 32px);
+  padding: 6px;
+}
+
+.switcher-menu ul {
+  display: grid;
+  gap: 1px;
+  max-height: 360px;
+  margin: 0;
+  overflow-y: auto;
+  padding: 0;
+  list-style: none;
+}
+
+.switcher-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.switcher-item:hover:not(:disabled) {
+  background: var(--surface-2);
+}
+
+.switcher-item:disabled {
+  opacity: 0.5;
+}
+
+.switcher-check {
+  display: grid;
+  flex: 0 0 14px;
+  place-items: center;
+  color: var(--accent-text);
+}
+
+.switcher-text {
+  display: grid;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.switcher-item-name {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher-item.is-current .switcher-item-name {
+  font-weight: 600;
+}
+
+.switcher-path {
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switcher-counts {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 8px;
+}
+
+.switcher-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-2);
+  font: 11px/1 var(--mono);
+}
+
+.switcher-actions {
+  display: grid;
+  gap: 1px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.switcher-action {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-2);
+  font-size: 13px;
+  text-align: left;
+}
+
+.switcher-action:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+/* A project with no scenes yet: an invitation, not an error. */
+.empty-stage {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 24px;
+  text-align: center;
+}
+
+.empty-stage h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.empty-stage p {
+  max-width: 380px;
+  margin: 0 0 6px;
+  color: var(--text-2);
+}

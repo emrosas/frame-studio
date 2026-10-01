@@ -1,25 +1,28 @@
-// The app (ADR 0008). It opens a studio folder, runs the studio server on it
-// in a utility process, shows the viewer the server serves in a window, and
-// keeps a hidden render worker window for the server's jobs. IPC carries only
-// the token handoff and native features: folder pickers, Reveal in Finder,
-// menus and updates. The app's data goes over the server's HTTP and event
-// stream, as in a browser. Electron main process only.
+// The app (ADR 0008, ADR 0013). It opens projects, each a folder: a studio
+// server on each in a utility process, with a hidden render worker window for
+// its jobs. One project is on screen at a time, in the viewer its server
+// serves; a project you switch away from keeps running while an agent works
+// there, and stops when none does. IPC carries only the token handoff and
+// native features: the project switcher's list, folder pickers, Reveal in
+// Finder, menus and updates. The app's data goes over each server's HTTP and
+// event stream, as in a browser. Electron main process only.
 
 import { randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, type WriteStream } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { createWriteStream, existsSync, mkdirSync, renameSync, writeFileSync, type WriteStream } from 'node:fs';
+import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, utilityProcess, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
 import { createStudioFolder, writeTsconfig } from './folders.ts';
+import { createProject, hasAgentWork, listProjects } from './projects.ts';
 import { appPaths } from './paths.ts';
 import { adoptShellPath } from './shell-path.ts';
 import { checkForUpdates, checkFromMenu, installUpdate, openReleaseNotes, startUpdates, type UpdateState, updatesEnabled, updateState } from './updater.ts';
 import { openWorkerWindow } from './worker.ts';
 
 interface Settings {
-  /** Studio folders, most recent first. */
+  /** Project folders, most recent first. */
   recent: string[];
   bounds?: Rectangle;
 }
@@ -35,6 +38,9 @@ interface Session {
 
 const paths = appPaths();
 let settings: Settings = { recent: [] };
+/** Every project whose server runs, by folder. */
+const sessions = new Map<string, Session>();
+/** The project on screen. */
 let session: Session | null = null;
 let main: BrowserWindow | null = null;
 let welcome: BrowserWindow | null = null;
@@ -57,9 +63,28 @@ async function loadSettings(): Promise<Settings> {
   }
 }
 
+/** Writes the settings whole, through a temporary file, so quitting mid-write never leaves half a file. */
 async function saveSettings(): Promise<void> {
-  await mkdir(app.getPath('userData'), { recursive: true });
-  await writeFile(settingsFile(), `${JSON.stringify(settings, null, 2)}\n`).catch(() => {});
+  try {
+    await mkdir(app.getPath('userData'), { recursive: true });
+    const partial = `${settingsFile()}.partial`;
+    await writeFile(partial, `${JSON.stringify(settings, null, 2)}\n`);
+    await rename(partial, settingsFile());
+  } catch {
+    // Settings are a convenience; the app works without them.
+  }
+}
+
+/** The same, at once, for quitting, when nothing async gets to finish. */
+function saveSettingsNow(): void {
+  try {
+    mkdirSync(app.getPath('userData'), { recursive: true });
+    const partial = `${settingsFile()}.partial`;
+    writeFileSync(partial, `${JSON.stringify(settings, null, 2)}\n`);
+    renameSync(partial, settingsFile());
+  } catch {
+    // as above
+  }
 }
 
 async function isDirectory(path: string): Promise<boolean> {
@@ -107,13 +132,25 @@ async function startServer(folder: string, token: string): Promise<{ server: Uti
   return { server, url };
 }
 
-async function stopSession(): Promise<void> {
-  const current = session;
-  session = null;
-  if (!current) return;
-  current.stopping = true;
-  if (!current.worker.isDestroyed()) current.worker.destroy();
-  current.server.kill();
+/** Stops a project's server and render worker. */
+function stopSession(target: Session | null): void {
+  if (!target) return;
+  if (session === target) session = null;
+  sessions.delete(target.folder);
+  target.stopping = true;
+  if (!target.worker.isDestroyed()) target.worker.destroy();
+  target.server.kill();
+}
+
+/** Stops the projects in the background whose agents have nothing left to do (ADR 0013). */
+async function sweep(): Promise<void> {
+  for (const s of [...sessions.values()]) {
+    if (s === session || s.stopping) continue;
+    if (!(await hasAgentWork(s.folder))) {
+      log(`stopping ${s.folder}: nothing runs there`);
+      stopSession(s);
+    }
+  }
 }
 
 /** Opens run one at a time, so a double click can't start two servers. */
@@ -133,32 +170,44 @@ async function openFolderNow(folder: string, options: { restart?: boolean }): Pr
   const dir = resolve(folder);
   if (!(await isDirectory(dir))) return `${dir} is not a folder.`;
   if (!options.restart) restarts = 0;
-  await writeTsconfig(dir, paths.builtins).catch((err: unknown) => log(`tsconfig: ${String(err)}`));
-  const token = randomBytes(24).toString('base64url');
-  if (options.restart || session?.folder === dir) await stopSession();
-  let started: { server: UtilityProcess; url: string };
-  try {
-    started = await startServer(dir, token);
-  } catch (err) {
-    const why = err instanceof Error ? err.message : String(err);
-    log(why);
-    if (options.restart) scheduleRestart(dir);
-    return why;
+  let target = sessions.get(dir);
+  if (target && options.restart) {
+    stopSession(target);
+    target = undefined;
   }
-  await stopSession();
-  const worker = openWorkerWindow(started.url, token);
-  const current: Session = { folder: dir, url: started.url, token, server: started.server, worker, stopping: false };
-  session = current;
-  started.server.once('exit', (code) => {
-    if (current.stopping || session !== current) return;
-    log(`studio server exited (${code})`);
-    scheduleRestart(dir, current);
-  });
+  // A project still running in the background comes back as it is, its agents mid-turn.
+  if (!target) {
+    await writeTsconfig(dir, paths.builtins).catch((err: unknown) => log(`tsconfig: ${String(err)}`));
+    const token = randomBytes(24).toString('base64url');
+    let started: { server: UtilityProcess; url: string };
+    try {
+      started = await startServer(dir, token);
+    } catch (err) {
+      const why = err instanceof Error ? err.message : String(err);
+      log(why);
+      if (options.restart) scheduleRestart(dir);
+      return why;
+    }
+    const worker = openWorkerWindow(started.url, token);
+    const opened: Session = { folder: dir, url: started.url, token, server: started.server, worker, stopping: false };
+    target = opened;
+    sessions.set(dir, opened);
+    started.server.once('exit', (code) => {
+      if (opened.stopping) return;
+      log(`studio server for ${dir} exited (${code})`);
+      if (session === opened) scheduleRestart(dir, opened);
+      else stopSession(opened);
+    });
+  }
+  const previous = session;
+  session = target;
   settings.recent = [dir, ...settings.recent.filter((p) => p !== dir)].slice(0, 10);
   void saveSettings();
   buildMenu();
-  showViewer(started.url, basename(dir));
+  showViewer(target.url, basename(dir));
   welcome?.close();
+  // The project left behind keeps running only while its agents work.
+  if (previous && previous !== target) void sweep();
   return null;
 }
 
@@ -261,22 +310,37 @@ function showWelcome(): void {
 
 async function pickFolder(): Promise<string | null> {
   const parent = BrowserWindow.getFocusedWindow() ?? main ?? welcome;
-  const options = { title: 'Open Studio Folder', properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[] };
+  const options = { title: 'Open Project', buttonLabel: 'Open', properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[] };
   const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
   if (picked.canceled || picked.filePaths.length === 0) return null;
   return openFolder(picked.filePaths[0]);
 }
 
-/** Makes ~/Frame Studio with the samples, or the next free "~/Frame Studio N", and opens it. */
-async function newFolder(): Promise<string | null> {
-  // Tests put new folders elsewhere; HOME itself must stay real, since the login shell reads its profile there.
-  const home = process.env.FRAME_STUDIO_HOME ?? homedir();
-  let dir = join(home, 'Frame Studio');
-  for (let n = 2; await isDirectory(dir); n++) {
-    const names = await import('node:fs/promises').then((fs) => fs.readdir(dir));
-    if (names.every((name) => name.startsWith('.'))) break;
-    dir = join(home, `Frame Studio ${n}`);
-  }
+/** Where new projects go by default: ~/Frame Studio Projects. Tests put it elsewhere; HOME stays real for the login shell. */
+function projectsHome(): string {
+  return join(process.env.FRAME_STUDIO_HOME ?? homedir(), 'Frame Studio Projects');
+}
+
+/** Asks for a new project's name and place in the save panel, makes the folder, and opens it (ADR 0013). */
+async function newProject(): Promise<string | null> {
+  await mkdir(projectsHome(), { recursive: true }).catch(() => {});
+  const parent = BrowserWindow.getFocusedWindow() ?? main ?? welcome;
+  const options: Electron.SaveDialogOptions = {
+    title: 'New Project',
+    buttonLabel: 'Create',
+    nameFieldLabel: 'Project:',
+    defaultPath: join(projectsHome(), 'Untitled Project'),
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  };
+  const picked = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options);
+  if (picked.canceled || !picked.filePath) return null;
+  const problem = await createProject(picked.filePath).catch((err: unknown) => `Could not make ${picked.filePath}: ${err instanceof Error ? err.message : String(err)}`);
+  return problem ?? openFolder(picked.filePath);
+}
+
+/** Makes the sample project in ~/Frame Studio Projects/Sample, the first time, and opens it. */
+async function sampleProject(): Promise<string | null> {
+  const dir = join(projectsHome(), 'Sample');
   try {
     await createStudioFolder(dir, paths.samples);
   } catch (err) {
@@ -290,7 +354,7 @@ async function newFolder(): Promise<string | null> {
 function buildMenu(): void {
   const recent: MenuItemConstructorOptions[] = settings.recent.length
     ? settings.recent.map((path) => ({ label: path, click: () => report(openFolder(path)) }))
-    : [{ label: 'No recent folders', enabled: false }];
+    : [{ label: 'No recent projects', enabled: false }];
   // Electron's own app menu, with Check for Updates… after About.
   const appMenu: MenuItemConstructorOptions = {
     label: app.name,
@@ -312,9 +376,10 @@ function buildMenu(): void {
     {
       label: 'File',
       submenu: [
-        { label: 'New Studio Folder', accelerator: 'CmdOrCtrl+Shift+N', click: () => report(newFolder()) },
-        { label: 'Open Folder…', accelerator: 'CmdOrCtrl+O', click: () => report(pickFolder()) },
+        { label: 'New Project…', accelerator: 'CmdOrCtrl+Shift+N', click: () => report(newProject()) },
+        { label: 'Open Project…', accelerator: 'CmdOrCtrl+O', click: () => report(pickFolder()) },
         { label: 'Open Recent', submenu: recent },
+        { label: 'Open Sample Project', click: () => report(sampleProject()) },
         { type: 'separator' },
         {
           label: 'Reveal Output Folder',
@@ -326,7 +391,7 @@ function buildMenu(): void {
             void shell.openPath(out);
           },
         },
-        { label: 'Reveal Studio Folder', enabled: session !== null, click: () => session && void shell.openPath(session.folder) },
+        { label: 'Reveal Project Folder', enabled: session !== null, click: () => session && void shell.openPath(session.folder) },
         { type: 'separator' },
         { role: 'close' },
       ],
@@ -377,9 +442,12 @@ function registerIpc(): void {
     if (relative(session.folder, target).startsWith('..')) return;
     shell.showItemInFolder(target);
   });
-  ipcMain.handle('frame-studio:open-folder', () => pickFolder());
-  ipcMain.handle('frame-studio:new-folder', () => newFolder());
-  ipcMain.handle('frame-studio:open-recent', (_event, path: string) => openFolder(path));
+  ipcMain.handle('frame-studio:open-folder', (event) => (fromApp(event) ? pickFolder() : null));
+  ipcMain.handle('frame-studio:new-project', (event) => (fromApp(event) ? newProject() : null));
+  ipcMain.handle('frame-studio:sample-project', (event) => (fromApp(event) ? sampleProject() : null));
+  ipcMain.handle('frame-studio:open-recent', (event, path: string) => (fromApp(event) && settings.recent.includes(path) ? openFolder(path) : null));
+  // The project switcher's list (ADR 0013): the recent projects with their threads that need a look.
+  ipcMain.handle('frame-studio:projects', (event) => (fromApp(event) ? listProjects(settings.recent, session?.folder ?? null, new Set(sessions.keys())) : []));
   // Updates (ADR 0009). The preloads offer them only when the app can update.
   ipcMain.on('frame-studio:updates', (event) => {
     event.returnValue = updatesEnabled() && fromApp(event);
@@ -420,7 +488,11 @@ export function runApp(): void {
     if (session) showViewer(session.url, basename(session.folder));
     else showWelcome();
   });
-  app.on('before-quit', () => void stopSession());
+  app.on('before-quit', () => {
+    if (main && !main.isDestroyed()) settings.bounds = main.getBounds();
+    saveSettingsNow();
+    for (const s of [...sessions.values()]) stopSession(s);
+  });
   registerIpc();
   void app.whenReady().then(async () => {
     if (paths.dockIcon && existsSync(paths.dockIcon)) app.dock?.setIcon(paths.dockIcon);
@@ -431,6 +503,7 @@ export function runApp(): void {
     settings = await loadSettings();
     buildMenu();
     if (updatesEnabled()) startUpdates({ push: pushUpdate, log });
+    setInterval(() => void sweep(), 5000);
     const last = settings.recent[0];
     if (last && (await isDirectory(last)) && !(await openFolder(last))) return;
     showWelcome();

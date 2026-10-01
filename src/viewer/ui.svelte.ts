@@ -3,7 +3,7 @@
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
 import type { AgentId, AgentStatus, ApprovalDecision, NewProject, NewScene, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
-import type { UpdateState } from './desktop';
+import type { ProjectEntry, UpdateState } from './desktop';
 import type { FrameRange, RangeText } from './selection';
 import type { RequestAction } from './studio-client';
 
@@ -197,6 +197,12 @@ export interface ViewerActions {
   dismissToast(): void;
   /** Switches the app to another studio folder (the app only). */
   openFolder(): void;
+  /** The recent projects with their threads' status (ADR 0013); empty in a browser. */
+  projects(): Promise<ProjectEntry[]>;
+  /** Switches the app to a recent project. Returns why it failed, or null. */
+  openProject(path: string): Promise<string | null>;
+  /** Makes a new project, asking for its name and place, and switches to it. Returns why it failed, or null. */
+  newProject(): Promise<string | null>;
   /** Downloads and installs the update on offer, then restarts (the app only). */
   installUpdate(): void;
   /** Checks for an update now (the app only). */
@@ -245,6 +251,10 @@ export class ViewerUi {
   sound = $state<SoundState | null>(null);
   scenes = $state<SceneOption[]>([]);
   projects = $state<ProjectOption[]>([]);
+  /** The project has no scenes yet, so the stage offers to start one. */
+  emptyProject = $state(false);
+  /** Asks the sidebar to open the New dialog, e.g. from the empty stage. */
+  newRequest = $state<NewWhat | null>(null);
   /** The studio folder's sound files (ADR 0012). */
   media = $state<MediaItem[]>([]);
   /** What the last import or Add at playhead did, for the Media list. */
