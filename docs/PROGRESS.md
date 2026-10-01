@@ -714,6 +714,19 @@ How it was checked:
 - Live, one turn each against the real CLIs with a stub answering "Blue": Claude (Haiku) asked through the card and replied "Blue"; Codex asked through the card and replied "Blue" once the prompt named request_user_input. The standing instructions name both tools.
 - Screenshots in light and dark. They caught two bugs, both fixed: a preview shown on hover grew the card and moved the option away from the pointer, over and over; and the hover style hid a picked option's highlight. A third bug, the card resetting its picks whenever the thread view refreshed, was found by reading the code.
 
+### The thread sticks to the bottom
+
+You found the thread didn't follow the agent's work. It followed short additions but let go for good after one that grew the thread by more than 60 px at once, such as a row of frame thumbnails. The viewer scrolled down, but the scroll event arrived a frame later, after more content, measured more than 60 px from the bottom, and read as you scrolling up. A probe in the browser test showed the gap going 61, 318, 451 px and staying.
+
+T3 Code gets this from LegendList's `maintainScrollAtEnd`, a React list. The technique is small, so the thread view now does it itself:
+
+- Only scrolling up lets go: the scroll position moving up, or the wheel turning up. The viewer's own scrolls only go down, so a late scroll event can't let go.
+- Back within 40 px of the bottom, it takes hold again.
+- It follows the scroll area resizing too, so a question card or the reply box appearing keeps the newest work in view.
+- Sending a reply jumps to the bottom, and a round ↓ button appears when you've scrolled up.
+
+A browser test covers it: a turn of eight thumbnails ends at the bottom; during a long reply, scrolling up holds still while the agent keeps talking; the button brings it back, and it follows to the end.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:

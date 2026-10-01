@@ -95,18 +95,43 @@
     return `${describeTarget(s)} · [${s.from}, ${s.to}) · ${thread.sceneId}`;
   });
 
-  // Follow the newest work while scrolled to the bottom, including thumbnails that load late; leave it be once
-  // you scroll up to read.
+  // Stick to the bottom while the agent works, as T3 Code's list does: follow whatever grows (streamed text,
+  // thumbnails that load late) and whatever shrinks the view (a question card, the reply box). Only scrolling
+  // up yourself lets go: our own scrolls only ever go down, so a scroll event that arrives after more content
+  // (and so measures far from the bottom) can't let go by mistake. Scrolling back near the bottom, the jump
+  // button, or sending a reply takes hold again.
   let body = $state<HTMLElement | null>(null);
   let list = $state<HTMLElement | null>(null);
-  let pinned = true;
+  let pinned = $state(true);
+  let lastTop = 0;
+  const NEAR_BOTTOM = 40;
+
+  function toBottom(): void {
+    if (!body) return;
+    body.scrollTop = body.scrollHeight;
+    lastTop = body.scrollTop;
+  }
+
+  function stick(): void {
+    pinned = true;
+    toBottom();
+  }
+
+  function onScroll(): void {
+    if (!body) return;
+    const gap = body.scrollHeight - body.scrollTop - body.clientHeight;
+    if (gap <= NEAR_BOTTOM) pinned = true;
+    else if (body.scrollTop < lastTop - 1) pinned = false;
+    lastTop = body.scrollTop;
+  }
+
   $effect(() => {
     if (!body || !list) return;
-    const box = body;
     const follow = new ResizeObserver(() => {
-      if (pinned) box.scrollTop = box.scrollHeight;
+      if (pinned) toBottom();
     });
     follow.observe(list);
+    follow.observe(body);
     return () => follow.disconnect();
   });
 
@@ -129,6 +154,8 @@
       ? await run(() => actions.retry(thread.id, reply, files.map((f) => f.file), chosen))
       : await run(() => actions.reply(thread.id, reply, files.map((f) => f.file), chosen));
     if (!ok) return;
+    // Your reply goes to the bottom, so you follow the agent's answer to it.
+    stick();
     for (const f of files) URL.revokeObjectURL(f.url);
     files = [];
     reply = '';
@@ -146,7 +173,7 @@
     </div>
   </header>
 
-  <div class="panel-body" bind:this={body} onscroll={() => body && (pinned = body.scrollHeight - body.scrollTop - body.clientHeight < 60)}>
+  <div class="panel-body" bind:this={body} onscroll={onScroll} onwheel={(e) => e.deltaY < 0 && (pinned = false)}>
     <ol class="turns" bind:this={list}>
       {#each thread.turns as turn, k (k)}
         {@const transcript = foldTurn(ui.turnEvents[`${thread.id}:${k}`] ?? [])}
@@ -225,6 +252,9 @@
         </li>
       {/each}
     </ol>
+    {#if !pinned}
+      <button type="button" class="jump-latest" aria-label="Jump to the latest" title="Jump to the latest" onclick={stick}><Icon name="chevronDown" size={16} /></button>
+    {/if}
   </div>
 
   <footer class="panel-foot">
