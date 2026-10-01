@@ -45,6 +45,11 @@ describe('access rules', () => {
     expect(verdict(judge({ kind: 'write', paths: ['/repo/scenes/bears.json'] }, ctx()))).toBe('ask');
     expect(verdict(judge({ kind: 'write', paths: ['/repo/scenes/bears.json'] }, ctx({ access: 'full' })))).toBe('allow');
     expect(verdict(judge({ kind: 'write', paths: ['/repo/scenes/bears.json'] }, ctx({ access: 'full', busyScenes: ['bears'] })))).toBe('refuse');
+    // A composition's file is that composition (ADR 0013), and the folder's project.json is writable.
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/compositions/trailer.json'] }, ctx()))).toBe('ask');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/compositions/trailer.json'] }, ctx({ access: 'full', busyScenes: ['trailer'] })))).toBe('refuse');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/compositions/trailer.json'] }, ctx({ sceneId: 'trailer' })))).toBe('allow');
+    expect(verdict(judge({ kind: 'write', paths: ['/repo/project.json'] }, ctx()))).toBe('allow');
   });
 
   it("asks before editing a rig a busy scene draws with, or a shared part, even with full access", () => {

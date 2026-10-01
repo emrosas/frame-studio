@@ -6,7 +6,7 @@
 // a second load imports only what changed; the rest are the same objects.
 
 import type { AudioGenerator, GeneratorRegistry } from '../audio/types';
-import { createRegistry, isRig, sceneGraphErrors, validateProject, validateScene, type Rig } from '../engine';
+import { createRegistry, isRig, sceneGraphErrors, validateComposition, validateFolderProject, validateProject, validateScene, type Rig } from '../engine';
 import { buildLibrary, type SceneLibrary } from './library';
 
 interface ModuleManifest {
@@ -80,6 +80,8 @@ export async function loadLibrary(): Promise<LoadedLibrary> {
     sceneGraphErrors,
     createProjectRegistry: (own) => createRegistry([...rigs, ...own]),
     rigs: projectRigs,
+    validateComposition,
+    validateFolderProject: validateFolderProject as never,
   });
   const withMedia = { ...library, media: files.media ?? [] };
   return { library: errors.length > 0 ? { ...withMedia, errors: [...library.errors, ...errors] } : withMedia, generation: files.generation };

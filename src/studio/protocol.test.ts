@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canRevert,
   checkAnswers,
-  checkNewProject,
+  checkNewComposition,
   checkNewRequest,
   checkNewScene,
   checkpointFileName,
@@ -268,7 +268,8 @@ describe('new scenes and projects', () => {
     expect(checkNewScene({ ...good, id: '' })).toMatch(/needs a name/);
     expect(checkNewScene({ ...good, id: 'Opening' })).toMatch(/lowercase/);
     expect(checkNewScene({ ...good, id: 'a--b' })).toMatch(/single hyphens/);
-    expect(checkNewScene({ ...good, fps: undefined })).toMatch(/fps/);
+    // A folder scene may leave its format to project.json.
+    expect(checkNewScene({ id: 'opening', duration: 5 })).toBeNull();
     expect(checkNewScene({ ...good, fps: 24.5 })).toMatch(/fps/);
     expect(checkNewScene({ ...good, size: [1920] })).toMatch(/size/);
     expect(checkNewScene({ ...good, size: [8, 8] })).toMatch(/size/);
@@ -283,12 +284,12 @@ describe('new scenes and projects', () => {
     expect(checkNewScene({ id: 'shot-1', project: 'Story', duration: 3 })).toMatch(/the project id/);
   });
 
-  it('checks a new project: an id, a name, fps, size and the main scene\'s length', () => {
-    const good = { id: 'story', name: "Bears' story", fps: 12, size: [1920, 1080], duration: 10 };
-    expect(checkNewProject(good)).toBeNull();
-    expect(checkNewProject({ ...good, name: '  ' })).toMatch(/needs a name/);
-    expect(checkNewProject({ ...good, fps: 0 })).toMatch(/fps/);
-    expect(checkNewProject({ ...good, main: 'film' })).toMatch(/unknown field "main"/);
+  it('checks a new composition: an id, a length, and fps and size when given', () => {
+    expect(checkNewComposition({ id: 'film', duration: 10 })).toBeNull();
+    expect(checkNewComposition({ id: 'film', fps: 12, size: [1080, 1920], duration: 10 })).toBeNull();
+    expect(checkNewComposition({ id: 'Film', duration: 10 })).toMatch(/lowercase/);
+    expect(checkNewComposition({ id: 'film', fps: 0, duration: 10 })).toMatch(/fps/);
+    expect(checkNewComposition({ id: 'film', duration: 10, main: 'x' })).toMatch(/unknown field "main"/);
   });
 });
 

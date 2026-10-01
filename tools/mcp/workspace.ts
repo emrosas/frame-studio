@@ -19,7 +19,7 @@ import { entryPath, libraryFrom, loadModules, readSceneFiles, sceneLibrary, writ
 import type { CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
-import { checkNewProject, checkNewScene, NEW_PROJECT_MAIN, projectOf, type NewProject, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
+import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, projectOf, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
 import type { StudioQueue } from '../studio/queue.ts';
@@ -169,8 +169,31 @@ export class Workspace {
       if (broken.length > 0) throw new Error(`${action} would break scenes in the project, so nothing was saved:\n${broken.join('\n')}`);
       return;
     }
-    const result = modules.validate(scene, entry.registry ?? modules.createRegistry(), entry.context ?? undefined);
-    if (!result.ok) throw new Error(`${action} would make the scene invalid, so nothing was saved:\n${result.errors.join('\n')}`);
+    // A folder's scene or composition (ADR 0013): checked as the viewer will build it, with the compositions that place it.
+    const { lib } = await this.library();
+    const broken = await this.folderBreaks(modules, lib, entry.path, scene);
+    const own = broken.filter((b) => b.startsWith(`${entry.file}: `)).map((b) => b.slice(entry.file.length + 2));
+    const others = broken.filter((b) => !b.startsWith(`${entry.file}: `));
+    if (own.length > 0) throw new Error(`${action} would make the ${entry.kind} invalid, so nothing was saved:\n${own.join('\n')}`);
+    if (others.length > 0) throw new Error(`${action} would break the compositions that place it, so nothing was saved:\n${others.join('\n')}`);
+  }
+
+  /**
+   * What would go wrong in the folder's own scenes and compositions (ADR 0013) if the file at module path
+   * `path` held `json`: every error of that file, and of any other that is fine now, each "file: message".
+   */
+  private async folderBreaks(modules: LoadedModules, lib: SceneLibrary, path: string, json: unknown): Promise<string[]> {
+    const files = await readSceneFiles(this.folder);
+    files[path] = JSON.stringify(json);
+    const after = await libraryFrom(modules, files);
+    const errors: string[] = [];
+    if (path === '/project.json' && after.folder && after.folder.errors.length > 0) errors.push(...after.folder.errors.map((e) => `project.json: ${e}`));
+    for (const e of after.entries) {
+      if (e.project !== null) continue;
+      const wasFine = lib.entries.find((b) => b.key === e.key)?.scene != null;
+      if (e.errors.length > 0 && (e.path === path || wasFine)) errors.push(...e.errors.map((x) => `${e.file}: ${x}`));
+    }
+    return errors;
   }
 
   /** Refuses a scene whose sound file cues name files that aren't in media/ (ADR 0012). */
@@ -274,6 +297,7 @@ export class Workspace {
     const { modules, lib } = await this.library();
     return lib.entries.map((e) => ({
       id: e.key,
+      kind: e.kind,
       project: e.project,
       file: e.file,
       ...(e.scene
@@ -286,7 +310,7 @@ export class Workspace {
               id: l.id,
               ...(l.rig !== undefined ? { rig: l.rig } : {}),
               ...(l.cast !== undefined ? { cast: l.cast } : {}),
-              ...(l.scene !== undefined ? { scene: `${e.project}/${l.scene}` } : {}),
+              ...(l.scene !== undefined ? { scene: e.project !== null ? `${e.project}/${l.scene}` : l.scene } : {}),
             })),
           }
         : {}),
@@ -410,7 +434,8 @@ export class Workspace {
     } else {
       key = input.id;
       path = join(this.folder.scenes, `${input.id}.json`);
-      scene = this.emptyScene(input.id, input.fps!, input.size!, input.duration);
+      const format = this.defaultFormat(lib);
+      scene = this.emptyScene(input.id, input.fps ?? format.fps, input.size ?? format.size, input.duration);
     }
     if (lib.entries.some((e) => e.key === key) || (await stat(path).catch(() => null))) {
       throw new Error(`There is already a scene "${key}"${input.project === undefined ? ' in scenes/' : ''}. Pick another name.`);
@@ -419,38 +444,62 @@ export class Workspace {
       const broken = await this.projectBreaks(modules, lib, input.project, `/projects/${input.project}/${input.id}.json`, scene);
       if (broken.length > 0) throw new Error(`The new scene would break the project, so nothing was saved:\n${broken.join('\n')}`);
     } else {
-      const result = modules.validate(scene, modules.createRegistry());
-      if (!result.ok) throw new Error(`The new scene would be invalid, so nothing was saved:\n${result.errors.join('\n')}`);
+      const broken = (await this.folderBreaks(modules, lib, `/scenes/${input.id}.json`, scene)).map((e) => e.replace(/^scenes\/[^:]+: /, ''));
+      if (broken.length > 0) throw new Error(`The new scene would be invalid, so nothing was saved:\n${broken.join('\n')}`);
     }
     await mkdir(dirname(path), { recursive: true });
     await this.writeScene(path, scene, modules);
     return { id: key, file: this.show(path), scene };
   }
 
+  /** The format a new scene or composition gets: project.json's, else 24 fps at 1920×1080 (ADR 0013). */
+  private defaultFormat(lib: SceneLibrary): { fps: number; size: [number, number] } {
+    const project = lib.folder?.project;
+    return { fps: project?.fps ?? DEFAULT_FORMAT.fps, size: project?.size ?? DEFAULT_FORMAT.size };
+  }
+
   /**
-   * A new project (ADR 0007): projects/<id>/project.json with its name, fps and size, and an empty main
-   * scene. It refuses an id that is taken. Returns the main scene's id, which the viewer opens.
+   * A new composition (ADR 0013): compositions/<id>.json with one empty track, the format given or the
+   * project's, and a black background. It refuses an id a scene or composition has. Returns its id.
    */
-  async createProject(input: NewProject): Promise<{ id: string; main: string; file: string }> {
-    const problem = checkNewProject(input);
+  async createComposition(input: NewComposition): Promise<{ id: string; file: string; composition: unknown }> {
+    const problem = checkNewComposition(input);
     if (problem) throw new Error(problem);
     const { modules, lib } = await this.library();
-    const dir = join(this.folder.projects, input.id);
-    if (lib.projects.some((p) => p.id === input.id) || (await stat(dir).catch(() => null))) {
-      throw new Error(`There is already a project "${input.id}" in projects/. Pick another name.`);
+    const path = join(this.folder.compositions, `${input.id}.json`);
+    if (lib.entries.some((e) => e.key === input.id) || (await stat(path).catch(() => null))) {
+      throw new Error(`There is already a scene or composition "${input.id}". Pick another name.`);
     }
-    const project = { name: input.name.trim(), fps: input.fps, size: [input.size[0], input.size[1]], main: NEW_PROJECT_MAIN };
-    const scene = this.emptyScene(NEW_PROJECT_MAIN, input.fps, input.size, input.duration);
-    // Checked as the viewer will build it, on its own.
-    const prefix = `/projects/${input.id}/`;
-    const built = await libraryFrom(modules, { [`${prefix}project.json`]: JSON.stringify(project), [`${prefix}${NEW_PROJECT_MAIN}.json`]: JSON.stringify(scene) });
-    const errors = [...built.projects.flatMap((p) => p.errors), ...built.entries.flatMap((e) => e.errors.map((x) => `${e.file}: ${x}`))];
-    if (errors.length > 0) throw new Error(`The new project would be invalid, so nothing was saved:\n${errors.join('\n')}`);
-    await mkdir(dir, { recursive: true });
-    // The scene first, so project.json never names a main scene that isn't there.
-    await writeFileAtomic(join(dir, `${NEW_PROJECT_MAIN}.json`), modules.engine.formatSceneJson(scene));
-    await this.writeScene(join(dir, 'project.json'), project, modules);
-    return { id: input.id, main: `${input.id}/${NEW_PROJECT_MAIN}`, file: this.show(join(dir, 'project.json')) };
+    const format = this.defaultFormat(lib);
+    const size = input.size ?? format.size;
+    const composition = { id: input.id, fps: input.fps ?? format.fps, duration: input.duration, size: [size[0], size[1]], background: '#000000', tracks: [{ id: 'V1', clips: [] }] };
+    const broken = (await this.folderBreaks(modules, lib, `/compositions/${input.id}.json`, composition)).map((e) => e.replace(/^compositions\/[^:]+: /, ''));
+    if (broken.length > 0) throw new Error(`The new composition would be invalid, so nothing was saved:\n${broken.join('\n')}`);
+    await mkdir(dirname(path), { recursive: true });
+    await this.writeScene(path, composition, modules);
+    return { id: input.id, file: this.show(path), composition };
+  }
+
+  /** The folder's project.json (ADR 0013): its name, default format and cast, or {} when it has none. */
+  async getFolderProject(): Promise<{ file: string; project: unknown; errors: readonly string[] }> {
+    const { lib } = await this.library();
+    const text = await readFile(join(this.folder.root, 'project.json'), 'utf8').catch(() => null);
+    return { file: 'project.json', project: text === null ? {} : (JSON.parse(text) as unknown), errors: lib.folder?.errors ?? [] };
+  }
+
+  /**
+   * A merge patch to the folder's project.json, such as a cast change. The result must be a valid project
+   * file, and every scene and composition valid now must stay valid under it.
+   */
+  async updateFolderProject(patch: unknown): Promise<{ file: string; project: unknown }> {
+    const { modules, lib } = await this.library();
+    const path = join(this.folder.root, 'project.json');
+    const current = JSON.parse((await readFile(path, 'utf8').catch(() => null)) ?? '{}') as unknown;
+    const next = modules.engine.mergePatch(current, patch);
+    const broken = await this.folderBreaks(modules, lib, '/project.json', next);
+    if (broken.length > 0) throw new Error(`That patch would break the project, so nothing was saved:\n${broken.join('\n')}`);
+    await this.writeScene(path, next, modules);
+    return { file: 'project.json', project: next };
   }
 
   /** Every rig: the global library, then each project's own, marked with its project (ADR 0007). */
@@ -551,12 +600,14 @@ export class Workspace {
     for (const layerId of targets) edited = modules.engine.applyToSelection(edited, { layerId, partId: selection.partId, from, to }, patch);
 
     // Write the edit into the file as written, not the validated copy, so fields the validator fills in stay out of it.
-    const raw = JSON.parse(await readFile(file, 'utf8')) as Scene;
-    const layerIn = (s: Scene, id: string) => (id === 'background' ? s.background : s.layers.find((l) => l.id === id));
+    const raw = JSON.parse(await readFile(file, 'utf8')) as Scene & { tracks?: { clips: Layer[] }[] };
+    // A composition's clips are in its tracks (ADR 0013).
+    const layerIn = (s: Scene & { tracks?: { clips: Layer[] }[] }, id: string) =>
+      id === 'background' ? s.background : (s.tracks ? s.tracks.flatMap((t) => t.clips) : s.layers).find((l) => l.id === id);
     for (const layerId of targets) {
       const target = layerIn(raw, layerId);
       if (!target) throw new Error(`no layer "${layerId}" in ${this.show(file)}`);
-      target.overrides = layerIn(edited, layerId)?.overrides;
+      target.overrides = (layerId === 'background' ? edited.background : edited.layers.find((l) => l.id === layerId))?.overrides;
     }
     await this.checkEdit(modules, entry, raw, 'That edit');
     await this.writeScene(file, raw, modules);

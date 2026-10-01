@@ -97,15 +97,15 @@ describe('a studio folder', () => {
     }
   });
 
-  it('creates a scene, a project and a scene in it from the sidebar, and opens each with a new thread', async () => {
+  it('creates a scene and a composition from the sidebar, opens each with a new thread, and links a scene to where it is used', async () => {
     type W = { studio: { frameCount: number; scene: { id: string; fps: number; size: number[] } | null; selection: unknown; errors: string[] } };
     const read = (path: string) => JSON.parse(readFileSync(join(folder, path), 'utf8'));
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
     try {
       await page.goto(studio.paired('?scene=dot-test'));
       await page.waitForFunction(() => (window as unknown as W).studio?.frameCount === 12);
-      // A folder with no projects still offers to make one.
-      expect(await page.getByText('No projects yet.').isVisible()).toBe(true);
+      // A folder with no compositions still offers to make one.
+      expect(await page.getByText('No compositions yet.', { exact: false }).isVisible()).toBe(true);
 
       await page.getByRole('button', { name: 'New scene', exact: true }).click();
       let dialog = page.getByRole('dialog', { name: 'New scene' });
@@ -129,22 +129,25 @@ describe('a studio folder', () => {
       await dialog.waitFor({ state: 'detached' });
       expect(await page.evaluate(() => (window as unknown as W).studio.scene?.id)).toBe('opening-shot');
 
-      await page.getByRole('button', { name: 'New project' }).click();
-      dialog = page.getByRole('dialog', { name: 'New project' });
+      await page.getByRole('button', { name: 'New composition' }).click();
+      dialog = page.getByRole('dialog', { name: 'New composition' });
       await dialog.getByLabel('Name').fill('Short film');
+      expect(await dialog.getByText('Saved as compositions/short-film.json, with one empty track.').isVisible()).toBe(true);
       await dialog.getByText('12 fps').click();
       await dialog.getByRole('button', { name: 'Create' }).click();
-      await page.waitForFunction(() => new URLSearchParams(location.search).get('scene') === 'short-film/main');
-      expect(read('projects/short-film/project.json')).toEqual({ name: 'Short film', fps: 12, size: [1920, 1080], main: 'main' });
-      expect(read('projects/short-film/main.json')).toMatchObject({ id: 'main', fps: 12, duration: 10, layers: [] });
+      await page.waitForFunction(() => new URLSearchParams(location.search).get('scene') === 'short-film');
+      expect(read('compositions/short-film.json')).toEqual({ id: 'short-film', fps: 12, duration: 10, size: [1920, 1080], background: '#000000', tracks: [{ id: 'V1', clips: [] }] });
 
-      await page.getByRole('group', { name: 'Short film' }).getByRole('button', { name: 'New scene' }).click();
-      dialog = page.getByRole('dialog', { name: 'New scene in Short film' });
-      expect(await dialog.getByText('1920×1080 · 12 fps').isVisible()).toBe(true);
-      await dialog.getByLabel('Name').fill('shot 1');
-      await dialog.getByRole('button', { name: 'Create' }).click();
-      await page.waitForFunction(() => new URLSearchParams(location.search).get('scene') === 'short-film/shot-1');
-      expect(await page.evaluate(() => (window as unknown as W).studio.scene)).toMatchObject({ fps: 12, size: [1920, 1080] });
+      // A clip of dot-test, and dot-test then says where it's used (ADR 0013).
+      writeFileSync(
+        join(folder, 'compositions/short-film.json'),
+        JSON.stringify({ ...read('compositions/short-film.json'), tracks: [{ id: 'V1', clips: [{ id: 'dot', scene: 'dot-test', start: 1 }] }] }),
+      );
+      await page.waitForFunction(() => (window as unknown as { studio: { scene: { layers: { id: string }[] } | null } }).studio.scene?.layers.some((l) => l.id === 'dot'));
+      await page.getByRole('button', { name: 'dot-test', exact: true }).click();
+      await page.waitForFunction(() => (window as unknown as W).studio.scene?.id === 'dot-test');
+      await page.getByRole('button', { name: 'short-film', exact: true }).last().click();
+      await page.waitForFunction(() => (window as unknown as W).studio.scene?.id === 'short-film');
       expect(await page.evaluate(() => (window as unknown as W).studio.errors)).toEqual([]);
     } finally {
       await page.close();

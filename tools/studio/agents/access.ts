@@ -1,7 +1,8 @@
 // What an agent in the studio may do without asking (ADR 0006). In the
 // default access it may read the studio folder, use the studio tools on its
-// own scene, and write in scenes/, rigs/, audio/ and projects' rigs/, and in a
-// repo in src/rigs/ and src/audio/, the built-ins (ADR 0008).
+// own scene, and write in scenes/, compositions/, rigs/, audio/, project.json
+// and M9 projects' rigs/, and in a repo in src/rigs/ and src/audio/, the
+// built-ins (ADR 0008, ADR 0013).
 // Everything else asks the user first. Full access asks for nothing. In
 // either mode, a scene another thread is working on is off limits, since both
 // would write it, and an edit to a project's project.json, which touches
@@ -35,9 +36,12 @@ export interface AccessContext {
   busyRigs: readonly string[];
 }
 
-const WRITABLE = ['scenes', 'rigs', 'audio', 'src/rigs', 'src/audio'];
-/** Project rigs, and project files: a project scene's file or project.json, judged as scene or project edits first. */
-const PROJECT_WRITABLE = /^projects\/[^/]+\/(rigs(\/|$)|[^/]+\.json$)/;
+const WRITABLE = ['scenes', 'compositions', 'rigs', 'audio', 'src/rigs', 'src/audio'];
+/**
+ * The folder's project.json (ADR 0013), and an M9 project's rigs and files: a project scene's file or
+ * project.json, judged as scene or project edits first.
+ */
+const PROJECT_WRITABLE = /^(project\.json$|projects\/[^/]+\/(rigs(\/|$)|[^/]+\.json$))/;
 
 /** The path relative to the repo, or null when it is outside it. */
 function inRepo(root: string, path: string): string | null {
@@ -56,7 +60,7 @@ function busyRigFile(rel: string, busyRigs: readonly string[]): boolean {
 
 /** What editing a file under the repo means for the scenes: another scene, a project.json, or nothing special. */
 function fileAction(rel: string, tool: string): Action | null {
-  const loose = /^scenes\/([^/]+)\.json$/.exec(rel);
+  const loose = /^(?:scenes|compositions)\/([^/]+)\.json$/.exec(rel);
   if (loose) return { kind: 'scene', sceneId: loose[1], tool };
   const inProject = /^projects\/([^/]+)\/([^/]+)\.json$/.exec(rel);
   if (!inProject) return null;
@@ -103,7 +107,7 @@ export function judge(action: Action, ctx: AccessContext): Verdict {
     if (busy.length > 0) {
       return { allow: false, ask: true, summary: `Edit ${names}`, detail: 'Another request is working on a scene that may draw with this rig.' };
     }
-    return { allow: false, ask: true, summary: `Edit ${names}`, detail: "Outside scenes/, rigs/, audio/ and projects' own files." };
+    return { allow: false, ask: true, summary: `Edit ${names}`, detail: 'Outside scenes/, compositions/, rigs/, audio/ and project.json.' };
   }
   if (ctx.access === 'full') return { allow: true };
   switch (action.kind) {

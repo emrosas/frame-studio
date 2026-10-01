@@ -1,10 +1,10 @@
 # Writing scenes
 
-The studio works on a **studio folder** (ADR 0008): the one the app has open, or the repo under `npm run dev`. A folder holds `scenes/`, `projects/`, its own rigs in `rigs/` and sound generators in `audio/`, `references/`, and `out/` for renders. The built-in rigs and generators come with the app; in the repo they are `src/rigs` and `src/audio`.
+The studio works on a **project folder** (ADR 0008, ADR 0013): the one the app has open, or the repo under `npm run dev`. A folder holds `project.json`, `scenes/`, `compositions/`, its own rigs in `rigs/` and sound generators in `audio/`, sound files in `media/`, `references/`, and `out/` for renders. The built-in rigs and generators come with the app; in the repo they are `src/rigs` and `src/audio`.
 
 A scene is one JSON file in the folder's `scenes/`, named after its id: `scenes/shapes-test.json` holds the scene with `"id": "shapes-test"`. The viewer picks up every file in that folder. `scenes/hello.json` is the smallest working scene and a good one to copy. Give the copy its own id. While two files share an id, the file named after the id keeps it and the other file shows as invalid.
 
-A longer piece is a project: a folder in `projects/` whose scenes share a frame rate, a size and a cast, and can place each other. See [Projects](#projects).
+A scene draws. A longer piece is a composition, in `compositions/`, which arranges scenes on tracks. See [Projects and compositions](#projects-and-compositions).
 
 The image at any frame depends only on the scene file and the frame number. Nothing carries over from the previous frame, so a scene renders the same whether you play to frame 40 or jump straight to it.
 
@@ -29,8 +29,8 @@ Any field not listed here is an error. The same goes for layers, tracks, keys an
 | --- | --- |
 | `id` | Unique within the scene. `background` is taken, and `/` is not allowed. |
 | `rig` | Which rig draws this layer, for example `circle`. |
-| `cast` | In a project, instead of `rig`: a cast member, such as `bruno`. See [Projects](#projects). |
-| `scene` | In a project, instead of `rig`: another scene of the project to show here, with `start`, `in` and `out`. See [Scene layers](#scene-layers). |
+| `cast` | Instead of `rig`: a cast member from `project.json`, such as `bruno`. See [The cast](#the-cast). |
+| `scene` | Only in a composition's clips, and in films made before compositions: another scene to show here, with `start`, `in` and `out`. See [Compositions](#compositions). |
 | `params` | Fixed param values. Anything you leave out uses the rig default. |
 | `tracks` | Animated params, see below. |
 | `stepFps` | Optional. Holds the layer's time on a slower clock, see below. |
@@ -474,16 +474,20 @@ A short beep for UI moments and hits. Each blip starts exactly on a frame.
 | `every` | number | 0 | 0 to 60 | Seconds between blips. 0 plays one blip at the cue start. Repeats snap to frames and are at least a frame apart. |
 | `gain` | number | 0.3 | 0 to 1 | Loudness. |
 
-## Projects
+## Projects and compositions
 
-A project is a folder, `projects/<id>/`, for a piece made of several scenes (ADR 0007). It holds `project.json`, its scenes, and optionally a `rigs/` folder. `projects/bears-story/` is the sample: three shots and a main scene, `film`, that cuts, crossfades and irises between them.
+A project is a folder (ADR 0013). Everything a piece uses lives in it, and the app's switcher moves between projects. Its parts:
+
+- `project.json`: the project's name, the format new scenes and compositions start with, and its cast.
+- `scenes/`: scenes, which draw. A scene never places another scene.
+- `compositions/`: compositions, which arrange. A composition draws nothing itself: it places scenes and other compositions as clips on tracks.
+- `rigs/`, `audio/`, `media/`: the project's own rigs, sound generators and sound files.
 
 ```json
 {
   "name": "Bears' story",
   "fps": 12,
   "size": [1920, 1080],
-  "main": "film",
   "cast": {
     "bruno": { "rig": "bear", "params": { "body": "#ffffff", "shade": "#b8c2de" } },
     "pip": { "rig": "bear", "params": { "body": "#f34921", "shade": "#e03515" } }
@@ -493,52 +497,76 @@ A project is a folder, `projects/<id>/`, for a piece made of several scenes (ADR
 
 | Field | Meaning |
 | --- | --- |
-| `name` | Optional. Shown in the viewer's picker; the folder name is the id. |
-| `fps`, `size` | Every scene in the project must use these. |
-| `main` | Optional. The scene that places the shots. Exporting it exports the whole video. |
+| `name` | Optional. The project's name; the folder name otherwise. |
+| `fps`, `size` | Optional. What new scenes and compositions start with. Each scene and composition keeps its own; nothing has to match them. |
 | `cast` | Optional. Named characters, each a rig and params, that layers use by name. |
 
-The sidebar's + next to Projects makes a new one: `project.json` with a name, fps and size, and an empty main scene, `main`. New scene at the end of a project's scenes adds a scene with the project's fps and size. Agents use `create_project` and `create_scene`.
-
-Each scene is `projects/<id>/<scene>.json`, named after its id like a loose scene. Inside the project a scene names a sibling by its bare id, such as `"scene": "pip"`. Everywhere else, including the viewer's URL, threads, the render commands and every MCP tool, a project scene has a qualified id: `bears-story/pip`.
+Scenes and compositions share one set of ids, so `meet` names one thing whether a scene or a composition. The sidebar's + next to Compositions and next to Scenes make new ones; agents use `create_composition` and `create_scene`. `get_project` and `update_project` with no id read and patch `project.json`.
 
 ### The cast
 
-A layer with `"cast": "bruno"` draws the cast member's rig with its params. The layer can still set params, tracks and overrides of its own, and those win. Params build up in this order, later entries winning: rig defaults, the cast member's params, the layer's `params`, tracks, then the active override. Change a character's colours in `project.json` and every shot that uses the character changes with it, which keeps the character consistent across shots. A layer's own params, such as its position and pose, stay its own.
+A layer with `"cast": "bruno"` draws the cast member's rig with its params. The layer can still set params, tracks and overrides of its own, and those win. Params build up in this order, later entries winning: rig defaults, the cast member's params, the layer's `params`, tracks, then the active override. Change a character's colours in `project.json` and every scene that uses the character changes with it, which keeps the character consistent across shots. A layer's own params, such as its position and pose, stay its own.
 
-### Scene layers
-
-A scene layer shows another scene of the project, called a shot here, inside this one.
+### Compositions
 
 ```json
-{ "id": "pip", "scene": "pip", "start": 3, "in": 0, "out": 4,
-  "tracks": [ { "param": "opacity", "keys": [ { "t": 3, "v": 0 }, { "t": 4, "v": 1 } ] } ] }
+{
+  "id": "film",
+  "fps": 12,
+  "duration": 12,
+  "size": [1920, 1080],
+  "background": "#1b1712",
+  "tracks": [
+    { "id": "V1", "clips": [
+      { "id": "meet", "scene": "meet", "start": 0, "out": 3 },
+      { "id": "pip", "scene": "pip", "start": 3 }
+    ] },
+    { "id": "V2", "clips": [
+      { "id": "title", "scene": "title", "start": 1 }
+    ] }
+  ],
+  "audio": [ { "id": "bed", "generator": "pad", "start": 0, "end": 12 } ]
+}
 ```
 
 | Field | Meaning |
 | --- | --- |
-| `scene` | The shot's id, a sibling in the same project. |
-| `start` | Seconds into this scene where the shot begins. Default 0. |
-| `in`, `out` | The part of the shot to show, `[in, out)` in the shot's own seconds. Defaults: 0 and the shot's end. |
+| `id`, `fps`, `duration`, `size`, `seed` | As for a scene. |
+| `background` | Optional. A colour under every clip. Without it the stage is clear, which an export shows as black. |
+| `tracks` | Tracks of clips, bottom track first. Within a track, later clips draw on top. Each track has an `id`. |
+| `audio` | Optional. Cues, as in a scene, such as a music bed across cuts. |
 
-All three snap to frames. Frame `f` of this scene shows frame `f - start + in` of the shot, and the shot shows until its `out` or this scene's end, whichever comes first. There is no retiming. A scene layer takes these params, all trackable and overridable:
+A clip shows a scene or another composition inside this one:
+
+| Field | Meaning |
+| --- | --- |
+| `id` | Unique in the composition. `background` is taken. |
+| `scene` | The id of a scene or a composition. |
+| `start` | Seconds into the composition where the clip begins. Default 0. |
+| `in`, `out` | The part of the clip's scene to show, `[in, out)` in its own seconds. Defaults: 0 and its end. |
+| `params`, `tracks`, `overrides` | The clip's placement, below. Track keys are in the composition's seconds. |
+| `mask` | Optional. See [Masks](#masks). |
+
+`start`, `in` and `out` snap to frames. Frame `f` of the composition shows frame `f - start + in` of the clip's scene, until its `out` or the composition's end, whichever comes first. There is no retiming, so a clip must run at its composition's fps. A clip takes these params, all trackable and overridable:
 
 | Param | Default | Meaning |
 | --- | --- | --- |
-| `x`, `y` | 0 | Moves the shot by this many scene pixels. |
-| `scale` | 1 | Size of the shot about the stage centre. |
+| `x`, `y` | 0 | Moves the clip by this many pixels. |
+| `scale` | 1 | Size of the clip about the stage centre. |
 | `rotation` | 0 | Turn about the stage centre, in degrees clockwise. |
 | `opacity` | 1 | 0 to 1. Keys make fades and crossfades. |
-| `volume` | 1 | 0 to 4. Loudness of the shot's sound. Keys make ducks and fades. |
-| `mute` | false | Leaves the shot's sound out. |
+| `volume` | 1 | 0 to 4. Loudness of the clip's sound. Keys make ducks and fades. |
+| `mute` | false | Leaves the clip's sound out. |
 
-A cut is two scene layers back to back. A crossfade is two that overlap, with the upper one's `opacity` going from 0 to 1. With the defaults the shot draws exactly as it draws alone, pixel for pixel, and its layers keep their own seeds, so a shot looks the same in the film as on its own. Moved, scaled or turned, the shot is clipped to its own stage, so a character walking in from off-stage stays hidden until it crosses the shot's edge. A scene can't place itself, however indirectly, and scene layers nest at most 4 deep. A scene layer takes no `stepFps` and no `rig` in its overrides.
+A cut is two clips back to back. A crossfade is two that overlap, with the upper one's `opacity` going from 0 to 1. With the defaults a clip of the composition's size draws exactly as its scene draws alone, pixel for pixel, and its layers keep their own seeds. A clip of another size sits centred. Moved, scaled or turned, a clip is clipped to its own stage, so a character walking in from off-stage stays hidden until it crosses the edge.
 
-The shot's audio comes along: its cues, shifted by `start` and cut to `[in, out)`, sample for sample, through the layer's `volume` and `mute`. The main scene can add cues of its own across cuts, such as a music bed with volume keys that duck under a shot.
+Compositions nest: a clip can place a composition that places others, up to 16 deep. A composition can't place itself, however indirectly. A clip's scene brings its sound: its cues, shifted by `start` and cut to `[in, out)`, sample for sample, through the clip's `volume` and `mute`.
+
+An edit that would break a composition is refused, such as shortening a scene below a clip's `out` or changing its fps. Selecting a scene in the sidebar shows "Used in" with the compositions that place it.
 
 ### Masks
 
-Any layer can take a `mask`: a rig with params and tracks. The layer then shows only where the mask rig paints, and the mask's own colours don't show. An iris is a round mask with a growing radius; a wipe is a rect that slides.
+Any layer or clip can take a `mask`: a rig with params and tracks. It then shows only where the mask rig paints, and the mask's own colours don't show. An iris is a round mask with a growing radius; a wipe is a rect that slides.
 
 ```json
 { "id": "again", "scene": "meet", "start": 10, "in": 1,
@@ -548,13 +576,15 @@ Any layer can take a `mask`: a rig with params and tracks. The layer then shows 
 
 Mask tracks use the same clock as the layer's tracks. A mask takes no overrides.
 
-### Project rigs
+### Films made before compositions
 
-A rig that only one project needs goes in `projects/<id>/rigs/`, as a module that exports it, the way `projects/bears-story/rigs/iris.ts` exports `iris`. Only that project's scenes can use it, and it bundles into their HTML exports. Import the built-in parts by name, such as `@frame-studio/rigs/parts/params` (see [Writing a rig](#writing-a-rig)). A project rig may not share an id with a built-in or folder rig, and no other project's rigs or scenes can import it. The rig rules below apply the same.
+Before M14 a longer piece was a film in `projects/<id>/` (ADR 0007): `project.json` with a fixed fps and size, a `main` scene, and scenes that placed each other as scene layers, with qualified ids such as `bears-story/pip`. These keep working, listed under Films in the sidebar, and `list_projects` and `get_project` with an id show them. A film's own rigs go in `projects/<id>/rigs/`.
+
+**Convert to a project** in a film's sidebar group makes it a project folder of its own (`tools/studio/convert.ts`). `project.json` keeps the name, format and cast. Scenes that draw stay scenes. A scene that places scenes becomes a composition with one track, its scene layers as clips in order; its background and each run of drawn layers between them become scenes of their own, placed where they were. The film's rigs and the sound files it plays come along, and every frame renders the same as before. The app asks where to put it; a browser puts it beside the current folder. The sample project is `projects/bears-story/` converted this way.
 
 ## Opening a scene in the viewer
 
-In the app, the viewer is the main window. In the repo, run `npm run dev` and open the link it prints, which ends in `#token=...`: the page pairs with the studio server once and keeps the pairing, so later visits work without it. Add `?scene=<id>&frame=<n>` to land on a scene and frame, for example `http://127.0.0.1:5173/?scene=shapes-test&frame=36`. A project scene takes its qualified id, `?scene=bears-story/film`. The sidebar lists loose scenes first, then each project's scenes under the project's name, with its main scene first. `frame` also takes a timecode such as `00:03:00`, and `scene` also takes the file name without `.json`. If `scene` matches nothing, the viewer shows the first scene with an error and opens the requested one as soon as its file exists. The URL follows along as you scrub, so a reload returns to the same place. Space plays and pauses, the arrow keys step one frame, Shift with an arrow steps one second, and Home and End jump to the ends. The keyboard button in the top bar lists every shortcut.
+In the app, the viewer is the main window. In the repo, run `npm run dev` and open the link it prints, which ends in `#token=...`: the page pairs with the studio server once and keeps the pairing, so later visits work without it. Add `?scene=<id>&frame=<n>` to land on a scene and frame, for example `http://127.0.0.1:5173/?scene=shapes-test&frame=36`. A composition opens the same way, `?scene=film`, and a scene in an old film takes its qualified id, `?scene=bears-story/film`. The sidebar lists compositions, then scenes, then any old films' scenes under the film's name, main scene first. `frame` also takes a timecode such as `00:03:00`, and `scene` also takes the file name without `.json`. If `scene` matches nothing, the viewer shows the first scene with an error and opens the requested one as soon as its file exists. The URL follows along as you scrub, so a reload returns to the same place. Space plays and pauses, the arrow keys step one frame, Shift with an arrow steps one second, and Home and End jump to the ends. The keyboard button in the top bar lists every shortcut.
 
 The + next to Scenes in the sidebar makes a new scene: a name, a size (landscape, portrait or square), a frame rate and a length. The name becomes the id and the file name, so "Opening shot" is `scenes/opening-shot.json`. The scene starts empty, with a paper background and no layers, and the viewer opens it with a new thread, so the next step is telling the agent what goes in it.
 
@@ -586,7 +616,7 @@ npm run contact-sheet -- --scene bear-test --every 6      # out/bear-test/contac
 npm run export -- --scene bear-test --target html         # out/bear-test/bear-test.html
 ```
 
-A project scene takes its qualified id, `--scene bears-story/film`, and its files go to `out/bears-story/film/`. `--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
+A scene in an old film takes its qualified id, `--scene bears-story/film`, and its files go to `out/bears-story/film/`. `--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
 
 MP4 is H.264 at the scene's fps. It is tagged sRGB, so QuickTime, browsers and ffmpeg all show the scene's colours. A range export starts at 0 s. GIF loops, keeps a 255-colour palette that holds the scene's most common colours exactly, and refuses scenes above 50 fps, which GIF can't play. H.264 needs an even width and height.
 
@@ -596,7 +626,7 @@ A scene with audio exports its sound into the MP4: AAC at 128 kb/s where the bro
 
 `npm run export -- --scene bear-test --target html` writes `out/bear-test/bear-test.html`, a single file that draws the scene live. It holds the engine, a small player, only the rigs the scene uses and the scene itself. It makes no network requests, so it works opened from disk, dropped into a website or loaded in an iframe. The scene is validated when you export, so the file doesn't carry the validator, and rig and param descriptions are stripped since the player never reads them. `bear-test` comes to about 54 KB and `shapes-test` to 19 KB. The engine and player are about 8.5 KB of that. This export needs no browser and takes under a second.
 
-A project scene's embed also carries every scene it places, however deep, the cast members they use, and the project rigs they draw with. `bears-story/film` comes to about 70 KB with its three shots.
+A composition's embed also carries every scene and composition it places, however deep, the cast members they use, and the project rigs they draw with, as does an old film's scene. `bears-story/film` comes to about 70 KB with its three shots.
 
 A scene with audio also bundles the generators its cues use, about 7 KB more for `audio-test`. The embed renders the sound when it loads, but starts muted, because browsers only allow sound after a click in the page. A speaker button in the corner turns it on and off, and the sound follows play, pause and seeks. `--silent` exports the embed without sound, and then it carries no audio code at all.
 

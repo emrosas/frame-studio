@@ -463,8 +463,9 @@ export function checkNewRequest(input: unknown, options: { reply?: boolean } = {
 }
 
 /**
- * A new, empty scene: paper and no layers. A loose one, in scenes/, needs its own fps and size; one in a
- * project takes the project's, so it leaves them out.
+ * A new, empty scene: paper and no layers. One in the folder's scenes/ takes the fps and size it's given, or
+ * else project.json's, or else 24 fps at 1920×1080 (ADR 0013); one in an M9 project takes that project's,
+ * so it leaves them out.
  */
 export interface NewScene {
   id: string;
@@ -474,20 +475,22 @@ export interface NewScene {
   duration: number;
 }
 
-/** A new project: project.json with a name, fps and size, and an empty main scene, "main". */
-export interface NewProject {
+/**
+ * A new composition (ADR 0013): one empty track, in compositions/. Its fps and size are the ones given, or
+ * else project.json's, or else 24 fps at 1920×1080.
+ */
+export interface NewComposition {
   id: string;
-  name: string;
-  fps: number;
-  size: [number, number];
+  fps?: number;
+  size?: [number, number];
   duration: number;
 }
 
-/** The main scene a new project starts with. */
-export const NEW_PROJECT_MAIN = 'main';
+/** The format a new scene or composition gets when neither it nor project.json says. */
+export const DEFAULT_FORMAT = { fps: 24, size: [1920, 1080] as [number, number] };
 
 const NEW_SCENE_FIELDS = new Set(['id', 'project', 'fps', 'size', 'duration']);
-const NEW_PROJECT_FIELDS = new Set(['id', 'name', 'fps', 'size', 'duration']);
+const NEW_COMPOSITION_FIELDS = new Set(['id', 'fps', 'size', 'duration']);
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** A scene or project id from a name as typed: "Bears' Story 2" becomes "bears-story-2". Empty when nothing is left. */
@@ -509,10 +512,11 @@ function checkId(id: unknown, what: string): string | null {
   return null;
 }
 
+/** fps and size, each only when given. */
 function checkFormat(input: Record<string, unknown>): string | null {
-  if (!isInt(input.fps, 1) || (input.fps as number) > 120) return 'fps must be a whole number from 1 to 120';
+  if (input.fps !== undefined && (!isInt(input.fps, 1) || (input.fps as number) > 120)) return 'fps must be a whole number from 1 to 120';
   const size = input.size;
-  if (!Array.isArray(size) || size.length !== 2 || !size.every((n) => isInt(n, 16) && n <= 8192)) return 'size must be [width, height], whole pixels from 16 to 8192';
+  if (size !== undefined && (!Array.isArray(size) || size.length !== 2 || !size.every((n) => isInt(n, 16) && n <= 8192))) return 'size must be [width, height], whole pixels from 16 to 8192';
   return null;
 }
 
@@ -538,14 +542,11 @@ export function checkNewScene(input: unknown): string | null {
   return checkDuration(input.duration);
 }
 
-/** Why `input` is not a well-formed NewProject, or null when it is. */
-export function checkNewProject(input: unknown): string | null {
-  if (!isObject(input)) return 'a new project must be a JSON object';
-  for (const key of Object.keys(input)) if (!NEW_PROJECT_FIELDS.has(key)) return `unknown field "${key}"`;
-  const problem = checkId(input.id, 'a project');
-  if (problem) return problem;
-  if (typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100) return 'a project needs a name of at most 100 characters';
-  return checkFormat(input) ?? checkDuration(input.duration);
+/** Why `input` is not a well-formed NewComposition, or null when it is. */
+export function checkNewComposition(input: unknown): string | null {
+  if (!isObject(input)) return 'a new composition must be a JSON object';
+  for (const key of Object.keys(input)) if (!NEW_COMPOSITION_FIELDS.has(key)) return `unknown field "${key}"`;
+  return checkId(input.id, 'a composition') ?? checkFormat(input) ?? checkDuration(input.duration);
 }
 
 const QUESTION_ANSWER_LIMIT = 2000;

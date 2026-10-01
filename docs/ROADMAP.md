@@ -231,6 +231,14 @@ The project format and compositions (ADR 0013).
 - Converting a folder's `projects/<id>/` into project folders, on request.
 - MCP tools for compositions.
 
+Acceptance:
+1. A composition places scenes and compositions of other sizes, across tracks, and renders; a loop, a clip at another fps, and an edit that would break a composition are refused with the reason.
+2. A scene that places a scene is refused, pointing at compositions.
+3. A scene shows the compositions that use it, and each opens from there.
+4. Converting `projects/bears-story` gives a project folder whose film renders identically, frame for frame, and exports as one HTML file.
+5. `project.json` gives new scenes and compositions their format, and a cast change there reaches every scene that uses the member.
+6. Every earlier test passes.
+
 ## M15: The timeline as an editor
 
 A simple video editor's timeline for compositions (ADR 0012, ADR 0013).

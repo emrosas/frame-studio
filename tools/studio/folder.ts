@@ -14,6 +14,8 @@ export interface StudioFolder {
   /** The built-in sources: engine/, rigs/, audio/ and embed/. The repo's src/ in the repo. */
   builtins: string;
   scenes: string;
+  /** The project's compositions (ADR 0013). */
+  compositions: string;
   projects: string;
   /** Rigs for every scene in the folder. */
   rigs: string;
@@ -36,6 +38,7 @@ export function studioFolder(root: string = REPO, options: { builtins?: string; 
     root: at,
     builtins: resolve(options.builtins ?? resolve(REPO, 'src')),
     scenes: resolve(at, 'scenes'),
+    compositions: resolve(at, 'compositions'),
     projects: resolve(at, 'projects'),
     rigs: resolve(at, 'rigs'),
     audio: resolve(at, 'audio'),

@@ -36,7 +36,7 @@ const SCENE_WRITERS: Record<string, (args: Record<string, unknown>) => unknown> 
   update_scene: (a) => a.id,
   apply_to_selection: (a) => (a.selection as { sceneId?: unknown } | undefined)?.sceneId,
 };
-/** Studio tools that write a project's project.json, by the argument that names it. */
+/** Studio tools that write an M9 project's project.json, by the argument that names it. Without one, the folder's: no project to wait on. */
 const PROJECT_WRITERS: Record<string, (args: Record<string, unknown>) => unknown> = {
   update_project: (a) => a.id,
 };

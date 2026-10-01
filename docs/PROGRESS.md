@@ -772,6 +772,33 @@ How each acceptance criterion was verified, in `tests/browser/desktop.test.ts`, 
 
 Screenshots of the open switcher and the empty project.
 
+### M14: Project folders and compositions
+
+ADR 0013's format, built. A project folder has `project.json` at its top, scenes that draw, and compositions that arrange.
+
+- **`project.json`** (`validateFolderProject`, `src/engine/project.ts`): an optional name, the fps and size new scenes and compositions start with, and the cast. Every field is optional, and nothing has to match the format: each scene and composition keeps its own. The app's New project writes one.
+- **Compositions** (`src/engine/composition.ts`): `compositions/<id>.json`, `{ id, fps, duration, size, seed?, background?: colour, tracks: [{ id, clips }], audio? }`. A clip is a scene layer by another name, so placement, trims, masks, sound and hit testing are M9's code. The engine renders a composition as a scene with its clips as layers, bottom track first, and its background as the new `fill` rig. Errors come back in the composition's own paths, `tracks[1].clips[0].start`, not the layer they became.
+- **The rules.** Scenes and compositions share one id namespace. A scene that places a scene is an error that points at compositions. A clip must run at its composition's fps (no retiming yet); a clip of another size sits centred. Nesting goes 16 deep, up from M9's 4, and loops are refused with the path round them.
+- **Checked edits.** An edit to a scene, a composition or `project.json` rebuilds the library with it and is refused if the file itself breaks or if any composition that was valid breaks (`folderBreaks`, `tools/mcp/workspace.ts`).
+- **MCP:** `create_composition`; `create_scene` takes the project's format by default and no longer takes `project`; `get_project` and `update_project` with no id work on the folder's `project.json`; `list_scenes` gives each entry's `kind`. `create_project` is gone.
+- **The viewer:** the sidebar has Compositions and Scenes, each with +, and old films under Films only when there are any. Selecting a scene shows "Used in" with links to the compositions that place it. Opening a clip (double-click its band) works in compositions as it did for shots. The New dialog starts at `project.json`'s format.
+- **Converting old films** (`tools/studio/convert.ts`): Convert to a project, in a film's sidebar group, makes the film a project folder of its own. A scene that places scenes becomes a composition with one track; its background and each run of drawn layers between the scene layers become scenes placed where they were; the cast, rigs and sound files come along. The app asks where with a save panel and switches to it; a browser writes it beside the current folder. Bears' story converts with every frame identical.
+- **The sample project** is now built that way: Open the sample project converts `projects/bears-story` into the new folder, with `hello` alongside.
+- **The HTML embed** of a composition carries what it places and the cast it uses, as an M9 film's main scene did.
+- **Agents in the studio** may write `compositions/` and `project.json`. Writing another composition's file counts as editing that composition. Their instructions explain scenes, compositions and the cast.
+
+Kept from M9 on purpose: `projects/<id>/` films still load, render, export and take edits, with qualified ids, so nothing breaks before you convert. The repo keeps `projects/bears-story/` in that form; it's the source of the sample.
+
+How each acceptance criterion was verified:
+
+1. `project.json` at the top: `src/engine/composition.test.ts` (the cast applies to folder scenes) and `tests/browser/compositions.test.ts` (`get_project` reads it, a cast change re-renders a scene, a patch that drops a used cast member is refused and the file is unchanged).
+2. Compositions with their own size and fps, nested, loops refused, sound and transitions: the browser test makes a 1280×720 `trailer` placing the 1920×1080 `film` composition at half scale with a second track, renders it, and is refused a loop, a 24 fps clip in a 12 fps composition, and a scene edit that would break `film`. The film's iris and crossfade are clips with masks and opacity tracks, and its sound bed is composition audio.
+3. Scenes no longer place scenes: refused through `update_scene`, with the message pointing at compositions.
+4. "Used in": `tests/browser/studio-folder.test.ts` places `dot-test` in a new composition, selects the scene, and follows the link back.
+5. Converting: `tests/node/convert.test.ts` (the conversion rules, id clashes, the files written, a non-empty target refused) and the browser test (the converted film renders byte-identical to `bears-story/film` at frames 20, 80 and 130, and its HTML export plays offline).
+6. MCP tools for compositions: `tests/browser/mcp.test.ts` lists `create_composition`, and the compositions test drives the rest.
+7. Typecheck clean, 1231 unit tests and 139 browser tests, and the installed-app tests on a fresh build.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -783,11 +810,11 @@ Screenshots of the open switcher and the empty project.
    Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
 2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
 3. Try the integrated AI: in the viewer, select something, pick Claude or Codex in the agent panel's composer, and ask for a change.
-4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film from the Export panel.
+4. Try compositions: Open the sample project in the app (or convert Bears' story from Films), open `film`, double-click a clip, and make a composition that places `film`.
 5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
 6. **Try 0.3.0.** [v0.3.0](https://github.com/emrosas/frame-studio/releases/tag/v0.3.0) adds sound files (M12): import voiceover and music, place them at the playhead, see their waveforms, and export them in MP4.
-7. **M14, project folders and compositions** (ADR 0013): `project.json` at a folder's top, compositions in `compositions/` that nest freely, scenes that no longer place scenes, "Used in" on scenes, and converting `projects/<id>/` into project folders. Then M15, the timeline editor, and M16, stills.
-8. **Next for type:** typefaces of your own in a studio folder, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer), which fits with M14.
+7. **M15, the timeline as an editor** (ADR 0012, ADR 0013): tracks and clips you drag, trim and cut on the timeline, sound files on tracks. Then M16, stills.
+8. **Next for type:** typefaces of your own in a project folder, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer).
 9. Other candidates, from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 
 ## Open questions

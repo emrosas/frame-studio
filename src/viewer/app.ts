@@ -295,7 +295,7 @@ export class App {
         }),
       waveform: (file, from, to, buckets) => this.media.peaks(file, from, to, buckets),
       createScene: (input) => this.create(() => this.studio.createScene(input)),
-      createProject: (input) => this.create(() => this.studio.createProject(input)),
+      createComposition: (input) => this.create(() => this.studio.createComposition(input)),
       selectShot: (layerId) => {
         const shot = this.shots().find((s) => s.layerId === layerId);
         if (!shot) return;
@@ -373,6 +373,19 @@ export class App {
       projects: async () => (await desktop()?.projects().catch(() => [])) ?? [],
       openProject: async (path) => (await desktop()?.openProject(path).catch((err: unknown) => errorText(err).message)) ?? null,
       newProject: async () => (await desktop()?.newProject().catch((err: unknown) => errorText(err).message)) ?? null,
+      convertFilm: async (id) => {
+        const app = desktop();
+        try {
+          if (app) {
+            const problem = await app.convertFilm(id);
+            return problem ? { text: problem, error: true } : null;
+          }
+          const path = await this.studio.convertFilm(id);
+          return { text: `Converted into ${path}. Open that folder to work on it.`, error: false };
+        } catch (err) {
+          return { text: errorText(err).message, error: true };
+        }
+      },
       installUpdate: () => void desktop()?.updates?.install(),
       checkForUpdate: () => void desktop()?.updates?.check(),
       openUpdateNotes: () => void desktop()?.updates?.openNotes(),
@@ -462,7 +475,8 @@ export class App {
       this.resumeWhenValid = false;
       this.selectEntry(requested, false);
     } else {
-      const next = (previous && findEntry(library, previous.key, previous.path)) ?? library.entries[0] ?? null;
+      // With nothing to keep, the first composition, as the sidebar lists them first (ADR 0013), else the first scene.
+      const next = (previous && findEntry(library, previous.key, previous.path)) ?? library.entries.find((e) => e.kind === 'composition') ?? library.entries[0] ?? null;
       const same = previous !== null && next !== null && (next.key === previous.key || next.path === previous.path);
       // The shot on screen is gone, so there is no way back from wherever the viewer falls back to.
       if (!same) this.shotReturn = null;
@@ -582,6 +596,8 @@ export class App {
     this.syncErrors();
     this.ui.scenes = this.sceneOptions();
     this.ui.projects = this.library.projects.map((p) => ({ id: p.id, name: p.name, fps: p.project?.fps ?? null, size: p.project?.size ?? null }));
+    const folder = this.library.folder?.project;
+    this.ui.format = { fps: folder?.fps, size: folder?.size };
     this.ui.selectedScene = entry?.key ?? null;
     const project = entry && entry.project !== null ? this.library.projects.find((p) => p.id === entry.project) : undefined;
     this.ui.header = entry
@@ -650,9 +666,20 @@ export class App {
     if (notes.length > 0) this.notice = notes.join(' ');
   }
 
-  /** Loose scenes, then each project's scenes under its name, its main scene first (ADR 0007). */
+  /** Compositions and scenes, then each M9 project's scenes under its name, its main scene first (ADR 0007, ADR 0013). */
   private sceneOptions(): SceneOption[] {
     const projects = new Map(this.library.projects.map((p) => [p.id, p]));
+    // Which compositions place each folder scene or composition, for "Used in".
+    const usedIn = new Map<string, string[]>();
+    for (const e of this.library.entries) {
+      if (e.kind !== 'composition' || !e.scene) continue;
+      for (const layer of e.scene.layers) {
+        if (layer.scene === undefined) continue;
+        const list = usedIn.get(layer.scene) ?? [];
+        if (!list.includes(e.key)) list.push(e.key);
+        usedIn.set(layer.scene, list);
+      }
+    }
     const options = this.library.entries.map((e): SceneOption => {
       const project = e.project !== null ? projects.get(e.project) : undefined;
       const main = project?.main === e.key;
@@ -664,6 +691,8 @@ export class App {
         project: project ? project.id : null,
         group: project ? project.name : null,
         main,
+        kind: e.kind,
+        usedIn: project ? [] : (usedIn.get(e.key) ?? []),
       };
     });
     // Loose scenes keep library order; projects follow in id order, each with its main scene first.
@@ -679,12 +708,14 @@ export class App {
   private shots(): { layerId: string; key: string; label: string; span: SceneLayerSpan }[] {
     const entry = this.entry;
     const scene = entry?.scene;
-    if (!entry || !scene || entry.project === null) return [];
+    if (!entry || !scene || (entry.project === null && entry.kind !== 'composition')) return [];
     return scene.layers.flatMap((layer) => {
       const shot = layer.scene !== undefined ? entry.world.scenes?.get(layer.scene) : undefined;
       if (!shot) return [];
       const span = sceneLayerSpan(layer, scene, shot);
-      return span.to > span.from ? [{ layerId: layer.id, key: `${entry.project}/${layer.scene}`, label: layer.scene!, span }] : [];
+      // A composition's clips are folder entries, keyed by their plain id; an M9 shot is "<project>/<scene>".
+      const key = entry.project === null ? layer.scene! : `${entry.project}/${layer.scene}`;
+      return span.to > span.from ? [{ layerId: layer.id, key, label: layer.scene!, span }] : [];
     });
   }
 

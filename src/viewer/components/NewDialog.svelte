@@ -1,39 +1,47 @@
 <!--
-  New scene and New project, from the sidebar's + buttons: a modal form for
-  the name and the format. The studio server writes the files (agents do the
-  same with create_scene and create_project), and the viewer then shows the
-  new scene with a new thread open, so the next step is saying what goes in it.
+  New scene and New composition, from the sidebar's + buttons: a modal form
+  for the name and the format, which starts at project.json's. The studio
+  server writes the files (agents do the same with create_scene and
+  create_composition), and the viewer then shows the new one with a new
+  thread open, so the next step is saying what goes in it.
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
-  import { NEW_PROJECT_MAIN, toId } from '../../studio/protocol';
-  import type { NewWhat, ViewerActions } from '../ui.svelte';
+  import { DEFAULT_FORMAT, toId } from '../../studio/protocol';
+  import type { NewWhat, ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
 
-  let { what, actions, onclose, ondone }: { what: NewWhat; actions: ViewerActions; onclose: () => void; ondone: () => void } = $props();
+  let { what, ui, actions, onclose, ondone }: { what: NewWhat; ui: ViewerUi; actions: ViewerActions; onclose: () => void; ondone: () => void } = $props();
 
-  const SHAPES = [
+  const BASE_SHAPES = [
     { label: 'Landscape', size: [1920, 1080] },
     { label: 'Portrait', size: [1080, 1920] },
     { label: 'Square', size: [1080, 1080] },
   ] as const;
-  const RATES = [12, 24, 30] as const;
+  const BASE_RATES = [12, 24, 30] as const;
+
+  // The dialog starts at the project's format, offered as a choice when it isn't one of the usual ones.
+  const start = untrack(() => ({ fps: ui.format.fps ?? DEFAULT_FORMAT.fps, size: ui.format.size ?? DEFAULT_FORMAT.size }));
+  const SHAPES: readonly { label: string; size: readonly [number, number] }[] = BASE_SHAPES.some((s) => s.size[0] === start.size[0] && s.size[1] === start.size[1])
+    ? BASE_SHAPES
+    : [{ label: 'Project', size: start.size }, ...BASE_SHAPES];
+  const RATES: readonly number[] = BASE_RATES.includes(start.fps as 12) ? BASE_RATES : [start.fps, ...BASE_RATES];
 
   let dialog = $state<HTMLDialogElement | null>(null);
   let name = $state('');
-  let shape = $state(0);
-  let fps = $state(24);
+  let shape = $state(SHAPES.findIndex((s) => s.size[0] === start.size[0] && s.size[1] === start.size[1]));
+  let fps = $state(start.fps);
   // The dialog is made for one kind, so its first value is the one it keeps.
-  let duration = $state(untrack(() => (what.kind === 'project' ? 10 : 5)));
+  let duration = $state(untrack(() => (what.kind === 'composition' ? 10 : 5)));
   let busy = $state(false);
   let error = $state<string | null>(null);
 
   const project = $derived(what.kind === 'scene' ? what.project : null);
   const id = $derived(toId(name));
-  const title = $derived(what.kind === 'project' ? 'New project' : project ? `New scene in ${project.name}` : 'New scene');
+  const title = $derived(what.kind === 'composition' ? 'New composition' : project ? `New scene in ${project.name}` : 'New scene');
   const where = $derived.by(() => {
     const shown = id || '…';
-    if (what.kind === 'project') return `Saved in projects/${shown}/. Its first scene is ${NEW_PROJECT_MAIN}.`;
+    if (what.kind === 'composition') return `Saved as compositions/${shown}.json, with one empty track.`;
     return project ? `Saved as projects/${project.id}/${shown}.json` : `Saved as scenes/${shown}.json`;
   });
 
@@ -50,8 +58,8 @@
     error = null;
     const size: [number, number] = [SHAPES[shape].size[0], SHAPES[shape].size[1]];
     const problem =
-      what.kind === 'project'
-        ? await actions.createProject({ id, name: name.trim(), fps, size, duration })
+      what.kind === 'composition'
+        ? await actions.createComposition({ id, fps, size, duration })
         : await actions.createScene(project ? { id, project: project.id, duration } : { id, fps, size, duration });
     busy = false;
     if (problem) error = problem;
@@ -73,7 +81,7 @@
     <label class="field">
       <span class="field-label">Name</span>
       <!-- svelte-ignore a11y_autofocus -->
-      <input type="text" bind:value={name} placeholder={what.kind === 'project' ? 'Bears’ story' : 'opening-shot'} maxlength="100" autocomplete="off" spellcheck="false" autofocus required />
+      <input type="text" bind:value={name} placeholder={what.kind === 'composition' ? 'trailer' : 'opening-shot'} maxlength="100" autocomplete="off" spellcheck="false" autofocus required />
       <span class="field-hint">{where}</span>
     </label>
 
@@ -102,7 +110,7 @@
     {/if}
 
     <label class="field">
-      <span class="field-label">{what.kind === 'project' ? 'Length of the main scene' : 'Length'}</span>
+      <span class="field-label">Length</span>
       <span class="field-row"><input type="number" bind:value={duration} min="0.5" max="3600" step="0.5" required /> seconds</span>
     </label>
 

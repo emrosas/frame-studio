@@ -2,7 +2,7 @@
 // (app.ts) owns all the logic and writes here; components read it and call
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
-import type { AgentId, AgentStatus, ApprovalDecision, NewProject, NewScene, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
+import type { AgentId, AgentStatus, ApprovalDecision, NewComposition, NewScene, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { ProjectEntry, UpdateState } from './desktop';
 import type { FrameRange, RangeText } from './selection';
 import type { RequestAction } from './studio-client';
@@ -18,6 +18,10 @@ export interface SceneOption {
   group: string | null;
   /** The project's main scene. */
   main: boolean;
+  /** A scene draws; a composition arranges (ADR 0013). */
+  kind: 'scene' | 'composition';
+  /** For a folder scene, the compositions that place it, for "Used in". */
+  usedIn: readonly string[];
 }
 
 /** A project, for New scene in it: the fps and size its scenes share, or null while its project.json has errors. */
@@ -28,8 +32,8 @@ export interface ProjectOption {
   size: readonly [number, number] | null;
 }
 
-/** What the New dialog makes: a scene, loose or in a project, or a project. */
-export type NewWhat = { kind: 'scene'; project: ProjectOption | null } | { kind: 'project' };
+/** What the New dialog makes: a scene, in the folder or in an M9 project, or a composition. */
+export type NewWhat = { kind: 'scene'; project: ProjectOption | null } | { kind: 'composition' };
 
 /** The scene on screen, for the header: its name in its project, and its format. */
 export interface SceneHeader {
@@ -142,8 +146,8 @@ export interface ViewerActions {
   waveform(file: string, from: number, to: number, buckets: number): Promise<Float32Array | null>;
   /** Creates an empty scene and shows it. Returns an error message, or null. */
   createScene(input: NewScene): Promise<string | null>;
-  /** Creates a project with an empty main scene and shows that scene. Returns an error message, or null. */
-  createProject(input: NewProject): Promise<string | null>;
+  /** Creates a composition with one empty track and shows it. Returns an error message, or null. */
+  createComposition(input: NewComposition): Promise<string | null>;
   /** Selects a shot's scene layer and its span, from its band on the scrubber. */
   selectShot(layerId: string): void;
   /** Opens a shot (the selected one by default) at the matching frame. */
@@ -203,6 +207,11 @@ export interface ViewerActions {
   openProject(path: string): Promise<string | null>;
   /** Makes a new project, asking for its name and place, and switches to it. Returns why it failed, or null. */
   newProject(): Promise<string | null>;
+  /**
+   * Converts a film in projects/ into a project folder of its own (ADR 0013). The app asks where and
+   * switches to it; a browser writes it beside this folder. Resolves to a message to show, or null.
+   */
+  convertFilm(id: string): Promise<{ text: string; error: boolean } | null>;
   /** Downloads and installs the update on offer, then restarts (the app only). */
   installUpdate(): void;
   /** Checks for an update now (the app only). */
@@ -251,6 +260,8 @@ export class ViewerUi {
   sound = $state<SoundState | null>(null);
   scenes = $state<SceneOption[]>([]);
   projects = $state<ProjectOption[]>([]);
+  /** The format project.json gives new scenes and compositions (ADR 0013), where it gives one. */
+  format = $state<{ fps?: number; size?: readonly [number, number] }>({});
   /** The project has no scenes yet, so the stage offers to start one. */
   emptyProject = $state(false);
   /** Asks the sidebar to open the New dialog, e.g. from the empty stage. */

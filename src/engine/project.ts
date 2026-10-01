@@ -20,6 +20,35 @@ export interface ProjectFile {
 
 export type ProjectValidation = { ok: true; project: ProjectFile } | { ok: false; errors: string[] };
 
+/** A project folder's project.json (ADR 0013): its name, the format new scenes and compositions start from, its cast. */
+export interface FolderProjectFile {
+  name?: string;
+  fps?: number;
+  size?: [number, number];
+  cast?: Cast;
+}
+
+const FOLDER_PROJECT_FIELDS = new Set(['name', 'fps', 'size', 'cast']);
+
+/** Checks a project folder's project.json: every field optional; the cast as an M9 project's. */
+export function validateFolderProject(input: unknown, registry?: RigRegistry): { ok: true; project: FolderProjectFile } | { ok: false; errors: string[] } {
+  const errors: string[] = [];
+  const err = (path: string, message: string) => errors.push(`${path}: ${message}`);
+  if (!isObject(input)) return { ok: false, errors: [`project: must be an object like { "name": "My film", "fps": 24, "size": [1920, 1080] }, got ${show(input)}`] };
+  for (const key of Object.keys(input)) if (!FOLDER_PROJECT_FIELDS.has(key)) err(key, `unknown field "${key}"; allowed fields: ${[...FOLDER_PROJECT_FIELDS].join(', ')}`);
+  if (input.name !== undefined && (typeof input.name !== 'string' || !input.name.trim())) err('name', `must be a name to show, got ${show(input.name)}`);
+  if (input.fps !== undefined && !(typeof input.fps === 'number' && Number.isInteger(input.fps) && input.fps > 0)) err('fps', `must be a positive integer, the frame rate new scenes and compositions start with, got ${show(input.fps)}`);
+  const size = input.size;
+  if (size !== undefined && !(Array.isArray(size) && size.length === 2 && size.every((n) => typeof n === 'number' && Number.isInteger(n) && n > 0))) {
+    err('size', `must be [width, height] in pixels, the size new scenes and compositions start with, got ${show(size)}`);
+  }
+  if (input.cast !== undefined) {
+    if (!isObject(input.cast)) err('cast', `must map names to { "rig": "...", "params": {...} }, got ${show(input.cast)}`);
+    else for (const [name, member] of Object.entries(input.cast)) checkMember(name, member, registry, err);
+  }
+  return errors.length > 0 ? { ok: false, errors } : { ok: true, project: input as unknown as FolderProjectFile };
+}
+
 const PROJECT_FIELDS = new Set(['name', 'fps', 'size', 'main', 'cast']);
 const CAST_FIELDS = new Set(['rig', 'params']);
 

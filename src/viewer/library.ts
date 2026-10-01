@@ -1,12 +1,14 @@
 // Turns raw scene files into a validated scene library. Pure: the caller passes
 // file contents, the validators, and the registry factories, so this is
-// testable without Vite or the real engine. Loose scenes come from scenes/,
-// and projects from projects/<id>/ (ADR 0007): project.json, its scenes, and
-// its own rigs.
+// testable without Vite or the real engine. The folder is a project (ADR
+// 0013): project.json at its top (name, default format, cast), scenes/ that
+// draw, and compositions/ that arrange them. Films made before that live in
+// projects/<id>/ (ADR 0007), with project.json, scenes and rigs of their own,
+// until converted.
 
 import type { GeneratorRegistry } from '../audio/types';
-import type { ProjectContext, ProjectFile, ProjectValidation, ValidationResult } from '../engine';
-import type { Rig, RigRegistry, Scene, World } from '../engine/types';
+import type { CompositionValidation, ProjectContext, ProjectFile, ProjectValidation, SchemaOwner, ValidationResult } from '../engine';
+import type { Cast, Rig, RigRegistry, Scene, World } from '../engine/types';
 
 export type ValidateScene = (input: unknown, registry?: RigRegistry, generators?: GeneratorRegistry, project?: ProjectContext) => ValidationResult;
 
@@ -18,6 +20,23 @@ export interface ProjectTools {
   createProjectRegistry: (rigs: readonly Rig[]) => RigRegistry;
   /** Each project's own rigs, from projects/<id>/rigs/, by project id. */
   rigs?: Readonly<Record<string, readonly Rig[]>>;
+  /** Compositions (ADR 0013). Without it, compositions/ is left unread. */
+  validateComposition?: (
+    input: unknown,
+    registry: RigRegistry | undefined,
+    generators: ReadonlyMap<string, SchemaOwner> | undefined,
+    context: Omit<ProjectContext, 'kind' | 'fps' | 'size'>,
+  ) => CompositionValidation;
+  /** The folder's project.json (ADR 0013): its cast, checked like an M9 project's, with fps and size optional. */
+  validateFolderProject?: (input: unknown, registry?: RigRegistry) => { ok: true; project: FolderProject } | { ok: false; errors: string[] };
+}
+
+/** The folder's project.json (ADR 0013): its name, the format new scenes and compositions start from, its cast. */
+export interface FolderProject {
+  name?: string;
+  fps?: number;
+  size?: [number, number];
+  cast?: Record<string, { rig: string; params?: Record<string, unknown> }>;
 }
 
 export interface ProjectEntry {
@@ -56,6 +75,8 @@ export interface SceneEntry {
   world: World;
   /** What it was checked against in its project, for checking an edit the same way; null for a loose scene. */
   context: ProjectContext | null;
+  /** A scene draws; a composition arranges (ADR 0013). An M9 project's scenes are scenes. */
+  kind: 'scene' | 'composition';
 }
 
 export interface SceneLibrary {
@@ -67,6 +88,8 @@ export interface SceneLibrary {
   generators: GeneratorRegistry | null;
   /** Problems that affect every scene (e.g. the rig registry failed to build). */
   errors: readonly string[];
+  /** The folder's project.json (ADR 0013): null when it has none. */
+  folder?: { file: string; project: FolderProject | null; errors: readonly string[] } | null;
   /** The studio folder's sound files (ADR 0012), when the library came from a studio server. */
   media?: readonly { file: string; bytes: number; modified: number }[];
 }
@@ -116,8 +139,41 @@ export function buildLibrary(
   const entries: SceneEntry[] = [];
   const byKey = new Map<string, SceneEntry>();
 
+  // The folder's project.json (ADR 0013): its cast reaches every scene.
+  let folder: SceneLibrary['folder'] = null;
+  if ('/project.json' in files) {
+    let project: FolderProject | null = null;
+    const folderErrors: string[] = [];
+    try {
+      const json = JSON.parse(files['/project.json']) as unknown;
+      const checked = projectTools?.validateFolderProject?.(json, registry ?? undefined);
+      if (!checked) project = json as FolderProject;
+      else if (checked.ok) project = checked.project;
+      else folderErrors.push(...checked.errors);
+    } catch (err) {
+      folderErrors.push(`invalid JSON: ${message(err)}`);
+    }
+    folder = { file: 'project.json', project, errors: folderErrors };
+  }
+  const cast: Cast = folder?.project?.cast ? (folder.project.cast as Cast) : EMPTY_CAST;
+  // The folder's scenes and compositions by id, with their lengths and frame rates, which clips are checked against.
+  const lengths = new Map<string, { duration: number; fps?: number }>();
+  for (const path of Object.keys(files)) {
+    if (!FOLDER_FILE.test(path)) continue;
+    try {
+      const json = JSON.parse(files[path]) as { id?: unknown; duration?: unknown; fps?: unknown } | null;
+      if (json && typeof json.id === 'string' && typeof json.duration === 'number' && json.duration > 0) {
+        lengths.set(json.id, { duration: json.duration, ...(typeof json.fps === 'number' ? { fps: json.fps } : {}) });
+      }
+    } catch {
+      // Reported with the file itself.
+    }
+  }
+  /** What a folder scene is checked against: it draws, may use the cast, and places nothing. */
+  const sceneContext: ProjectContext = { id: '', fps: 0, size: [0, 0], cast, scenes: lengths, kind: 'scene' };
+
   for (const path of Object.keys(files).sort()) {
-    if (projectPath(path)) continue;
+    if (!/^\/scenes\/[^/]+\.json$/.test(path)) continue;
     const file = path.replace(/^\//, '');
     const entryErrors: string[] = [];
     let scene: Scene | null = null;
@@ -133,7 +189,7 @@ export function buildLibrary(
 
     if (parsed) {
       try {
-        const result = validate(json, registry ?? undefined, generators ?? undefined);
+        const result = validate(json, registry ?? undefined, generators ?? undefined, sceneContext);
         if (result.ok) scene = result.scene;
         else entryErrors.push(...result.errors);
       } catch (err) {
@@ -163,13 +219,81 @@ export function buildLibrary(
       key = file;
     }
 
-    const entry: SceneEntry = { key, path, file, scene, errors: entryErrors, project: null, registry, world: {}, context: null };
+    const entry: SceneEntry = { key, path, file, scene, errors: entryErrors, project: null, registry, world: cast === EMPTY_CAST ? {} : { cast }, context: sceneContext, kind: 'scene' };
     byKey.set(key, entry);
     entries.push(entry);
   }
 
+  if (projectTools?.validateComposition) buildCompositions(files, projectTools, registry, generators, cast, lengths, entries, byKey);
+
   const projects = projectTools ? buildProjects(files, validate, generators, projectTools, entries) : [];
-  return { entries, projects, registry, generators, errors };
+  return { entries, projects, registry, generators, errors, folder };
+}
+
+const FOLDER_FILE = /^\/(scenes|compositions)\/[^/]+\.json$/;
+const EMPTY_CAST: Cast = {};
+
+/**
+ * The folder's compositions (ADR 0013), added to `entries`. Each is checked as a composition against the
+ * folder's scenes and compositions, shares ids with them, and renders as a scene whose layers are its
+ * clips; a composition that places itself through others, or places one with errors, gets an error too.
+ * Every scene and composition then gets the same world: the valid ones by id, and the cast.
+ */
+function buildCompositions(
+  files: Readonly<Record<string, string>>,
+  tools: ProjectTools,
+  registry: RigRegistry | null,
+  generators: GeneratorRegistry | null,
+  cast: Cast,
+  lengths: ReadonlyMap<string, { duration: number; fps?: number }>,
+  entries: SceneEntry[],
+  byKey: Map<string, SceneEntry>,
+): void {
+  const own: SceneEntry[] = [];
+  for (const path of Object.keys(files).sort()) {
+    if (!/^\/compositions\/[^/]+\.json$/.test(path)) continue;
+    const file = path.slice(1);
+    const stem = fileStem(path);
+    const errors: string[] = [];
+    let scene: Scene | null = null;
+    try {
+      const json = JSON.parse(files[path]) as unknown;
+      const declared = declaredId(json);
+      if (declared !== stem) errors.push(`id: must be "${stem}", the file's name, got ${declared === null ? 'none' : `"${declared}"`}`);
+      const taken = byKey.get(stem);
+      if (taken) errors.push(`id: "${stem}" is already ${taken.file}; a project's scenes and compositions share ids, so rename one`);
+      const result = tools.validateComposition!(json, registry ?? undefined, generators ?? undefined, { id: '', cast, scenes: lengths });
+      if (!result.ok) errors.push(...result.errors);
+      else if (errors.length === 0) scene = result.scene;
+    } catch (err) {
+      errors.push(`invalid JSON: ${message(err)}`);
+    }
+    const context: ProjectContext = { id: '', fps: scene?.fps ?? 0, size: scene?.size ?? [0, 0], cast, scenes: lengths, kind: 'composition' };
+    const entry: SceneEntry = { key: byKey.has(stem) ? file : stem, path, file, scene, errors, project: null, registry, world: {}, context, kind: 'composition' };
+    own.push(entry);
+    byKey.set(entry.key, entry);
+  }
+  entries.push(...own);
+
+  // Loops and nesting across compositions, then compositions placing anything with errors, until nothing changes.
+  const folderEntries = entries.filter((e) => e.project === null);
+  const valid = () => new Map(folderEntries.filter((e) => e.scene).map((e) => [e.key, e.scene!]));
+  for (const [id, graphErrors] of tools.sceneGraphErrors(valid())) {
+    const entry = own.find((e) => e.key === id);
+    if (entry) Object.assign(entry, { scene: null, errors: [...entry.errors, ...graphErrors.map((e) => e.replace(/^scene layers/, 'clips').replace(/a scene can't show itself/, "a composition can't show itself"))] });
+  }
+  for (let changed = true; changed; ) {
+    changed = false;
+    const ok = valid();
+    for (const entry of own) {
+      const broken = entry.scene?.layers.find((l) => l.scene !== undefined && !ok.has(l.scene));
+      if (!broken) continue;
+      Object.assign(entry, { scene: null, errors: [...entry.errors, `tracks: clip "${broken.id}" places "${broken.scene}", which has errors`] });
+      changed = true;
+    }
+  }
+  const world: World = { scenes: valid(), ...(cast === EMPTY_CAST ? {} : { cast }) };
+  for (const entry of folderEntries) entry.world = world;
 }
 
 /**
@@ -251,7 +375,7 @@ function buildProjects(
           errors.push(`validator threw: ${message(err)}`);
         }
       }
-      own.push({ key: `${id}/${stem}`, path: p.path, file: p.path.slice(1), scene, errors, project: id, registry, world: {}, context });
+      own.push({ key: `${id}/${stem}`, path: p.path, file: p.path.slice(1), scene, errors, project: id, registry, world: {}, context, kind: 'scene' });
     }
 
     // Scene layers across the project: loops and depth, then scenes placing a scene with errors, until nothing changes.

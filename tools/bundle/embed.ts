@@ -1,8 +1,9 @@
 // Builds the single-file HTML embed for a scene (M4): the engine, the embed
 // player, only the rigs the scene draws with, the scene data and, for a scene
 // with audio, only the generators it uses (M7), bundled and minified into one
-// inline script. A project scene also carries the scenes it places, however
-// deep, its project's cast, and the project rigs they draw with (ADR 0007).
+// inline script. A composition, or an M9 project scene, also carries the
+// scenes it places, however deep, the cast they use, and the project rigs
+// they draw with (ADR 0007, ADR 0013).
 // The file makes no requests and needs no runtime library.
 //
 // Text (ADR 0010): the text rig's typefaces are cut to the typefaces and
@@ -314,7 +315,8 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
   const hasSound = generatorIds.length > 0 || mediaFiles.length > 0;
   const sound = hasSound ? `embedSound([${generatorIds.map((_, i) => `gen${i}`).join(', ')}]${mediaFiles.length > 0 ? `, ${sceneLiteral(inlined)}` : ''})` : 'undefined';
   const cast = Object.fromEntries(Object.entries(entry.world.cast ?? {}).filter(([name]) => usesCast(name, [scene, ...placed.values()])));
-  const bundled = project ? { scenes: Object.fromEntries([...placed].sort(([a], [b]) => a.localeCompare(b))), cast } : null;
+  // What it places and the cast it uses: an M9 project scene's, or a composition's or folder scene's (ADR 0013).
+  const bundled = placed.size > 0 || Object.keys(cast).length > 0 ? { scenes: Object.fromEntries([...placed].sort(([a], [b]) => a.localeCompare(b))), cast } : null;
   const code = [
     `import { mountEmbed, optionsFromQuery } from ${importPath(player)};`,
     ...(hasSound ? [`import { embedSound } from ${importPath(join(folder.builtins, 'embed/sound.ts'))};`] : []),

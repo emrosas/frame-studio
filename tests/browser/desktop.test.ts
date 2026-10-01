@@ -74,10 +74,11 @@ describe('the app', () => {
       const w = window as unknown as { studio: { scenes: string[]; errors: string[] }; frameStudioDesktop?: object };
       return { scenes: w.studio.scenes, errors: w.studio.errors, bridge: Object.keys(w.frameStudioDesktop ?? {}).sort(), node: typeof (window as unknown as { require?: unknown }).require };
     });
-    expect(state.scenes).toEqual(['hello', 'bears-story/film', 'bears-story/meet', 'bears-story/pip', 'bears-story/together']);
+    // The sample is Bears' story as a project folder (ADR 0013): its scenes, then the film, a composition.
+    expect(state.scenes).toEqual(['film-background', 'hello', 'meet', 'pip', 'together', 'film']);
     expect(state.errors).toEqual([]);
     // Only the bridge reaches the page: no Node, no Electron.
-    expect(state.bridge).toEqual(['newProject', 'openFolder', 'openProject', 'projects', 'reveal', 'token']);
+    expect(state.bridge).toEqual(['convertFilm', 'newProject', 'openFolder', 'openProject', 'projects', 'reveal', 'token']);
     expect(state.node).toBe('undefined');
     const tsconfig = JSON.parse(readFileSync(join(folder, 'tsconfig.json'), 'utf8')) as { compilerOptions: { paths: Record<string, string[]> } };
     expect(tsconfig.compilerOptions.paths['@frame-studio/*']).toEqual([`${join(REPO, 'src')}/*`]);
@@ -94,7 +95,7 @@ describe('the app', () => {
     try {
       expect(connected.server).toBeNull();
       expect(connected.url).toBe(url);
-      const studio = await openStudio('bears-story/film', { transport: connected.transport });
+      const studio = await openStudio('film', { transport: connected.transport });
       expect(await studio.call('pixelHash', 50)).toMatch(/^[0-9a-f]{64}$/);
     } finally {
       await connected.close();
@@ -162,6 +163,7 @@ export const twinkle: Rig = {
     const layers = (JSON.parse(readFileSync(join(folder, 'scenes/hello.json'), 'utf8')) as { layers: { id: string; rig?: string }[] }).layers;
     expect(layers.at(-1)).toEqual({ id: 'twinkle', rig: 'twinkle' });
     const viewer = await viewerWindow(app!);
+    await viewer.evaluate(() => (window as unknown as { studio: { selectScene(id: string): void } }).studio.selectScene('hello'));
     await expect
       .poll(() => viewer.evaluate(() => (window as unknown as { studio: { scene: { layers: { id: string }[] } | null; errors: string[] } }).studio.scene?.layers.map((l) => l.id)), { timeout: 15_000 })
       .toContain('twinkle');
@@ -187,7 +189,8 @@ export const twinkle: Rig = {
     await expect.poll(() => viewer.url(), { timeout: 30_000 }).not.toContain(new URL(sample.url).host);
     await viewer.waitForFunction(() => (window as unknown as { studio?: { scenes: string[] } }).studio?.scenes !== undefined, undefined, { timeout: 30_000 });
     expect(await viewer.evaluate(() => (window as unknown as { studio: { scenes: string[] } }).studio.scenes)).toEqual([]);
-    for (const sub of ['scenes', 'rigs', 'audio', 'media']) expect(statSync(join(film, sub)).isDirectory()).toBe(true);
+    for (const sub of ['scenes', 'compositions', 'rigs', 'audio', 'media']) expect(statSync(join(film, sub)).isDirectory()).toBe(true);
+    expect(JSON.parse(readFileSync(join(film, 'project.json'), 'utf8'))).toEqual({ name: 'My Film', fps: 24, size: [1920, 1080], cast: {} });
     await expect.poll(() => switcher.textContent()).toContain('My Film');
 
     // Sample's agent is still at it, and the switcher says so.
@@ -204,7 +207,7 @@ export const twinkle: Rig = {
     await expect.poll(async () => (await sampleItem.locator('[title$="your turn"]').count()) > 0, { timeout: 10_000 }).toBe(true);
 
     await sampleItem.click();
-    await expect.poll(() => viewer.evaluate(() => (window as unknown as { studio?: { scenes: string[] } }).studio?.scenes ?? []), { timeout: 30_000 }).toContain('bears-story/film');
+    await expect.poll(() => viewer.evaluate(() => (window as unknown as { studio?: { scenes: string[] } }).studio?.scenes ?? []), { timeout: 30_000 }).toContain('film');
     await expect.poll(() => switcher.textContent()).toContain('Sample');
   });
 
@@ -240,7 +243,7 @@ export const twinkle: Rig = {
     await app!.close();
     app = await launch();
     const viewer = await viewerWindow(app);
-    expect(await viewer.evaluate(() => (window as unknown as { studio: { scenes: string[] } }).studio.scenes)).toContain('bears-story/film');
+    expect(await viewer.evaluate(() => (window as unknown as { studio: { scenes: string[] } }).studio.scenes)).toContain('film');
     expect(app.windows().some((w) => w.url().endsWith('welcome.html'))).toBe(false);
   });
 });

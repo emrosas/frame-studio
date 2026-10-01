@@ -221,14 +221,14 @@ describe('projects (ADR 0007)', () => {
   const shots = (page: Page) => page.evaluate(() => (window as unknown as { studio: { shots: Shots } }).studio.shots);
   const url = (page: Page) => new URL(page.url()).searchParams;
 
-  it('lists projects in the sidebar under their names, and opens a project scene by its qualified id', async () => {
+  it('lists old films in the sidebar under their names, and opens a film scene by its qualified id', async () => {
     const page = await open(`?scene=${encodeURIComponent('bears-story/pip')}&frame=12`);
     await expect.poll(() => readout(page)).toBe('frame 12 of 48');
     expect(await currentScene(page)).toBe('bears-story/pip');
     const project = sidebar(page).getByRole('group', { name: "Bears' story" });
     expect(await project.locator('button[data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['film', 'meet', 'pip', 'together']);
-    // Then a row to add a scene to the project.
-    expect(await project.getByRole('listitem').last().getByRole('button').textContent()).toContain('New scene');
+    // Then a row to convert the film into a project folder (ADR 0013).
+    expect(await project.getByRole('listitem').last().getByRole('button').textContent()).toContain('Convert to a project');
     expect(await project.getByRole('button', { name: 'film', exact: true }).textContent()).toContain('main');
     // Loose scenes stay outside the project.
     expect(await sidebar(page).getByRole('region', { name: 'Scenes' }).getByRole('button', { name: 'bear-test', exact: true }).count()).toBe(1);

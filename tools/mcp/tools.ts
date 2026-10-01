@@ -6,15 +6,15 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
-import type { NewProject, NewScene } from '../../src/studio/protocol.ts';
+import type { NewComposition, NewScene } from '../../src/studio/protocol.ts';
 import type { StudioQueue } from '../studio/queue.ts';
 import type { Workspace } from './workspace.ts';
 
 const frame = z
   .union([z.number().int().min(0), z.string()])
   .describe('A frame number, or an MM:SS:FF timecode where FF is the frame within the second');
-const sceneId = z.string().describe('Scene id, as list_scenes shows it: a loose scene\'s id, or "<project>/<scene>" in a project');
-const projectId = z.string().describe('Project id, the folder name in projects/, as list_projects shows it');
+const sceneId = z.string().describe('A scene\'s or composition\'s id, as list_scenes shows it; "<project>/<scene>" for a film made before compositions, in projects/');
+const projectId = z.string().describe('A film made before compositions: its folder name in projects/, as list_projects shows it');
 /** How long update_project waits for the project's other threads before it refuses. Under Codex's 60 s tool timeout. */
 const PROJECT_WAIT_MS = 50_000;
 const paramValue = z.union([z.number(), z.string(), z.boolean()]);
@@ -129,7 +129,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'Update a scene',
       description:
-        'Applies an RFC 7386 JSON merge patch to the scene file: objects merge key by key, null deletes a key, and arrays are replaced whole, so to change one layer send the whole layers array. The result is validated before saving; if it is invalid nothing is saved and the errors say why. The id cannot change.',
+        'Applies an RFC 7386 JSON merge patch to a scene or composition file: objects merge key by key, null deletes a key, and arrays are replaced whole, so to change one layer send the whole layers array, and to change a clip the whole tracks array. The result is validated before saving, with every composition that places it; if anything breaks, nothing is saved and the errors say why. The id cannot change.',
       inputSchema: { id: sceneId, patch: z.record(z.string(), z.unknown()).describe('JSON merge patch') },
     },
     tool('update_scene', async (w, { id, patch }: { id: string; patch: Record<string, unknown> }) => text(await w.updateScene(id, patch))),
@@ -140,10 +140,21 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'Create a scene',
       description:
-        'Creates a new, empty scene: a paper background and no layers, to fill in with update_scene. A loose scene goes in scenes/<id>.json and needs fps and size. With project, it goes in projects/<project>/<id>.json and takes the project\'s fps and size, so leave them out. Refuses an id that is taken. Returns the scene id to use with the other tools.',
-      inputSchema: { id: newId, project: projectId.optional(), fps: fps.optional(), size: size.optional(), duration },
+        "Creates a new, empty scene in scenes/<id>.json: a paper background and no layers, to fill in with update_scene. A scene draws and places nothing; arrange scenes in a composition. Its fps and size default to project.json's, else 24 fps at 1920×1080. Refuses an id a scene or composition has. Returns the id to use with the other tools.",
+      inputSchema: { id: newId, fps: fps.optional(), size: size.optional(), duration },
     },
     tool('create_scene', async (w, input: NewScene) => text(await w.createScene(input))),
+  );
+
+  server.registerTool(
+    'create_composition',
+    {
+      title: 'Create a composition',
+      description:
+        'Creates a new composition in compositions/<id>.json (ADR 0013): an edit that arranges and never draws. It starts with one empty track, { "id": "V1", "clips": [] }, and a black background. A composition is { id, fps, duration, size, background?, tracks: [{ id, clips: [...] }], audio? }, bottom track first. A clip is { "id", "scene": "<scene or composition id>", "start"?, "in"?, "out"?, "params"?: { x, y, scale, rotation, opacity, volume, mute }, "tracks"?, "mask"? }: start in the composition\'s seconds, the trim [in, out) in the clip\'s own. Compositions nest freely; a loop is refused. Clips must share its fps; another size sits centred. Its fps and size default to project.json\'s. Add clips with update_scene on its tracks.',
+      inputSchema: { id: newId, fps: fps.optional(), size: size.optional(), duration },
+    },
+    tool('create_composition', async (w, input: NewComposition) => text(await w.createComposition(input))),
   );
 
   server.registerTool(
@@ -151,7 +162,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'List projects',
       description:
-        "Every project in projects/: id, name, file, the fps and size every scene in it shares, main (the scene that places the shots, whose export is the whole video), the cast (named characters: a rig with params, used by layers as { \"cast\": \"name\" }), its scenes by qualified id, its own rigs, and any errors in project.json.",
+        "Films made before compositions, in projects/<id>/ (ADR 0007): id, name, file, the fps and size every scene in it shares, main (the scene that places the shots), the cast, its scenes by qualified id, its own rigs, and any errors. The folder itself is the project now (get_project with no id); the viewer can convert these into project folders of their own.",
       annotations: { readOnlyHint: true },
     },
     tool('list_projects', async (w) => text(await w.listProjects())),
@@ -161,11 +172,12 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     'get_project',
     {
       title: 'Get a project',
-      description: "A project's project.json exactly as it is in its file, plus the file path, its scenes by qualified id, and any errors.",
-      inputSchema: { id: projectId },
+      description:
+        "With no id, the project: the folder's project.json (ADR 0013), with its name, the fps and size new scenes and compositions start with, and its cast (named characters, a rig with params each, that any scene's layers use as { \"cast\": \"name\" }), or {} when it has none. With an id, a film in projects/<id>/ made before compositions.",
+      inputSchema: { id: projectId.optional() },
       annotations: { readOnlyHint: true },
     },
-    tool('get_project', async (w, { id }: { id: string }) => text(await w.getProject(id))),
+    tool('get_project', async (w, { id }: { id?: string }) => text(id === undefined ? await w.getFolderProject() : await w.getProject(id))),
   );
 
   server.registerTool(
@@ -173,25 +185,14 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'Update a project',
       description:
-        "Applies an RFC 7386 JSON merge patch to a project's project.json, e.g. { \"cast\": { \"bruno\": { \"params\": { \"fur\": \"#8a5a3c\" } } } } to change a character in every shot. A change here touches every scene in the project, so it waits (up to about 50 s) while another request in the project is working, and is refused if that work doesn't end. The result is validated, and every scene in the project must stay valid under it; if not, nothing is saved and the errors say why.",
-      inputSchema: { id: projectId, patch: z.record(z.string(), z.unknown()).describe('JSON merge patch') },
+        "Applies an RFC 7386 JSON merge patch to project.json, e.g. { \"cast\": { \"bruno\": { \"params\": { \"fur\": \"#8a5a3c\" } } } } to change a character everywhere it appears. With no id, the folder's own (ADR 0013); every scene and composition must stay valid under it. With an id, a film in projects/<id>/ made before compositions, which waits (up to about 50 s) while another request in it is working. If anything would break, nothing is saved and the errors say why.",
+      inputSchema: { id: projectId.optional(), patch: z.record(z.string(), z.unknown()).describe('JSON merge patch') },
     },
     tool(
       'update_project',
-      async (w, { id, patch }: { id: string; patch: Record<string, unknown> }) => text(await w.updateProject(id, patch, caller)),
-      (w, { id }) => w.waitForProject(id, caller, PROJECT_WAIT_MS),
+      async (w, { id, patch }: { id?: string; patch: Record<string, unknown> }) => text(id === undefined ? await w.updateFolderProject(patch) : await w.updateProject(id, patch, caller)),
+      (w, { id }) => (id === undefined ? Promise.resolve() : w.waitForProject(id, caller, PROJECT_WAIT_MS)),
     ),
-  );
-
-  server.registerTool(
-    'create_project',
-    {
-      title: 'Create a project',
-      description:
-        'Creates a new project: projects/<id>/project.json with its name, fps and size, and an empty main scene, "<id>/main", whose export is the whole video. Add shots with create_scene and project, and place them in main as scene layers. Refuses an id that is taken.',
-      inputSchema: { id: newId, name: z.string().min(1).max(100).describe('The name the sidebar shows, e.g. "Bears\' story"'), fps, size, duration: duration.describe("The main scene's length in seconds") },
-    },
-    tool('create_project', async (w, input: NewProject) => text(await w.createProject(input))),
   );
 
   server.registerTool(

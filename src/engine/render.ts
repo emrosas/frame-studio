@@ -182,7 +182,8 @@ function drawSceneLayer(ctx: Ctx2D, scene: Scene, layer: Layer, frame: number, r
     target.save();
     depth++;
     try {
-      if (!isIdentityPlacement(place)) {
+      // A clip of another size than its composition sits centred (ADR 0013), clipped to its own stage.
+      if (!isIdentityPlacement(place) || shotWidth !== width || shotHeight !== height) {
         target.translate(width / 2 + place.x, height / 2 + place.y);
         target.rotate((place.rotation * Math.PI) / 180);
         target.scale(place.scale, place.scale);

@@ -11,7 +11,7 @@ import {
   type AgentStatus,
   type ApprovalDecision,
   type CurrentSelection,
-  type NewProject,
+  type NewComposition,
   type NewRequest,
   type NewScene,
   type QuestionAnswers,
@@ -110,9 +110,14 @@ export class StudioClient {
     return (await call<{ id: string }>('/scenes', jsonBody(scene))).id;
   }
 
-  /** Creates a project with an empty main scene; returns the main scene's id. */
-  async createProject(project: NewProject): Promise<string> {
-    return (await call<{ main: string }>('/projects', jsonBody(project))).main;
+  /** Converts film `id` in projects/ into a project folder beside this one (ADR 0013); returns its path. */
+  async convertFilm(id: string): Promise<string> {
+    return (await call<{ path: string }>(`/projects/${encodeURIComponent(id)}/convert`, jsonBody({}))).path;
+  }
+
+  /** Creates a composition with one empty track (ADR 0013); returns its id. */
+  async createComposition(composition: NewComposition): Promise<string> {
+    return (await call<{ id: string }>('/compositions', jsonBody(composition))).id;
   }
 
   /** Answers a question card in a working turn, or skips it with null (ADR 0011). */

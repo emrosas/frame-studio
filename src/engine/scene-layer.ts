@@ -20,8 +20,8 @@ export const SCENE_LAYER_PARAMS: ParamSchema = {
   mute: { type: 'boolean', default: false, description: "Leaves the shot's sound out." },
 };
 
-/** Nesting deeper than this is refused, so a mistake can't recurse forever. */
-export const MAX_SCENE_DEPTH = 4;
+/** Nesting deeper than this is refused, so a mistake can't recurse forever. Compositions nest freely below it (ADR 0013). */
+export const MAX_SCENE_DEPTH = 16;
 
 /** The frames of the parent a scene layer shows its shot on, and which shot frame the first one is. */
 export interface SceneLayerSpan {

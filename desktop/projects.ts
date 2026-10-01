@@ -2,9 +2,9 @@
 // project, read from the project's own thread files, so it works whether or
 // not the project's studio server runs. Electron main process only.
 
-import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { displayStatus, normalizeRequest } from '../src/studio/protocol.ts';
+import { DEFAULT_FORMAT, displayStatus, normalizeRequest } from '../src/studio/protocol.ts';
 
 /** A project's threads that need a look: working, waiting on the user's input, or the user's turn. */
 export interface ProjectStatus {
@@ -85,6 +85,9 @@ export async function listProjects(recent: readonly string[], current: string | 
 export async function createProject(dir: string): Promise<string | null> {
   const names = await readdir(dir).catch(() => null);
   if (names && names.some((n) => !n.startsWith('.'))) return `${dir} already has files in it. Open it as a project instead.`;
-  for (const sub of ['scenes', 'rigs', 'audio', 'media']) await mkdir(join(dir, sub), { recursive: true });
+  for (const sub of ['scenes', 'compositions', 'rigs', 'audio', 'media']) await mkdir(join(dir, sub), { recursive: true });
+  // The format new scenes and compositions start with, and a cast to fill in (ADR 0013).
+  const project = { name: basename(dir), fps: DEFAULT_FORMAT.fps, size: DEFAULT_FORMAT.size, cast: {} };
+  await writeFile(join(dir, 'project.json'), `${JSON.stringify(project, null, 2)}\n`);
   return null;
 }

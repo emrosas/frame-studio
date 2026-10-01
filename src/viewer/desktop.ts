@@ -55,6 +55,8 @@ export interface DesktopBridge {
   newProject(): Promise<string | null>;
   /** Switches to a recent project. */
   openProject(path: string): Promise<string | null>;
+  /** Asks where, converts film `id` in projects/ into a project folder of its own (ADR 0013), and switches to it. */
+  convertFilm(id: string): Promise<string | null>;
   /** Missing when the app can't update, such as when it runs from the repo. */
   readonly updates?: DesktopUpdates;
 }

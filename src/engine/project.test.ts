@@ -215,7 +215,7 @@ describe('validating project scenes', () => {
     expect(errors([{ id: 'c', scene: 'shot', params: { size: 3 } }])).toEqual([expect.stringMatching(/unknown param "size" for a scene layer; known params: x, y, scale/)]);
     expect(errors([{ id: 'c', scene: 'shot', overrides: [{ from: 0, to: 2, rig: 'box' }] }])).toEqual([expect.stringMatching(/has no rig to swap/)]);
     expect(errors([{ id: 'c', rig: 'box', start: 1 }])).toEqual([expect.stringMatching(/only scene layers take start/)]);
-    expect(errors([{ id: 'c', scene: 'shot' }], {}, null)).toEqual([expect.stringMatching(/only scenes in a project can place scenes/)]);
+    expect(errors([{ id: 'c', scene: 'shot' }], {}, null)).toEqual([expect.stringMatching(/a scene draws and places nothing; arrange scenes in a composition/)]);
   });
 
   it('checks cast members and masks', () => {
@@ -264,9 +264,11 @@ describe('sceneGraphErrors', () => {
   });
 
   it('limits how deep scene layers nest', () => {
-    const chain = new Map(['a', 'b', 'c', 'd', 'e', 'f'].map((id, i, all) => [id, i < all.length - 1 ? placing(id, all[i + 1]) : placing(id)]));
+    // 18 scenes in a chain: the first places the rest 17 deep, past the limit of 16; the second, 16 deep, is fine.
+    const ids = Array.from({ length: 18 }, (_, i) => `s${i}`);
+    const chain = new Map(ids.map((id, i, all) => [id, i < all.length - 1 ? placing(id, all[i + 1]) : placing(id)]));
     const errs = sceneGraphErrors(chain);
-    expect([...errs.keys()]).toEqual(['a']);
-    expect(errs.get('a')![0]).toMatch(/places scenes 5 deep; nesting is limited to 4/);
+    expect([...errs.keys()]).toEqual(['s0']);
+    expect(errs.get('s0')![0]).toMatch(/places scenes 17 deep; nesting is limited to 16/);
   });
 });

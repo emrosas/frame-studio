@@ -14,6 +14,7 @@ import { homedir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, utilityProcess, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
+import { convertFilm } from '../tools/studio/convert.ts';
 import { createStudioFolder, writeTsconfig } from './folders.ts';
 import { createProject, hasAgentWork, listProjects } from './projects.ts';
 import { appPaths } from './paths.ts';
@@ -338,6 +339,32 @@ async function newProject(): Promise<string | null> {
   return problem ?? openFolder(picked.filePath);
 }
 
+/**
+ * Converts film `id` of the project on screen, projects/<id>/ (M9), into a project folder of its own
+ * (ADR 0013): asks where, writes it, and switches to it.
+ */
+async function convertFilmToProject(id: string): Promise<string | null> {
+  if (!session) return 'No project is open.';
+  const source = join(session.folder, 'projects', id);
+  if (!/^[a-z0-9][a-z0-9-]*$/i.test(id) || !(await isDirectory(source))) return `There is no film "${id}" in projects/.`;
+  await mkdir(projectsHome(), { recursive: true }).catch(() => {});
+  const parent = BrowserWindow.getFocusedWindow() ?? main;
+  const options: Electron.SaveDialogOptions = {
+    title: 'Convert to a Project',
+    buttonLabel: 'Convert',
+    nameFieldLabel: 'Project:',
+    defaultPath: join(projectsHome(), id),
+    properties: ['createDirectory', 'showOverwriteConfirmation'],
+  };
+  const picked = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options);
+  if (picked.canceled || !picked.filePath) return null;
+  const problem = await convertFilm(source, picked.filePath, session.folder).then(
+    () => null,
+    (err: unknown) => `Could not convert into ${picked.filePath}: ${err instanceof Error ? err.message : String(err)}`,
+  );
+  return problem ?? openFolder(picked.filePath);
+}
+
 /** Makes the sample project in ~/Frame Studio Projects/Sample, the first time, and opens it. */
 async function sampleProject(): Promise<string | null> {
   const dir = join(projectsHome(), 'Sample');
@@ -445,6 +472,7 @@ function registerIpc(): void {
   ipcMain.handle('frame-studio:open-folder', (event) => (fromApp(event) ? pickFolder() : null));
   ipcMain.handle('frame-studio:new-project', (event) => (fromApp(event) ? newProject() : null));
   ipcMain.handle('frame-studio:sample-project', (event) => (fromApp(event) ? sampleProject() : null));
+  ipcMain.handle('frame-studio:convert-film', (event, id: string) => (fromApp(event) ? convertFilmToProject(String(id)) : null));
   ipcMain.handle('frame-studio:open-recent', (event, path: string) => (fromApp(event) && settings.recent.includes(path) ? openFolder(path) : null));
   // The project switcher's list (ADR 0013): the recent projects with their threads that need a look.
   ipcMain.handle('frame-studio:projects', (event) => (fromApp(event) ? listProjects(settings.recent, session?.folder ?? null, new Set(sessions.keys())) : []));

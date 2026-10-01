@@ -1,10 +1,10 @@
 <!--
-  The sidebar: the studio folder (the app can switch it), New thread, the
-  folder's scenes (loose ones, then each project's under its name, main scene
-  first), and the threads, newest first. At the bottom, the app's update when
-  it has one. Clicking a scene shows it; clicking a thread opens it in the
-  agent panel. The + by Scenes and by Projects, and New scene in a project,
-  open the New dialog.
+  The sidebar: the project switcher, New thread, the project's compositions
+  and scenes (ADR 0013), any films made before compositions (M9, each under
+  its name, main scene first), sound files, and the threads, newest first. At
+  the bottom, the app's update when it has one. Clicking a scene shows it;
+  clicking a thread opens it in the agent panel. The + by Compositions and by
+  Scenes, and New scene in an M9 film, open the New dialog.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -14,6 +14,9 @@
   import ProjectSwitcher from './ProjectSwitcher.svelte';
   import NewDialog from './NewDialog.svelte';
   import UpdateCard from './UpdateCard.svelte';
+  import { desktop } from '../desktop';
+
+  const desktopApp = desktop() !== null;
 
   let {
     ui,
@@ -34,8 +37,9 @@
   };
 
 
-  // Loose scenes, then each project's. The App orders them, so a project's scenes are one run.
-  const loose = $derived(ui.scenes.filter((s) => s.project === null));
+  // The folder's compositions and scenes, then each M9 film's. The App orders them, so a film's scenes are one run.
+  const compositions = $derived(ui.scenes.filter((s) => s.project === null && s.kind === 'composition'));
+  const loose = $derived(ui.scenes.filter((s) => s.project === null && s.kind === 'scene'));
   const projects = $derived.by(() => {
     const groups: { id: string; name: string; scenes: SceneOption[] }[] = [];
     for (const option of ui.scenes) {
@@ -81,6 +85,14 @@
     ui.mediaNote = problem ? { text: problem, error: true } : null;
   }
 
+  // Converting an M9 film into a project folder (ADR 0013). The app asks where; a browser confirms first.
+  let convertNote = $state<{ text: string; error: boolean } | null>(null);
+  async function convert(id: string, name: string): Promise<void> {
+    if (!desktopApp && !confirm(`Convert “${name}” into a project folder of its own, beside this one? The film here stays as it is.`)) return;
+    convertNote = null;
+    convertNote = await actions.convertFilm(id);
+  }
+
   const threads = $derived([...ui.studio.requests].reverse());
   // Waiting for you: a turn to answer, or a question card or approval in a working turn.
   const yours = $derived(ui.studio.requests.filter((r) => r.status === 'your_turn' || displayStatus(r, ui.studio.now) === 'input').length);
@@ -110,7 +122,7 @@
   }
 </script>
 
-{#snippet sceneItem(option: SceneOption, icon: 'scene' | null)}
+{#snippet sceneItem(option: SceneOption, icon: 'scene' | 'project' | null)}
   <li>
     <button
       type="button"
@@ -119,7 +131,7 @@
       data-key={option.key}
       aria-label={option.invalid ? `${option.label} (invalid)` : option.label}
       aria-current={option.key === ui.selectedScene ? 'page' : undefined}
-      title={option.invalid ? `${option.file} (invalid: see the error panel)` : option.file}
+      title={option.invalid ? `${option.file} (invalid: see the error panel)` : option.usedIn.length > 0 ? `${option.file}, used in ${option.usedIn.join(', ')}` : option.file}
       onclick={(e) => pick(option.key, e)}
     >
       {#if icon}<Icon name={icon} size={15} />{/if}
@@ -127,6 +139,12 @@
       {#if option.main}<span class="badge">main</span>{/if}
       {#if option.invalid}<span class="badge">invalid</span>{/if}
     </button>
+    {#if option.usedIn.length > 0 && option.key === ui.selectedScene}
+      <p class="used-in">
+        Used in
+        {#each option.usedIn as key, i (key)}{#if i > 0}, {/if}<button type="button" class="link-btn" onclick={(e) => pick(key, e)}>{key}</button>{/each}
+      </p>
+    {/if}
   </li>
 {/snippet}
 
@@ -151,6 +169,22 @@
   </div>
 
   <div class="sidebar-scroll">
+    <section class="side-section" aria-label="Compositions">
+      <div class="side-label">
+        Compositions
+        <button type="button" class="icon-btn is-small side-add" aria-label="New composition" title="New composition" onclick={() => (creating = { kind: 'composition' })}>
+          <Icon name="plus" size={14} />
+        </button>
+      </div>
+      {#if compositions.length === 0}
+        <p class="side-empty">No compositions yet. A composition arranges scenes on tracks into a video.</p>
+      {:else}
+        <ul class="side-list">
+          {#each compositions as option (option.key)}{@render sceneItem(option, 'project')}{/each}
+        </ul>
+      {/if}
+    </section>
+
     <section class="side-section" aria-label="Scenes">
       <div class="side-label">
         Scenes
@@ -167,44 +201,39 @@
       {/if}
     </section>
 
-    <section class="side-section" aria-label="Projects">
-      <div class="side-label">
-        Projects
-        <button type="button" class="icon-btn is-small side-add" aria-label="New project" title="New project" onclick={() => (creating = { kind: 'project' })}>
-          <Icon name="plus" size={14} />
-        </button>
-      </div>
-      {#if projects.length === 0}
-        <p class="side-empty">No projects yet. A project's scenes share a size and frame rate, and place each other as shots.</p>
-      {:else}
-        <ul class="side-list">
-          {#each projects as project (project.id)}
-            <li role="group" aria-label={project.name}>
-              <button type="button" class="side-item" aria-expanded={!folded[project.id]} onclick={() => (folded[project.id] = !folded[project.id])}>
-                <Icon name="project" size={15} />
-                <span class="name">{project.name}</span>
-                <span class="chevron" class:is-closed={folded[project.id]}><Icon name="chevronDown" size={14} /></span>
-              </button>
-              {#if !folded[project.id]}
-                <ul class="side-list side-children">
-                  {#each project.scenes as option (option.key)}{@render sceneItem(option, null)}{/each}
-                  <li>
-                    <button
-                      type="button"
-                      class="side-item is-add"
-                      onclick={() => (creating = { kind: 'scene', project: ui.projects.find((p) => p.id === project.id) ?? { id: project.id, name: project.name, fps: null, size: null } })}
-                    >
-                      <Icon name="plus" size={14} />
-                      <span class="name">New scene</span>
-                    </button>
-                  </li>
-                </ul>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      {/if}
+    {#if projects.length > 0}
+    <section class="side-section" aria-label="Films">
+      <div class="side-label" title="Films made before compositions, in projects/">Films</div>
+      {#if convertNote}<p class="side-empty panel-note" class:is-error={convertNote.error} role="status">{convertNote.text}</p>{/if}
+      <ul class="side-list">
+        {#each projects as project (project.id)}
+          <li role="group" aria-label={project.name}>
+            <button type="button" class="side-item" aria-expanded={!folded[project.id]} onclick={() => (folded[project.id] = !folded[project.id])}>
+              <Icon name="project" size={15} />
+              <span class="name">{project.name}</span>
+              <span class="chevron" class:is-closed={folded[project.id]}><Icon name="chevronDown" size={14} /></span>
+            </button>
+            {#if !folded[project.id]}
+              <ul class="side-list side-children">
+                {#each project.scenes as option (option.key)}{@render sceneItem(option, null)}{/each}
+                <li>
+                  <button
+                    type="button"
+                    class="side-item is-add"
+                    title="Makes a project folder of its own, with the film as a composition"
+                    onclick={() => convert(project.id, project.name)}
+                  >
+                    <Icon name="project" size={14} />
+                    <span class="name">Convert to a project…</span>
+                  </button>
+                </li>
+              </ul>
+            {/if}
+          </li>
+        {/each}
+      </ul>
     </section>
+    {/if}
 
     <section class="side-section" aria-label="Media">
       <div class="side-label">
@@ -291,6 +320,7 @@
   {#if creating}
     <NewDialog
       what={creating}
+      {ui}
       {actions}
       onclose={() => (creating = null)}
       ondone={() => {

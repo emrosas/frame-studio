@@ -10,10 +10,10 @@ import { watch, type FSWatcher } from 'node:fs';
 import { mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { extname, join, relative, resolve, sep } from 'node:path';
+import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ViteDevServer } from 'vite';
 import {
-  checkNewProject,
+  checkNewComposition,
   checkNewRequest,
   checkNewScene,
   checkRetry,
@@ -25,7 +25,7 @@ import {
   type AgentStatus,
   type ApprovalDecision,
   type CurrentSelection,
-  type NewProject,
+  type NewComposition,
   type NewRequest,
   type NewScene,
   type QuestionAnswers,
@@ -41,6 +41,7 @@ import { STUDIO_INSTRUCTIONS } from './agents/instructions.ts';
 import { createProviders } from './agents/providers.ts';
 import { AgentRunner, readTurnEvents } from './agents/runner.ts';
 import { CodeHost } from './code.ts';
+import { convertFilm } from './convert.ts';
 import { EventHub } from './events.ts';
 import type { StudioFolder } from './folder.ts';
 import { body, checkLocal, checkOrigin, HttpError, json, send } from './http.ts';
@@ -233,7 +234,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   };
   const relevant = (base: string, file: string): 'files' | 'code' | null => {
     const rel = relative(base, file).split(sep).join('/');
-    if (/^scenes\/[^/]+\.json$/.test(rel) || /^projects\/[^/]+\/[^/]+\.json$/.test(rel) || /^media\//.test(rel)) return 'files';
+    if (/^(scenes|compositions)\/[^/]+\.json$/.test(rel) || rel === 'project.json' || /^projects\/[^/]+\/[^/]+\.json$/.test(rel) || /^media\//.test(rel)) return 'files';
     if (/\.ts$/.test(rel) && (/^(rigs|audio)\//.test(rel) || /^projects\/[^/]+\/rigs\//.test(rel))) return 'code';
     return null;
   };
@@ -469,7 +470,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       return send(res, 200, { ok: true });
     }
 
-    // New scenes and projects from the viewer's sidebar, the same operations as create_scene and create_project.
+    // New scenes and compositions from the viewer's sidebar, the same operations as create_scene and create_composition.
     if (req.method === 'POST' && path === '/scenes') {
       const input = await json<NewScene>(req);
       const problem = checkNewScene(input);
@@ -485,11 +486,26 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       const { scene, file, start } = input;
       return send(res, 201, await created(() => ws().then((w) => w.placeSound(scene, file, start))));
     }
-    if (req.method === 'POST' && path === '/projects') {
-      const input = await json<NewProject>(req);
-      const problem = checkNewProject(input);
+    // Converting an M9 film into a project folder of its own (ADR 0013), beside this one unless `to` says where.
+    const converting = /^\/projects\/([^/]+)\/convert$/.exec(path);
+    if (req.method === 'POST' && converting) {
+      const id = decodeURIComponent(converting[1]);
+      const input = (await json<{ to?: unknown } | null>(req)) ?? {};
+      if (input.to !== undefined && (typeof input.to !== 'string' || !isAbsolute(input.to))) throw new HttpError(400, 'Send { to } as an absolute path, or nothing.');
+      const source = join(folder.projects, id);
+      if (!/^[a-z0-9][a-z0-9-]*$/i.test(id) || !(await stat(join(source, 'project.json')).catch(() => null))) throw new HttpError(404, `No film "${id}" in projects/.`);
+      let to = typeof input.to === 'string' ? input.to : join(dirname(folder.root), id);
+      if (input.to === undefined) for (let n = 2; await stat(to).catch(() => null); n++) to = join(dirname(folder.root), `${id}-${n}`);
+      await convertFilm(source, to, folder.root).catch((err: unknown) => {
+        throw new HttpError(409, err instanceof Error ? err.message : String(err));
+      });
+      return send(res, 201, { path: to });
+    }
+    if (req.method === 'POST' && path === '/compositions') {
+      const input = await json<NewComposition>(req);
+      const problem = checkNewComposition(input);
       if (problem) throw new HttpError(400, problem);
-      return send(res, 201, await created(() => ws().then((w) => w.createProject(input))));
+      return send(res, 201, await created(() => ws().then((w) => w.createComposition(input))));
     }
 
     // The request queue (ADR 0003, ADR 0006).

@@ -17,13 +17,18 @@ export interface SchemaOwner {
 /**
  * What a scene in a project is checked against (ADR 0007): the project's fps
  * and size, its cast, and its other scenes, by bare id, with their lengths.
+ * `kind` says how it sits in a project folder (ADR 0013): a scene draws, uses
+ * the cast and places nothing; a composition places scenes and compositions
+ * whose fps is its own. Without it, an M9 project's scene: the project's fps
+ * and size, and sibling scenes placed freely.
  */
 export interface ProjectContext {
   id: string;
   fps: number;
   size: readonly [number, number];
   cast: Cast;
-  scenes: ReadonlyMap<string, { duration: number }>;
+  scenes: ReadonlyMap<string, { duration: number; fps?: number }>;
+  kind?: 'scene' | 'composition';
 }
 
 /** Scene layers' params, checked like a rig's. */
@@ -71,10 +76,10 @@ export function validateScene(
 
   if (!(Array.isArray(s.size) && s.size.length === 2 && s.size.every(isPositiveInteger))) {
     err('size', `must be two positive integers [width, height] in scene pixels, e.g. [1920, 1080], got ${show(s.size)}`);
-  } else if (project && (s.size[0] !== project.size[0] || s.size[1] !== project.size[1])) {
+  } else if (project && !project.kind && (s.size[0] !== project.size[0] || s.size[1] !== project.size[1])) {
     err('size', `must be the project's size, [${project.size[0]}, ${project.size[1]}] (project "${project.id}"), got [${s.size.join(', ')}]`);
   }
-  if (project && fps !== undefined && fps !== project.fps) {
+  if (project && !project.kind && fps !== undefined && fps !== project.fps) {
     err('fps', `must be the project's fps, ${project.fps} (project "${project.id}"), got ${fps}`);
   }
 
@@ -348,7 +353,7 @@ function checkLayerSpec(env: Env, layer: Obj, path: string): void {
   } else if (!isNonEmptyString(layer.cast)) {
     err(`${path}.cast`, `must be the name of a cast member, got ${show(layer.cast)}`);
   } else if (!env.project) {
-    err(`${path}.cast`, 'only scenes in a project have a cast; name a "rig" instead, or move the scene into projects/<id>/');
+    err(`${path}.cast`, 'only scenes in a project have a cast; name a "rig" instead, or give the project a cast in its project.json');
   } else {
     const member = Object.hasOwn(env.project.cast, layer.cast) ? env.project.cast[layer.cast] : undefined;
     const names = Object.keys(env.project.cast);
@@ -382,18 +387,21 @@ function checkSeconds(env: Env, v: unknown, path: string, what: string): number 
 /** A scene layer (ADR 0007): a sibling scene of the project, a start, a trim, and placement params. */
 function checkSceneLayer(env: Env, layer: Obj, path: string): void {
   const { err, project } = env;
-  let shot: { duration: number } | undefined;
+  let shot: { duration: number; fps?: number } | undefined;
   if (!isNonEmptyString(layer.scene)) {
     err(`${path}.scene`, `must be the id of another scene in the project, got ${show(layer.scene)}`);
-  } else if (!project) {
-    err(`${path}.scene`, 'only scenes in a project can place scenes; move this scene into projects/<id>/');
+  } else if (!project || project.kind === 'scene') {
+    err(`${path}.scene`, 'a scene draws and places nothing; arrange scenes in a composition, in compositions/ (ADR 0013)');
   } else if (layer.scene === env.sceneId) {
     err(`${path}.scene`, 'a scene cannot place itself');
   } else {
     shot = project.scenes.get(layer.scene);
     if (!shot) {
       const known = [...project.scenes.keys()].filter((id) => id !== env.sceneId);
-      err(`${path}.scene`, `no scene "${layer.scene}" in project "${project.id}"; its scenes are ${known.length ? known.join(', ') : 'none yet'}`);
+      if (project.kind) err(`${path}.scene`, `no scene or composition "${layer.scene}" in the project; there are ${known.length ? known.join(', ') : 'none yet'}`);
+      else err(`${path}.scene`, `no scene "${layer.scene}" in project "${project.id}"; its scenes are ${known.length ? known.join(', ') : 'none yet'}`);
+    } else if (project.kind === 'composition' && shot.fps !== undefined && env.fps !== undefined && shot.fps !== env.fps) {
+      err(`${path}.scene`, `"${layer.scene}" runs at ${shot.fps} fps; a composition's clips run at its own fps (${env.fps}), so change one of them`);
     }
   }
   const start = checkSeconds(env, layer.start, `${path}.start`, 'when the shot starts in this scene');

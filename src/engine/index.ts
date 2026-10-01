@@ -17,7 +17,8 @@ export { render, drawLayer, assertFrame, resetContextState } from './render';
 export { PASS_THROUGH, onlyParts } from './kit';
 export { hitTest, type HitCandidate, type HitResult, type HitTestOptions } from './hit-test';
 export { isMediaPath, validateScene, type ProjectContext, type SchemaOwner, type ValidationResult } from './validate';
-export { sceneGraphErrors, validateProject, type ProjectFile, type ProjectValidation } from './project';
+export { sceneGraphErrors, validateFolderProject, validateProject, type FolderProjectFile, type ProjectFile, type ProjectValidation } from './project';
+export { compositionToScene, validateComposition, type Clip, type Composition, type CompositionTrack, type CompositionValidation } from './composition';
 export { CUE_PARAMS, cueVolume } from './cue';
 export {
   isIdentityPlacement,

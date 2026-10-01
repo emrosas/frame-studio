@@ -22,7 +22,7 @@ One scene, three outputs:
 2. **GIF**: the same frames, palette-quantized.
 3. **Single-file HTML embed**: engine + only the rigs the scene uses + scene data (+ audio generators), inlined into one file. No external requests, no dependencies, droppable into any website. Sound files stay out unless the export is asked to inline them (ADR 0012).
 
-Stills (PNG, JPG) are planned (M14).
+Stills (PNG, JPG) are planned (M16).
 
 The embed is the differentiator. Protect it with the runtime budget below.
 
@@ -71,9 +71,12 @@ src/
               selection shapes and shared rules. Import-free, so Node uses it too.
 desktop/      The Electron shell (ADR 0008): main process, preloads, welcome
               screen, and worker-only mode. Never imported by src/.
-scenes/       Loose scene files (JSON). The primary thing the agent edits.
-projects/     Projects (M9, ADR 0007): <id>/project.json (fps, size, main,
-              cast), the project's scenes, and optional rigs/.
+scenes/       Scene files (JSON): what draws. The primary thing the agent edits.
+compositions/ Compositions (M14, ADR 0013): tracks of clips that place scenes
+              and other compositions. The repo has none yet.
+projects/     Films made before compositions (M9, ADR 0007): <id>/project.json,
+              the film's scenes, and optional rigs/. Convertible into project
+              folders (tools/studio/convert.ts).
 references/   Reference images supplied by the user (agent input only, gitignored).
 tools/
   render/     CLI rendering through a studio server's render worker: frame -> PNG,
@@ -100,7 +103,7 @@ Rules:
 - The canvas renders at the scene's fixed resolution and is scaled with CSS for display. Handle devicePixelRatio for preview only; exports are always native resolution.
 - UI is regular HTML/CSS positioned over the canvas, never drawn into it.
 - The studio ships as a web app and as an Electron app from one viewer (`docs/adr/0001-web-and-electron-targets.md`, ADR 0008). `src/viewer` uses web platform APIs only. Anything that needs the machine goes through the studio server, which serves the viewer, and the app's preload adds only native features (`src/viewer/desktop.ts`).
-- **A project is a folder** (ADR 0013), the studio folder the app and the tools work on (ADR 0008): `scenes/`, `projects/` (until M14 turns them into compositions), `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The app shows one project at a time, switched from the top left, and keeps a project's server running while a thread there works. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
+- **A project is a folder** (ADR 0013), the studio folder the app and the tools work on (ADR 0008): `project.json` (name, default format, cast), `scenes/`, `compositions/`, `projects/` (old films, until converted), `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The app shows one project at a time, switched from the top left, and keeps a project's server running while a thread there works. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
 - The viewer stays plain TypeScript until M6, then its UI moves to Svelte 5 with Vite, not SvelteKit (`docs/adr/0002-svelte-from-m6.md`). The runtime never imports Svelte.
 
 ## Scene format (JSON)
@@ -139,8 +142,9 @@ Scenes are data, so the agent, the selection UI, and any future timeline editor 
 - Key times are in seconds. Numeric params interpolate with named easings; non-numeric params (strings, booleans) step.
 - The background is a layer like any other (it can have tracks and overrides), so "change the background for frames 1 to 14" is an ordinary scoped edit.
 - **`overrides`** express scoped edits: over a frame range, a layer may swap to a rig variant and/or apply param overrides. This keeps "change this element for frames 36 to 48" a contained change instead of forking drawing code. Overlapping overrides on one layer are invalid.
-- **Compositions (ADR 0013, M14)** replace scene layers: scenes draw and never place anything; compositions arrange clips (scenes or compositions, nested freely), sound files and transitions. Until M14, the M9 model below holds.
-- **Projects (M9, ADR 0007).** A project is a folder, `projects/<id>/`, with scenes that share one fps and size. A scene can place another scene of its project as a **scene layer**: a start, a trim, and trackable placement and opacity. A shot renders identically inside its parent and on its own. Any layer can take an animated **mask**, which covers transitions. `project.json` holds a **cast**: named characters (rig plus params) that layers use with `"cast": "bruno"` and can override. Outside a project, its scenes have qualified ids, `<project>/<scene>`.
+- **Compositions (M14, ADR 0013).** Scenes draw and never place anything. A composition, `compositions/<id>.json`, arranges: `{ id, fps, duration, size, background?: colour, tracks: [{ id, clips }], audio? }`, bottom track first. A clip places a scene or another composition with a start, a trim (`in`, `out`), trackable placement, opacity and volume, and an optional animated **mask**, which covers transitions. Compositions nest up to 16 deep, loops are refused, clips run at their composition's fps, and a clip of another size sits centred. A clip renders identically inside its composition and on its own. The engine renders a composition as a scene whose layers are its clips (`src/engine/composition.ts`). Scenes and compositions share one id namespace.
+- **The cast.** `project.json` holds named characters (rig plus params) that layers use with `"cast": "bruno"` and can override.
+- **Old films (M9, ADR 0007)** in `projects/<id>/` still work: scenes sharing one fps and size that place each other as scene layers, with qualified ids, `<project>/<scene>`. The viewer converts one into a project folder of its own on request.
 - Validate scenes on load and surface clear errors in the viewer.
 
 ## Rigs
@@ -190,9 +194,9 @@ Users can attach reference images to a prompt. References are **input to the age
 ## MCP server (the agent's API)
 
 `tools/mcp/server.ts`, over stdio, a shim that forwards to the studio server running on the folder, or starts a headless one (ADR 0008). The repo's `.mcp.json` registers it for Claude Code, and the app ships it as `frame-studio-mcp`. Setup and the full tool reference are in `docs/MCP.md`. Keep inputs and outputs simple JSON. Tools:
-- `list_scenes()`, `get_scene(id)`, `update_scene(id, patch)`: JSON merge patch, validated before saving. Project scenes take qualified ids, `<project>/<scene>`
-- `list_projects()`, `get_project(id)`, `update_project(id, patch)`: projects, and validated merge patches to `project.json`, which wait while another thread in the project works (ADR 0007)
-- `create_scene(id, project?, fps?, size?, duration)`, `create_project(id, name, fps, size, duration)`: an empty scene (paper, no layers), loose or in a project, and a project with an empty main scene. The viewer's sidebar makes the same through the studio server
+- `list_scenes()`, `get_scene(id)`, `update_scene(id, patch)`: scenes and compositions, and JSON merge patches validated before saving, along with every composition that places the file. Old films' scenes take qualified ids, `<project>/<scene>`
+- `get_project(id?)`, `update_project(id?, patch)`: the folder's `project.json` with no id, an old film's with one (which waits while another thread in the film works); `list_projects()`: the old films
+- `create_scene(id, fps?, size?, duration)`, `create_composition(id, fps?, size?, duration)`: an empty scene (paper, no layers) and an empty composition (one track), in `project.json`'s format by default. The viewer's sidebar makes the same through the studio server
 - `list_rigs()`: each rig's param schema, parts, and variants, with `project` on a project's own rig
 - `list_generators()`: each audio generator's param schema
 - `list_media()`, `import_media(path)`: the sound files in `media/` with their lengths, and copying one in (ADR 0012)
@@ -207,7 +211,7 @@ Users can attach reference images to a prompt. References are **input to the age
 
 An AI inside the studio that works request threads like a chat in T3 Code (`docs/adr/0006-requests-are-threads.md`).
 - It runs locally in the studio server. Providers launch the user's own signed-in CLI: `claude` through Anthropic's Agent SDK (dev-only package, pointed at the installed binary) and `codex app-server`. Never offer a login screen, never read or store the user's tokens, and never call it Claude Code. A missing or signed-out CLI shows the command to run.
-- Its tools are the studio operations the MCP server offers. By default it may also write in `scenes/`, `rigs/`, `audio/`, projects' `rigs/`, and in the repo `src/rigs/` and `src/audio/`; anything else asks first through an approval card, unless the thread is in full access.
+- Its tools are the studio operations the MCP server offers. By default it may also write in `scenes/`, `compositions/`, `rigs/`, `audio/`, `project.json`, old films' `rigs/`, and in the repo `src/rigs/` and `src/audio/`; anything else asks first through an approval card, unless the thread is in full access.
 - One working thread per scene. Each agent turn gets a checkpoint, and only the user settles a thread.
 - An agent asks the user to choose through a question card (ADR 0011): Claude's `AskUserQuestion` and Codex's `request_user_input` both become the same card, and the turn waits for the answers, as it does for an approval.
 - Only the studio server the viewer uses runs agents: the app's, or `npm run dev`'s. Headless servers (the CLI's, the MCP shim's, the tests') run with agents off, so a render or an MCP session never claims a thread. The server strips `ELECTRON_RUN_AS_NODE` from every agent CLI it starts, and the app reads PATH from the login shell so a Finder launch finds `claude` and `codex`. The scripted test agent appears with `FRAME_STUDIO_FAKE_AGENT=1`.

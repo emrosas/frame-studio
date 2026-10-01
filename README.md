@@ -50,8 +50,9 @@ The app checks GitHub Releases 10 seconds after it starts and every 4 hours afte
 Each project is a folder of its own, and the switcher at the top left of the window moves between them. The first launch offers New project, which asks for a name and a place (`~/Frame Studio Projects` by default), Open project, and the sample project. A project folder holds everything it uses:
 
 ```
-scenes/       its scenes, one JSON file each
-projects/     films made of shots, whose scenes share a size and frame rate (compositions replace these soon)
+project.json  its name, the format new pieces start with, and its cast of characters
+scenes/       its scenes, one JSON file each: what draws
+compositions/ its compositions: scenes and other compositions arranged on tracks
 rigs/         its own rigs
 audio/        its own sound generators
 media/        its sound files: voiceover, music
@@ -59,13 +60,17 @@ references/   reference images for the agent, never exported
 out/          renders and exports
 ```
 
-The sample project has two pieces: `hello` is a bouncing ball, and `bears-story` is a 12-second film cut from three shots.
+A scene draws one shot. A composition arranges scenes, and other compositions, as clips on tracks: cuts, crossfades, masks such as an iris, and sound across the cuts. Compositions nest as deep as you like, so a trailer can place the film that places the shots.
 
-The window has three columns. The sidebar lists the project's scenes, films, sound files and request threads. The middle has the canvas and the timeline. Space plays, the arrow keys step one frame, and the keyboard button in the top bar lists the other shortcuts. The agent panel is on the right.
+The sample project is Bears' story: `film` is a 12-second composition cut from three scene shots, and `hello` is a bouncing ball.
+
+The window has three columns. The sidebar lists the project's compositions, scenes, sound files and request threads. Selecting a scene shows which compositions use it. The middle has the canvas and the timeline. Space plays, the arrow keys step one frame, and the keyboard button in the top bar lists the other shortcuts. The agent panel is on the right.
 
 An agent keeps working in a project after you switch to another. The switcher shows each project's threads that are working, waiting on your input, or your turn, and a dot on it says when another project needs a look.
 
-To start something new, click the + next to Scenes in the sidebar. Give it a name, a size, a frame rate and a length. The new scene opens empty, with a new thread ready, so you describe what should be in it and the agent draws it.
+To start something new, click the + next to Scenes or Compositions in the sidebar. Give it a name, a size, a frame rate and a length. It opens empty, with a new thread ready, so you describe what should be in it and the agent draws or arranges it.
+
+A folder from an earlier version may have films in `projects/`, listed under Films. They still work. Convert to a project, in a film's group, makes it a project folder of its own with the film as a composition, and every frame looks the same.
 
 To ask for a change:
 
@@ -116,7 +121,7 @@ npm run dev        # the studio server on the repo; open the URL it prints
 npm run desktop    # the app, from source
 ```
 
-The repo is a studio folder itself. Its scenes are in `scenes/` and `projects/`, and the built-in rigs are in `src/rigs/`. Its `.mcp.json` registers the MCP server, so Claude Code started in the repo root offers to enable it.
+The repo is a project folder itself. Its scenes are in `scenes/`, the sample film is in `projects/bears-story/` in its pre-composition form, and the built-in rigs are in `src/rigs/`. Its `.mcp.json` registers the MCP server, so Claude Code started in the repo root offers to enable it.
 
 Render from the command line:
 
@@ -139,7 +144,7 @@ npm run test:browser                              # viewer, renders, exports, em
 
 ## Documentation
 
-- [docs/SCENES.md](docs/SCENES.md) has the scene format, the built-in rigs and generators, projects, how to write a rig or a generator, and rendering and export.
+- [docs/SCENES.md](docs/SCENES.md) has the scene and composition formats, the built-in rigs and generators, projects, how to write a rig or a generator, and rendering and export.
 - [docs/MCP.md](docs/MCP.md) has MCP setup, every tool, and how requests flow between the viewer and an agent.
 - [docs/ROADMAP.md](docs/ROADMAP.md) has the milestones, and [docs/PROGRESS.md](docs/PROGRESS.md) has what's done, what's next and the known issues.
 - [docs/adr/](docs/adr/) has the architecture decisions.

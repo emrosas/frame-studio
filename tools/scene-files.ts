@@ -23,14 +23,24 @@ export type LibraryModule = typeof library;
 export type SelectionModule = typeof selection;
 
 /**
- * A folder's scene files, keyed as the viewer keys them: "/scenes/<file>.json"
- * for loose scenes, and "/projects/<id>/<file>.json" for each project's
- * project.json and scenes.
+ * A folder's scene files, keyed as the viewer keys them: "/project.json" for
+ * the folder's own (ADR 0013), "/scenes/<file>.json" and
+ * "/compositions/<file>.json", and "/projects/<id>/<file>.json" for each M9
+ * project's project.json and scenes.
  */
-export async function readSceneFiles(folder: Pick<StudioFolder, 'scenes' | 'projects'>): Promise<Record<string, string>> {
+export async function readSceneFiles(folder: Pick<StudioFolder, 'scenes' | 'projects'> & Partial<Pick<StudioFolder, 'root' | 'compositions'>>): Promise<Record<string, string>> {
   const files: Record<string, string> = {};
+  if (folder.root) {
+    const project = await readFile(join(folder.root, 'project.json'), 'utf8').catch(() => null);
+    if (project !== null) files['/project.json'] = project;
+  }
   for (const f of (await readdir(folder.scenes).catch(() => [] as string[])).filter((name) => name.endsWith('.json')).sort()) {
     files[`/scenes/${f}`] = await readFile(join(folder.scenes, f), 'utf8');
+  }
+  if (folder.compositions) {
+    for (const f of (await readdir(folder.compositions).catch(() => [] as string[])).filter((name) => name.endsWith('.json')).sort()) {
+      files[`/compositions/${f}`] = await readFile(join(folder.compositions, f), 'utf8');
+    }
   }
   for (const project of await readdir(folder.projects, { withFileTypes: true }).catch(() => [])) {
     if (!project.isDirectory()) continue;
@@ -116,6 +126,8 @@ export async function libraryFrom(modules: LoadedModules, files: Record<string, 
     sceneGraphErrors: modules.engine.sceneGraphErrors,
     createProjectRegistry: modules.createProjectRegistry,
     rigs: await modules.projectRigs(),
+    validateComposition: modules.engine.validateComposition,
+    validateFolderProject: modules.engine.validateFolderProject as never,
   });
   return modules.errors.length > 0 ? { ...lib, errors: [...lib.errors, ...modules.errors.map((e) => `rig or generator code: ${e}`)] } : lib;
 }

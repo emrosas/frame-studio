@@ -512,6 +512,14 @@ kbd {
   font-size: 12px;
 }
 
+/* "Used in" under the scene on screen: the compositions that place it (ADR 0013). */
+.used-in {
+  margin: 0;
+  padding: 0 8px 4px 31px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 /* The + by a section's label, and New scene at the end of a project's scenes. */
 .side-label .side-add {
   margin-left: auto;

@@ -2,8 +2,9 @@
 // tsconfig.json that lets an agent type-check the folder's rigs against the
 // app's built-ins. Electron main process only.
 
-import { cp, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { cp, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { convertFilm } from '../tools/studio/convert.ts';
 
 /** Marks a tsconfig.json as ours, so the app updates it and leaves others alone. */
 const OURS = 'Written by Frame Studio: maps @frame-studio/ to the app’s built-in rigs, engine and audio. Frame Studio rewrites it when the app moves.';
@@ -22,17 +23,15 @@ async function isEmpty(dir: string): Promise<boolean> {
 }
 
 /**
- * Makes a studio folder at `dir` with the samples: the hello scene and the
- * bears-story project. A folder that already has things in it is opened as it
- * is, never overwritten.
+ * Makes the sample project at `dir` (ADR 0013): Bears' story, converted from
+ * the samples' projects/bears-story into a project folder with the film as a
+ * composition, plus the hello scene. A folder that already has things in it
+ * is opened as it is, never overwritten.
  */
 export async function createStudioFolder(dir: string, samples: string): Promise<void> {
   if (!(await isEmpty(dir))) return;
-  await mkdir(join(dir, 'scenes'), { recursive: true });
-  await mkdir(join(dir, 'rigs'), { recursive: true });
-  await mkdir(join(dir, 'audio'), { recursive: true });
+  await convertFilm(join(samples, 'projects/bears-story'), dir, samples);
   await cp(join(samples, 'scenes/hello.json'), join(dir, 'scenes/hello.json'));
-  await cp(join(samples, 'projects/bears-story'), join(dir, 'projects/bears-story'), { recursive: true });
 }
 
 /**

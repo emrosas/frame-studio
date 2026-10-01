@@ -59,7 +59,7 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
     await welcome.getByRole('button', { name: 'Open the sample project' }).click();
     const viewer = await viewerWindow(app);
     expect(await viewer.evaluate(() => (window as unknown as { studio: { errors: string[] } }).studio.errors)).toEqual([]);
-    await viewer.evaluate(() => (window as unknown as { studio: { selectScene(id: string): void } }).studio.selectScene('bears-story/film'));
+    await viewer.evaluate(() => (window as unknown as { studio: { selectScene(id: string): void } }).studio.selectScene('film'));
     expect(await viewer.evaluate(() => (window as unknown as { studio: { frameCount: number } }).studio.frameCount)).toBe(144);
   });
 
@@ -81,8 +81,8 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
     const client = await mcpClient();
     try {
       const scenes = JSON.parse(textOf((await client.callTool({ name: 'list_scenes', arguments: {} })) as CallToolResult)) as { id: string }[];
-      expect(scenes.map((s) => s.id)).toContain('bears-story/film');
-      const frame = (await client.callTool({ name: 'render_frame', arguments: { sceneId: 'bears-story/film', frame: 50, maxWidth: 320 } })) as CallToolResult;
+      expect(scenes.map((s) => s.id)).toContain('film');
+      const frame = (await client.callTool({ name: 'render_frame', arguments: { sceneId: 'film', frame: 50, maxWidth: 320 } })) as CallToolResult;
       expect(frame.isError).toBeFalsy();
       expect(frame.content.some((c) => c.type === 'image')).toBe(true);
     } finally {
@@ -97,8 +97,8 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
     try {
       const frame = (await client.callTool({ name: 'render_frame', arguments: { sceneId: 'hello', frame: 12, maxWidth: 320 } })) as CallToolResult;
       expect(frame.isError, textOf(frame)).toBeFalsy();
-      const html = (await client.callTool({ name: 'export', arguments: { sceneId: 'bears-story/film', target: 'html' } })) as CallToolResult;
-      expect(textOf(html)).toMatch(/out\/bears-story\/film\/film\.html/);
+      const html = (await client.callTool({ name: 'export', arguments: { sceneId: 'film', target: 'html' } })) as CallToolResult;
+      expect(textOf(html)).toMatch(/out\/film\/film\.html/);
     } finally {
       await client.close();
     }
