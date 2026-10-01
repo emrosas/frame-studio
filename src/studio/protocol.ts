@@ -89,6 +89,8 @@ export interface Turn {
   usage?: TurnUsage;
   /** 2 or more when asked again with Try again. */
   attempt?: number;
+  /** Set while the working turn waits on the user: a question card or an approval (ADR 0011). */
+  waitingSince?: string;
 }
 
 /**
@@ -307,11 +309,16 @@ export function normalizeRequest(raw: unknown): StudioRequest {
   };
 }
 
-export type DisplayStatus = ThreadStatus | 'stalled';
+/** stalled: an external agent's turn has worked too long. input: the working turn waits on the user. */
+export type DisplayStatus = ThreadStatus | 'stalled' | 'input';
 
-/** The status to show: an external agent's turn working longer than STALL_MS reads as stalled. */
+/**
+ * The status to show: a working turn that waits on a question card or an approval reads as input, and an
+ * external agent's turn working longer than STALL_MS as stalled.
+ */
 export function displayStatus(request: StudioRequest, now: number): DisplayStatus {
   const turn = currentTurn(request);
+  if (request.status === 'working' && turn.status === 'working' && turn.waitingSince) return 'input';
   if (request.status === 'working' && request.agent === 'external' && turn.claimedAt && now - Date.parse(turn.claimedAt) > STALL_MS) {
     return 'stalled';
   }

@@ -28,6 +28,7 @@
     working: 'Working',
     stalled: 'Stalled',
     your_turn: 'Your turn',
+    input: 'Input',
     settled: 'Settled',
     cancelled: 'Cancelled',
   };
@@ -58,7 +59,8 @@
   let creating = $state<NewWhat | null>(null);
 
   const threads = $derived([...ui.studio.requests].reverse());
-  const yours = $derived(ui.studio.requests.filter((r) => r.status === 'your_turn').length);
+  // Waiting for you: a turn to answer, or a question card or approval in a working turn.
+  const yours = $derived(ui.studio.requests.filter((r) => r.status === 'your_turn' || displayStatus(r, ui.studio.now) === 'input').length);
   const finished = $derived(ui.studio.requests.filter((r) => r.status === 'settled' || r.status === 'cancelled').length);
 
   const agentLabel = (r: StudioRequest) => ui.studio.agents.find((a) => a.id === r.agent)?.label ?? r.agent;

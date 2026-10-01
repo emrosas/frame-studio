@@ -164,6 +164,8 @@ interface Running {
   approvals: Map<string, (decision: ApprovalDecision) => void>;
   /** Open question cards, by id, with the questions they asked. */
   questions: Map<string, { questions: AgentQuestion[]; resolve: (answers: QuestionAnswers | null) => void }>;
+  /** Cards open on the user, so the thread shows as Input while any is. */
+  waits: number;
   stopping: boolean;
   /** Stopped because the studio server is closing, not by the user. */
   interrupted: boolean;
@@ -298,7 +300,7 @@ export class AgentRunner {
     const log = new TurnLog(queue.threadDir(thread.id), k, (e) => this.pushEvent(thread.id, k, e));
     await log.resume();
     const provider = this.providers.get(thread.agent)!;
-    const running: Running = { thread: thread.id, turn: k, handle: null, token: '', log, approvals: new Map(), questions: new Map(), stopping: false, interrupted: false, ended: false };
+    const running: Running = { thread: thread.id, turn: k, handle: null, token: '', log, approvals: new Map(), questions: new Map(), waits: 0, stopping: false, interrupted: false, ended: false };
     const hooks = this.toolHooks(thread, settings, running);
     running.token = this.options.endpoint.issue(hooks);
     this.running.set(thread.id, running);
@@ -431,23 +433,43 @@ export class AgentRunner {
       return verdict.reason;
     }
     const id = randomBytes(6).toString('hex');
-    const decision = await new Promise<ApprovalDecision>((resolve) => {
-      running.approvals.set(id, resolve);
-      running.log.append({ type: 'approval', id, kind: action.kind, summary: verdict.summary, ...(verdict.detail ? { detail: verdict.detail } : {}) });
-    });
+    const decision = await this.waitOnUser(
+      running,
+      new Promise<ApprovalDecision>((resolve) => {
+        running.approvals.set(id, resolve);
+        running.log.append({ type: 'approval', id, kind: action.kind, summary: verdict.summary, ...(verdict.detail ? { detail: verdict.detail } : {}) });
+      }),
+    );
     running.approvals.delete(id);
     running.log.append({ type: 'approval-resolved', id, decision });
     return decision === 'accept' ? null : `${verdict.summary} was declined.`;
+  }
+
+  /**
+   * Waits for `answer`, the user's response to a card, with the thread marked as waiting on the user
+   * (Input in the sidebar) while any card of the turn is open.
+   */
+  private async waitOnUser<T>(running: Running, answer: Promise<T>): Promise<T> {
+    const owner = { session: this.session, turn: running.turn };
+    if (running.waits++ === 0) await this.options.queue.setWaiting(running.thread, true, owner).catch(() => {});
+    try {
+      return await answer;
+    } finally {
+      if (--running.waits === 0 && !running.ended) await this.options.queue.setWaiting(running.thread, false, owner).catch(() => {});
+    }
   }
 
   /** Shows a question card and waits for the user (ADR 0011). Null once the turn is stopping. */
   private async ask(running: Running, questions: AgentQuestion[]): Promise<QuestionAnswers | null> {
     if (running.stopping || questions.length === 0) return null;
     const id = randomBytes(6).toString('hex');
-    const answers = await new Promise<QuestionAnswers | null>((resolve) => {
-      running.questions.set(id, { questions, resolve });
-      running.log.append({ type: 'questions', id, questions });
-    });
+    const answers = await this.waitOnUser(
+      running,
+      new Promise<QuestionAnswers | null>((resolve) => {
+        running.questions.set(id, { questions, resolve });
+        running.log.append({ type: 'questions', id, questions });
+      }),
+    );
     running.questions.delete(id);
     running.log.append({ type: 'questions-answered', id, answers });
     return answers;

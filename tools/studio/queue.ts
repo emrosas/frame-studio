@@ -433,7 +433,10 @@ export class StudioQueue {
     if ((owner.turn !== undefined && owner.turn !== k) || (owner.session !== undefined && thread.turns[k].claimedBy !== owner.session)) {
       throw new Error(`Request #${id} has moved on to another turn, so this one cannot be ${verb}.`);
     }
-    const { turn, thread: patch } = change(thread.turns[k], thread);
+    const { turn: changed, thread: patch } = change(thread.turns[k], thread);
+    // A turn that ends waits on no one.
+    const { waitingSince: _, ...ended } = changed;
+    const turn = changed.status === 'working' ? changed : ended;
     const turns = [...thread.turns];
     // A turn that ends having changed project.json says so, so its revert restores that too.
     turns[k] = turn.status !== 'working' && (await this.projectChanged(thread, k)) ? { ...turn, projectChanged: true } : turn;
@@ -463,6 +466,14 @@ export class StudioQueue {
       turn: { ...turn, status, completedAt: now(), ...(summary ? { summary: summary.trim() } : {}), ...(extra.usage ? { usage: extra.usage } : {}) },
       thread: { status: 'your_turn' },
     }));
+  }
+
+  /** Marks the working turn as waiting on the user, through a question card or an approval (ADR 0011), or as no longer waiting. */
+  setWaiting(id: number, waiting: boolean, owner: TurnOwner = {}): Promise<StudioRequest> {
+    return this.updateWorking(id, 'marked as waiting', owner, (turn) => {
+      const { waitingSince, ...rest } = turn;
+      return { turn: waiting ? { ...rest, waitingSince: waitingSince ?? now() } : rest };
+    });
   }
 
   /** Remembers the provider's session id, so the next turn resumes the same conversation. */

@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { NewRequest } from '../../src/studio/protocol';
+import { displayStatus, type NewRequest } from '../../src/studio/protocol';
 import { StudioQueue } from '../../tools/studio/queue';
 
 let dir: string;
@@ -80,6 +80,26 @@ describe('threads', () => {
     const done = await queue.complete(1, 'done', ' set pip sad over 24–48 ', { usage: { inputTokens: 900, outputTokens: 120 } });
     expect(done).toMatchObject({ status: 'your_turn', turns: [{ status: 'done', summary: 'set pip sad over 24–48', usage: { inputTokens: 900 } }] });
     await expect(queue.complete(1, 'done', 'again')).rejects.toThrow(/no turn working/);
+  });
+
+  it('marks a working turn as waiting on the user, shown as input, until it is answered or the turn ends (ADR 0011)', async () => {
+    await queue.create(ask('first'));
+    await queue.claimNext('agent-a');
+    const waiting = await queue.setWaiting(1, true, { session: 'agent-a', turn: 0 });
+    expect(waiting.turns[0].waitingSince).toBeDefined();
+    expect(displayStatus(waiting, Date.now())).toBe('input');
+    // A second card while one is open keeps the first time.
+    expect((await queue.setWaiting(1, true)).turns[0].waitingSince).toBe(waiting.turns[0].waitingSince);
+    const answered = await queue.setWaiting(1, false);
+    expect(answered.turns[0].waitingSince).toBeUndefined();
+    expect(displayStatus(answered, Date.now())).toBe('working');
+    await expect(queue.setWaiting(1, true, { session: 'agent-b' })).rejects.toThrow(/moved on/);
+
+    await queue.setWaiting(1, true);
+    const ended = await queue.complete(1, 'done', 'Done.');
+    expect(ended.turns[0].waitingSince).toBeUndefined();
+    expect(displayStatus(ended, Date.now())).toBe('your_turn');
+    await expect(queue.setWaiting(1, false)).rejects.toThrow(/no turn working/);
   });
 
   it('continues with a reply: a new pending turn, its own checkpoint, and settling closes it', async () => {

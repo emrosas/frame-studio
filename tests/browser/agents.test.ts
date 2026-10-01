@@ -248,6 +248,9 @@ describe('an agent in the studio', () => {
     await send('ask about the title');
     await expectText(card(), 'Which typeface for the title?');
     await expectText(card(), '1 of 2');
+    // While the card waits, the thread reads as Input, here and in the sidebar.
+    await expectText(threadStatus(), 'input');
+    await expectText(page.getByRole('navigation', { name: 'Studio' }).getByRole('article').first(), 'Input · Test agent');
     // The preview shows for the option with focus.
     await card().getByRole('radio', { name: /Fraunces/ }).focus();
     await expectText(card(), 'Aa Bb Cc');
@@ -259,6 +262,7 @@ describe('an agent in the studio', () => {
     await card().getByRole('button', { name: 'Send' }).click();
     await expectText(turn(1), 'You chose: Font Fraunces (Recommended); Extras A kicker + A date + A logo.');
     await expectText(turn(1), 'Set the title.');
+    await expectText(threadStatus(), 'your turn');
     expect(await card().count()).toBe(0);
     // The thread keeps what was asked and answered.
     await expectText(turn(1).getByRole('group', { name: 'Questions' }), 'A kicker, A date, A logo');

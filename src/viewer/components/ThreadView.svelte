@@ -33,6 +33,7 @@
     pending: 'waiting',
     working: 'working',
     your_turn: 'your turn',
+    input: 'input',
     settled: 'settled',
     cancelled: 'cancelled',
     stalled: 'stalled',
@@ -211,7 +212,7 @@
           </div>
 
           <footer class="turn-foot">
-            <span class="turn-status">{TURN_LABELS[turn.status]}</span>
+            <span class="turn-status">{turn.status === 'working' && turn.waitingSince ? 'waiting for you' : TURN_LABELS[turn.status]}</span>
             {#if transcript.usage}<span class="turn-usage">{describeUsage(transcript.usage)}</span>{/if}
             {#if turn.checkpointAt && canRevert(thread, k, ui.studio.requests)}
               <button type="button" class="btn is-ghost is-small" aria-label="Revert to before turn {k + 1}" title="Put the scene back as it was before this turn" onclick={() => run(() => actions.revert(thread.id, k))}>

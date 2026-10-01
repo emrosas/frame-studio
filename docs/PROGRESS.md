@@ -704,6 +704,7 @@ You liked T3 Code's question UI and wanted the agents to use it, so choices take
 - Codex needs `features.default_mode_request_user_input`, which the adapter sets; the tool is experimental in Codex.
 - The standing instructions tell agents to ask when a choice changes the result, and not otherwise.
 - When a card or an approval opens in a thread that isn't showing, a toast says "#N needs you" with the question, and Answer opens the thread.
+- A thread whose turn waits on a card or an approval reads as **Input**, as in T3 Code: a blue dot and "Input" in the sidebar, counted with the threads waiting for you, an "input" badge in the panel, and "waiting for you" on the turn. The runner keeps it in the request file (`waitingSince` on the working turn), so a reload or another viewer sees it too.
 - The scripted test agent has an `ask` step.
 
 How it was checked:
@@ -739,7 +740,6 @@ How it was checked:
 
 ## Known issues
 
-- The sidebar shows a thread whose turn waits on a question card or an approval as Working. A toast says so when it happens, with Answer, but once dismissed only opening the thread shows it.
 - Question cards work for agents the studio runs. An external agent over MCP asks in its own interface.
 
 - URL writes are throttled to one per 400 ms. During playback, or just after switching scenes, `location.search` trails what is on screen until the next write. A reload still lands on the right frame, because `pagehide` stores the frame in sessionStorage and the reloaded page reads it. `pagehide` also flushes the URL, which covers Back and Forward. A copied URL can still be a few frames behind.
