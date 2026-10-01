@@ -46,7 +46,7 @@ function generatorRegistry(generators: readonly AudioGenerator[]): GeneratorRegi
 
 export async function loadLibrary(): Promise<LoadedLibrary> {
   const [files, { modules }] = await Promise.all([
-    getJson<{ generation: number; files: Record<string, string> }>('/__studio/files'),
+    getJson<{ generation: number; files: Record<string, string>; media?: { file: string; bytes: number; modified: number }[] }>('/__studio/files'),
     getJson<{ modules: ModuleManifest }>('/__studio/modules'),
   ]);
   const errors: string[] = [];
@@ -81,5 +81,6 @@ export async function loadLibrary(): Promise<LoadedLibrary> {
     createProjectRegistry: (own) => createRegistry([...rigs, ...own]),
     rigs: projectRigs,
   });
-  return { library: errors.length > 0 ? { ...library, errors: [...library.errors, ...errors] } : library, generation: files.generation };
+  const withMedia = { ...library, media: files.media ?? [] };
+  return { library: errors.length > 0 ? { ...withMedia, errors: [...library.errors, ...errors] } : withMedia, generation: files.generation };
 }

@@ -8,7 +8,8 @@
 // slice it (M7). render.html?scene=<id> opens one scene as window.studio, for
 // looking at by hand.
 
-import { hasAudio, renderSceneAudio, SAMPLE_RATE, samplesPerFrame } from '../audio';
+import { hasAudio, mediaUsed, renderSceneAudio, SAMPLE_RATE, samplesPerFrame } from '../audio';
+import { MediaStore } from './media';
 import { formatTimecode, frameCount, hitTest, render, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
 import { createSurfaces } from '../embed/surfaces';
 import {
@@ -75,6 +76,9 @@ async function hex(data: BufferSource): Promise<string> {
   return [...digest].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Decoded sound files, kept across scene loads while the files don't change (ADR 0012). */
+const media = new MediaStore();
+
 /** The render API for scene `requested` in `library`, drawing on a canvas of its own that it adds to the page. */
 function boot(library: SceneLibrary, requested: string | null, host: RenderHost): RenderStudioApi {
   const hostSink = (sinkId: string) => host.sink(sinkId);
@@ -123,12 +127,18 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
   };
 
   let rendered: Promise<AudioBuffer> | null = null;
-  /** The whole scene's audio, rendered on first use. */
+  /** The whole scene's audio, rendered on first use, with its sound files (ADR 0012). An export never drops one quietly. */
   const sceneAudio = (): Promise<AudioBuffer> => {
     const { scene: s } = need();
-    if (!library.generators) throw new Error('The audio generators failed to load.');
+    const generators = library.generators;
+    if (!generators) throw new Error('The audio generators failed to load.');
     if (!rendered) {
-      const attempt = renderSceneAudio(s, library.generators, world);
+      const attempt = (async () => {
+        const loaded = await media.load(mediaUsed(s, world), library.media ?? []);
+        const problems = [...loaded.missing.map((f) => `${f} isn't in the studio folder's media/`), ...loaded.failed];
+        if (problems.length > 0) throw new Error(`The scene's sound files can't play: ${problems.join('; ')}.`);
+        return renderSceneAudio(s, generators, world, loaded.buffers);
+      })();
       rendered = attempt;
       // Don't keep a failure, so the next call tries again.
       attempt.catch(() => {
@@ -165,6 +175,18 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
         bytes.set(new Uint8Array(buffer.getChannelData(c).slice().buffer), c * buffer.length * 4);
       }
       return hex(bytes);
+    },
+    async audioSamples(from, to, channel = 0) {
+      if (!sound) return [];
+      const buffer = await sceneAudio();
+      return Array.from(buffer.getChannelData(Math.min(channel, buffer.numberOfChannels - 1)).subarray(from, to));
+    },
+    async audioPeak(from, to) {
+      if (!sound) return 0;
+      const buffer = await sceneAudio();
+      let peak = 0;
+      for (let c = 0; c < buffer.numberOfChannels; c++) for (const v of buffer.getChannelData(c).subarray(from, to)) peak = Math.max(peak, Math.abs(v));
+      return peak;
     },
     async audioFanIn() {
       const { scene: s } = need();

@@ -16,7 +16,7 @@ export { sceneLayers, resolveLayer, type ResolvedLayer } from './resolve';
 export { render, drawLayer, assertFrame, resetContextState } from './render';
 export { PASS_THROUGH, onlyParts } from './kit';
 export { hitTest, type HitCandidate, type HitResult, type HitTestOptions } from './hit-test';
-export { validateScene, type ProjectContext, type SchemaOwner, type ValidationResult } from './validate';
+export { isMediaPath, validateScene, type ProjectContext, type SchemaOwner, type ValidationResult } from './validate';
 export { sceneGraphErrors, validateProject, type ProjectFile, type ProjectValidation } from './project';
 export { CUE_PARAMS, cueVolume } from './cue';
 export {

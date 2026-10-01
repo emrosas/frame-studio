@@ -413,6 +413,28 @@ A cue's generator params hold for the whole cue, but its loudness can have keys.
 
 Volume ramps from one frame to the next wherever it changes, so a step in the keys comes out as a one-frame fade rather than a click. `volume` is the only param a cue track takes.
 
+### Sound files
+
+A cue can play a recorded sound file instead, such as a voiceover or music (ADR 0012). The file lives in the studio folder's `media/`, and the cue names it with `file` in place of `generator`:
+
+```json
+{ "id": "voice", "file": "media/voice-take-3.mp3", "start": 1.5, "end": 9, "in": 0.4, "fadeIn": 0.05, "fadeOut": 0.5 }
+```
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `file` | path | A file in `media/`: MP3, WAV, M4A, AAC, FLAC, Ogg or Opus. |
+| `start`, `end` | seconds | Where it plays in the scene, snapped to frames like every cue. Past the file's end it plays silence. |
+| `in` | seconds | Where in the file to start: a trim off its head. Any sample, so finer than a frame. Default 0. |
+| `fadeIn`, `fadeOut` | seconds | Linear fades from and to silence at the cue's ends. Default 0. |
+| `tracks` | | Volume keys, as above. |
+
+A file cue takes no `params`. The studio decodes the file at 48 kHz and copies its samples into the scene's sound, so it plays the same in the viewer, the MP4 and every render. A placed shot brings its file cues with it, shifted and trimmed with the shot.
+
+In the viewer, the Media list in the sidebar shows the folder's sound files with their lengths. Import by its **+** or by dropping files anywhere in the window, and **+** on a file places it at the playhead, to the end of the file or the scene. Cues show under the timeline, files with their waveform. A missing file is an error in the viewer, and its cue plays silence; an MP4 export with a missing file fails rather than drop it. Agents use `list_media` and `import_media`, and place cues with `update_scene`.
+
+The HTML export leaves sound files out, since they'd make it as big as its sound, and says which it left out. Tick **Include sound files** in the Export panel, or pass `--media` to `npm run export` or `media` to the MCP `export` tool, to inline them.
+
 ### pad
 
 An ambient chord that fades in and out, good under a whole scene. Two slightly detuned saw waves per note, through a soft lowpass.

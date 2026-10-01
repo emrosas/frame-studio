@@ -7,6 +7,7 @@
 <script lang="ts">
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
+  import SoundBand from './SoundBand.svelte';
 
   let { ui, actions }: { ui: ViewerUi; actions: ViewerActions } = $props();
 
@@ -67,7 +68,11 @@
   }
 </script>
 
-<div class="transport" class:has-shots={ui.shots !== null} style={ui.shots ? `--lanes: ${ui.shots.lanes}` : ''}>
+<div
+  class="transport"
+  class:has-shots={ui.shots !== null || ui.sounds !== null}
+  style="--lanes: {(ui.shots?.lanes ?? 0) + (ui.sounds?.lanes ?? 0)}; --shot-lanes: {ui.shots?.lanes ?? 0}"
+>
   <button
     type="button"
     class="play-button"
@@ -135,6 +140,13 @@
           >
             {band.label}
           </button>
+        {/each}
+      </div>
+    {/if}
+    {#if ui.sounds}
+      <div class="sounds" role="group" aria-label="Sounds">
+        {#each ui.sounds.bands as band (band.id)}
+          <SoundBand {band} {actions} ready={ui.sound?.status === 'ready' || ui.sound?.status === 'locked'} style={spanStyle(band.from, band.to, ui.sounds.frameCount, band.lane)} />
         {/each}
       </div>
     {/if}

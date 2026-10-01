@@ -34,12 +34,40 @@
     if (ui.studio.open !== null) untrack(() => (ui.layout.panel = true));
   });
 
+  // Sound files dropped anywhere but the composer (which takes reference images) import into media/ (ADR 0012).
+  const SOUND = /\.(mp3|wav|m4a|aac|flac|ogg|opus)$/i;
+  const sounds = (files: FileList | undefined | null) => [...(files ?? [])].filter((f) => f.type.startsWith('audio/') || SOUND.test(f.name));
+  let dropping = $state(false);
+  async function dropSounds(e: DragEvent): Promise<void> {
+    dropping = false;
+    if (e.defaultPrevented) return;
+    const files = sounds(e.dataTransfer?.files);
+    if (files.length === 0) return;
+    e.preventDefault();
+    ui.mediaNote = { text: `Importing ${files.length === 1 ? files[0].name : `${files.length} files`}…`, error: false };
+    const problem = await actions.importMedia(files);
+    ui.mediaNote = problem ? { text: problem, error: true } : { text: `Imported ${files.length === 1 ? files[0].name : `${files.length} files`}.`, error: false };
+    ui.layout.sidebar = true;
+  }
+
   const showPanel = () => (ui.layout.panel = true);
   const toggleSidebar = () => (ui.layout.sidebar = !ui.layout.sidebar);
   const togglePanel = () => (ui.layout.panel = !ui.layout.panel);
 </script>
 
-<main class="viewer" class:has-sidebar={ui.layout.sidebar} class:has-panel={ui.layout.panel}>
+<svelte:window
+  ondragover={(e) => {
+    if (e.defaultPrevented || ![...(e.dataTransfer?.types ?? [])].includes('Files')) return;
+    e.preventDefault();
+    dropping = true;
+  }}
+  ondragleave={(e) => {
+    if (e.relatedTarget === null) dropping = false;
+  }}
+  ondrop={dropSounds}
+/>
+
+<main class="viewer" class:has-sidebar={ui.layout.sidebar} class:has-panel={ui.layout.panel} class:is-dropping={dropping}>
   <!-- Both side columns stay mounted when hidden, so a draft, a scroll position or a folded project survives. -->
   <Sidebar {ui} {actions} hidden={!ui.layout.sidebar} onhide={toggleSidebar} onthread={showPanel} />
   <section class="main" aria-label="Canvas">

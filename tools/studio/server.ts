@@ -33,6 +33,7 @@ import {
   type TurnSettings,
 } from '../../src/studio/protocol.ts';
 import { buildEmbed } from '../bundle/embed.ts';
+import { listMedia, mediaInfo, saveMedia, serveMedia } from './media.ts';
 import { createSerial } from '../mcp/tools.ts';
 import type { Workspace } from '../mcp/workspace.ts';
 import { entryPath, loadModules, readSceneFiles, sceneLibrary, writeFileAtomic } from '../scene-files.ts';
@@ -232,7 +233,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   };
   const relevant = (base: string, file: string): 'files' | 'code' | null => {
     const rel = relative(base, file).split(sep).join('/');
-    if (/^scenes\/[^/]+\.json$/.test(rel) || /^projects\/[^/]+\/[^/]+\.json$/.test(rel)) return 'files';
+    if (/^scenes\/[^/]+\.json$/.test(rel) || /^projects\/[^/]+\/[^/]+\.json$/.test(rel) || /^media\//.test(rel)) return 'files';
     if (/\.ts$/.test(rel) && (/^(rigs|audio)\//.test(rel) || /^projects\/[^/]+\/rigs\//.test(rel))) return 'code';
     return null;
   };
@@ -282,15 +283,17 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   const exports = new Map<string, AbortController>();
   let exportCount = 0;
   const pad = (n: number) => String(n).padStart(5, '0');
-  async function runExport(id: string, input: { scene: string; target: 'mp4' | 'gif' | 'html'; from?: number; to?: number; silent?: boolean }, signal: AbortSignal) {
+  async function runExport(id: string, input: { scene: string; target: 'mp4' | 'gif' | 'html'; from?: number; to?: number; silent?: boolean; media?: boolean }, signal: AbortSignal) {
     const progress = (stage: string, done: number, total: number) => events.send(EXPORT_EVENT, { id, stage, done, total });
     if (input.target === 'html') {
       progress('bundling', 0, 1);
-      const embed = await buildEmbed(input.scene, { folder, code, silent: input.silent });
+      const embed = await buildEmbed(input.scene, { folder, code, silent: input.silent, media: input.media });
       if (signal.aborted) throw new Error('Cancelled.');
       const path = join(folder.out, embed.out, `${embed.scene.id}.html`);
       await writeFileAtomic(path, embed.html);
-      return { file: path, bytes: embed.bytes.total };
+      const left = embed.mediaLeftOut;
+      const note = left.length > 0 ? `Left out ${left.length === 1 ? 'the sound file' : `${left.length} sound files`}: ${left.join(', ')}. Tick Include sound files to carry them.` : undefined;
+      return { file: path, bytes: embed.bytes.total, ...(note ? { note } : {}) };
     }
     const info = (await pool.call(input.scene, 'info', [], {})) as { scene: { id: string; out: string; frameCount: number } | null; errors: string[] };
     if (!info.scene) throw new Error(info.errors.join('\n') || `Scene "${input.scene}" cannot render.`);
@@ -362,7 +365,19 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       res.write(`event: ${LIBRARY_EVENT}\ndata: ${JSON.stringify({ generation })}\n\n`);
       return;
     }
-    if (req.method === 'GET' && path === '/files') return send(res, 200, { generation, folder: folder.root, files: await readSceneFiles(folder) });
+    if (req.method === 'GET' && path === '/files') {
+      return send(res, 200, { generation, folder: folder.root, files: await readSceneFiles(folder), media: await listMedia(folder) });
+    }
+    // Sound files (ADR 0012): the list with lengths, a file's bytes, and uploads streamed to media/.
+    if (req.method === 'GET' && path === '/media') return send(res, 200, { media: await mediaInfo(folder) });
+    if (req.method === 'GET' && path.startsWith('/media/')) return serveMedia(folder, decodeURIComponent(path.slice(1)), res);
+    if (req.method === 'POST' && path === '/media') {
+      // A sound type or raw bytes, neither of which a form on another site can send without a preflight it fails.
+      const type = String(req.headers['content-type'] ?? '');
+      if (!type.startsWith('audio/') && !type.startsWith('application/octet-stream')) throw new HttpError(415, 'Send the sound file as audio/* or application/octet-stream.');
+      const saved = await saveMedia(folder, url.searchParams.get('name') ?? 'sound', req);
+      return send(res, 201, { file: saved });
+    }
     if (req.method === 'GET' && path === '/modules') return send(res, 200, { generation, modules: await modules.manifest() });
     if (req.method === 'GET' && url.pathname.startsWith(MODULES_PATH)) {
       return modules.serve(url.pathname.slice(MODULES_PATH.length), url.searchParams.get('h'), res);
@@ -430,7 +445,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
 
     // Exports from the viewer.
     if (req.method === 'POST' && path === '/export') {
-      const input = await json<{ scene?: unknown; target?: unknown; from?: unknown; to?: unknown; silent?: unknown }>(req);
+      const input = await json<{ scene?: unknown; target?: unknown; from?: unknown; to?: unknown; silent?: unknown; media?: unknown }>(req);
       if (typeof input.scene !== 'string') throw new HttpError(400, 'scene must be a scene id');
       if (input.target !== 'mp4' && input.target !== 'gif' && input.target !== 'html') throw new HttpError(400, 'target must be mp4, gif or html');
       const frame = (v: unknown, name: string) => {
@@ -438,7 +453,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         if (!Number.isInteger(v) || (v as number) < 0) throw new HttpError(400, `${name} must be a frame number`);
         return v as number;
       };
-      const job = { scene: input.scene, target: input.target as 'mp4' | 'gif' | 'html', from: frame(input.from, 'from'), to: frame(input.to, 'to'), silent: input.silent === true };
+      const job = { scene: input.scene, target: input.target as 'mp4' | 'gif' | 'html', from: frame(input.from, 'from'), to: frame(input.to, 'to'), silent: input.silent === true, media: input.media === true };
       if (job.target === 'html' && (job.from !== undefined || job.to !== undefined)) throw new HttpError(400, 'html exports the whole scene');
       const id = `export-${++exportCount}`;
       const abort = new AbortController();
@@ -460,6 +475,15 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       const problem = checkNewScene(input);
       if (problem) throw new HttpError(400, problem);
       return send(res, 201, await created(() => ws().then((w) => w.createScene(input))));
+    }
+    if (req.method === 'POST' && path === '/sounds') {
+      // Add at playhead: a cue playing a sound file, from the viewer's Media list (ADR 0012).
+      const input = await json<{ scene?: unknown; file?: unknown; start?: unknown }>(req);
+      if (typeof input?.scene !== 'string' || typeof input.file !== 'string' || typeof input.start !== 'number' || !Number.isFinite(input.start)) {
+        throw new HttpError(400, 'Send { scene, file, start }.');
+      }
+      const { scene, file, start } = input;
+      return send(res, 201, await created(() => ws().then((w) => w.placeSound(scene, file, start))));
     }
     if (req.method === 'POST' && path === '/projects') {
       const input = await json<NewProject>(req);

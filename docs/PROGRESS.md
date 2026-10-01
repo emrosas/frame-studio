@@ -727,6 +727,30 @@ T3 Code gets this from LegendList's `maintainScrollAtEnd`, a React list. The tec
 
 A browser test covers it: a turn of eight thumbnails ends at the bottom; during a long reply, scrolling up holds still while the agent keeps talking; the button brings it back, and it follows to the end.
 
+### M12: Sound files
+
+You wanted voiceover and music in your videos. ADR 0012 changes the founding rules for it: Frame Studio is a suite for videos and images from code that mixes in recorded media, with the picture still drawn in code. The roadmap now has M12 (sound files), M13 (the timeline as an editor) and M14 (stills).
+
+- **Cues play files.** `{ id, file: "media/voice.mp3", start, end, in?, fadeIn?, fadeOut?, tracks? }`. `in` trims the file's head to the sample; fades are linear, applied to the samples; volume keys work as on any cue. The validator takes a path in `media/` only and refuses params on a file and trims on a generator.
+- **One render.** The viewer, the render worker and the HTML player decode the files a scene plays at 48 kHz (`src/audio/media.ts`, `src/viewer/media.ts`) and pass them to `renderSceneAudio`, which cuts each into the scene's buffer as it cuts a placed shot's sound. A placed shot brings its files.
+- **The studio server keeps `media/`** (`tools/studio/media.ts`): it lists files with lengths from their headers (music-metadata, a dev dependency bundled into the server), serves them, takes uploads streamed to disk under a clean name (up to 1 GB, sound types only, which a form on another site can't send), and watches the folder. `/files` carries the list, so the viewer hears of changes as it does of scene edits.
+- **MCP:** `list_media`, `import_media` (agents in the studio ask first for a file outside the folder), and `media` on `export`. `update_scene` refuses a cue naming a file that isn't there.
+- **The viewer:** a Media list in the sidebar with lengths, **+** to import by picker, drop anywhere to import, **+** on a file to place it at the playhead (refused while an agent works on the scene). Sound cues show in lanes under the shots, files with their waveform. A missing file shows in the error panel and plays silence.
+- **Exports:** MP4 carries the files, and fails rather than drop a missing one. HTML leaves them out and says which, or inlines them with **Include sound files**, `--media` or `media` (up to 200 MB).
+
+How each acceptance criterion was verified, in `tests/browser/media.test.ts` with 16-bit WAVs written by the test, so decoding is exact:
+
+1. Samples from the render worker: silence before `start` and after `end`, the fade in at 0 on its first sample, half at 0.05 s and full at 0.1 s, the trim skipping the file's 0.25 head, the fade out sample for sample, a mono file on both channels, volume keys halving it, and the same hash after reloading.
+2. A shot playing the file inside a film, shifted to the shot's start and cut at its end.
+3. The viewer imports by picker and by a drop on the canvas, and Add at the playhead writes `{ id, file, start: 0.5, end: 2 }` at frame 12, which validates; the band and its waveform appear.
+4. The HTML export without media leaves the cue out and lists the file; with media it carries the file and its player renders the sound.
+5. A missing file: the render worker refuses to render the sound, and the viewer shows the error.
+6. `docs/SCENES.md` "Sound files" and `docs/MCP.md`.
+
+Also: the studio server's upload, list and serve routes, the clean names and numbering, the refused types, and a path outside `media/` answered with 404. Unit tests for the validator.
+
+While testing, another project's Playwright install had removed this repo's headless Chromium from the shared cache (`~/Library/Caches/ms-playwright`), and reinstalling it removed that project's. Each project reinstalls its own when it next runs, with `npx playwright install`.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -741,8 +765,9 @@ A browser test covers it: a turn of eight thumbnails ends at the bottom; during 
 4. Try a project: open `?scene=bears-story/film` in the viewer, double-click a shot, and export the film from the Export panel.
 5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
 6. **Try 0.2.1.** [v0.2.1](https://github.com/emrosas/frame-studio/releases/tag/v0.2.1) adds question cards, the Input status and the thread sticking to the bottom, on top of 0.2.0's type. Update from Check for Updates…, ask Claude or Codex for something with a real choice in it, and see the card.
-7. **Next for type:** typefaces of your own in a studio folder, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer), then the stills work from the feasibility talk: PNG and JPEG export, a Still option in New scene, and social size presets.
-8. The roadmap has no M12 yet. Candidates from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, the timeline editor, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
+7. **M13, the timeline as an editor** (ADR 0012): tracks for shots and sound, move, trim, split, duplicate, fades, transition presets, undo, and a lock while an agent works. Then M14, stills.
+8. **Next for type:** typefaces of your own in a studio folder, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer), which fits with M14.
+9. Other candidates, from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 
 ## Open questions
 

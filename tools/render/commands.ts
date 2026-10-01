@@ -6,6 +6,7 @@
 //   npm run contact-sheet -- --scene bear-test --every 6
 //
 // MP4 and HTML exports carry the scene's audio unless --silent; GIFs never do.
+// HTML leaves sound files out unless --media inlines them (ADR 0012).
 // Frames and range ends take a frame number or an MM:SS:FF timecode. Files go
 // to out/<scene>/ in the studio folder unless --out says otherwise. The
 // written path is printed on stdout; progress goes to stderr.
@@ -26,7 +27,7 @@ import { openStudio, writeViaSink, type Studio } from './studio.ts';
 const USAGE = `Usage:
   node tools/render/cli.ts frame --scene <id> --frame <n|MM:SS:FF> [--out file.png]
   node tools/render/cli.ts export --scene <id> --target mp4|gif [--from <n|tc>] [--to <n|tc>] [--silent] [--out file]
-  node tools/render/cli.ts export --scene <id> --target html [--silent] [--out file.html]
+  node tools/render/cli.ts export --scene <id> --target html [--silent] [--media] [--out file.html]
   node tools/render/cli.ts contact-sheet --scene <id> [--from <n|tc>] [--to <n|tc>] [--every <n>] [--columns <n>] [--out file.png]
 Every command takes --folder <studio folder>, the current folder by default.`;
 
@@ -44,6 +45,7 @@ const { values } = parseArgs({
     out: { type: 'string' },
     folder: { type: 'string' },
     silent: { type: 'boolean' },
+    media: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
   },
 });
@@ -75,6 +77,7 @@ if (command === 'export' && target === 'html') {
   const extra = ['from', 'to', 'every', 'columns'].filter((name) => values[name as keyof typeof values] !== undefined);
   if (extra.length > 0) fail(`--target html exports the whole scene; drop ${extra.map((name) => `--${name}`).join(', ')}`);
 }
+if (values.media && (command !== 'export' || target !== 'html')) fail('--media applies to html exports; mp4 always carries sound files');
 if (values.silent && (command !== 'export' || target === 'gif')) fail(`--silent applies to mp4 and html exports; ${target === 'gif' ? 'GIFs are always silent' : `${command} makes no sound`}`);
 const every = positiveInt('every', values.every);
 const columns = positiveInt('columns', values.columns);
@@ -135,11 +138,13 @@ async function run(studio: Studio): Promise<void> {
 /** The HTML embed is bundled in Node; it needs no browser. */
 async function exportHtml(sceneKey: string): Promise<void> {
   const { CodeHost } = await import('../studio/code.ts');
-  const embed = await buildEmbed(sceneKey, { folder, code: new CodeHost(folder), silent: values.silent });
+  const embed = await buildEmbed(sceneKey, { folder, code: new CodeHost(folder), silent: values.silent, media: values.media });
   const path = outPath(`out/${embed.out}/${embed.scene.id}.html`);
   await writeFileAtomic(path, embed.html);
   const sound = embed.generators.length > 0 ? ` and generators ${embed.generators.join(', ')}` : '';
   process.stderr.write(`${embed.scene.id} html: ${(embed.bytes.total / 1024).toFixed(1)} KB with rigs ${embed.rigs.join(', ')}${sound}\n`);
+  if (embed.media.length > 0) process.stderr.write(`  with sound files ${embed.media.join(', ')}\n`);
+  if (embed.mediaLeftOut.length > 0) process.stderr.write(`  left out sound files ${embed.mediaLeftOut.join(', ')}; --media inlines them\n`);
   process.stdout.write(`${shown(path)}\n`);
 }
 

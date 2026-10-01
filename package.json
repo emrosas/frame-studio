@@ -31,6 +31,7 @@
     "electron-builder": "^26.15.3",
     "es-module-lexer": "^2.3.2",
     "fontkit": "^2.0.4",
+    "music-metadata": "^11.16.1",
     "playwright": "1.63.0",
     "rolldown": "^1.2.9",
     "svelte": "5.57.1",

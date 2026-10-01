@@ -68,6 +68,10 @@ export interface RenderStudioApi {
   renderFrame(frame: number): number;
   /** SHA-256, as hex, of the scene's rendered audio (float32 samples, channel after channel). Null for a silent scene. */
   audioHash(): Promise<string | null>;
+  /** Samples [from, to) of one channel of the scene's rendered audio, for tests. Empty for a silent scene. Keep ranges short. */
+  audioSamples(from: number, to: number, channel?: number): Promise<number[]>;
+  /** The loudest sample, as an absolute value, in [from, to) across every channel. 0 for a silent scene. For tests. */
+  audioPeak(from: number, to: number): Promise<number>;
   /**
    * Renders the scene's audio again, counting connections into each node input, and returns the most any
    * input got. Two at most keeps renders identical (ticket 04). For tests.

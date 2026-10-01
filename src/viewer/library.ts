@@ -67,6 +67,8 @@ export interface SceneLibrary {
   generators: GeneratorRegistry | null;
   /** Problems that affect every scene (e.g. the rig registry failed to build). */
   errors: readonly string[];
+  /** The studio folder's sound files (ADR 0012), when the library came from a studio server. */
+  media?: readonly { file: string; bytes: number; modified: number }[];
 }
 
 function message(err: unknown): string {

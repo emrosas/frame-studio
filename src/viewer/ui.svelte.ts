@@ -46,6 +46,27 @@ export interface SceneHeader {
   empty: boolean;
 }
 
+/** A sound file in the studio folder, for the Media list (ADR 0012). */
+export interface MediaItem {
+  file: string;
+  /** The file's name without media/. */
+  name: string;
+  /** Seconds, when its header says. */
+  duration?: number;
+}
+
+/** A sound cue of the scene on screen, on the timeline under the shots (ADR 0012). */
+export interface SoundBand {
+  id: string;
+  /** The file's name, or the generator's id. */
+  label: string;
+  from: number;
+  to: number;
+  lane: number;
+  /** For a sound file: the file, and the seconds of it the cue plays, for its waveform. */
+  file?: { path: string; from: number; to: number };
+}
+
 /** A shot on the scrubber: a scene layer's span in the scene on screen (ADR 0007). */
 export interface ShotBand {
   layerId: string;
@@ -85,7 +106,7 @@ export interface ExportState {
   /** The export running now, with its progress. */
   running: { id: string; stage: string; done: number; total: number } | null;
   /** How the last export ended. */
-  result: { file: string } | { error: string } | null;
+  result: { file: string; note?: string } | { error: string } | null;
   /** True in the app, where the finished file can be shown in Finder. */
   canReveal: boolean;
 }
@@ -113,6 +134,12 @@ export interface ViewerActions {
   scrub(frame: number): void;
   scrubEnd(): void;
   selectScene(key: string): void;
+  /** Uploads sound files into media/ (ADR 0012). Returns an error message, or null. */
+  importMedia(files: File[]): Promise<string | null>;
+  /** Places a sound file at the playhead of the scene on screen. Returns an error message, or null. */
+  placeSound(file: string): Promise<string | null>;
+  /** The loudest sample in each of `buckets` slices of seconds [from, to) of a file the scene plays, for its waveform. */
+  waveform(file: string, from: number, to: number, buckets: number): Promise<Float32Array | null>;
   /** Creates an empty scene and shows it. Returns an error message, or null. */
   createScene(input: NewScene): Promise<string | null>;
   /** Creates a project with an empty main scene and shows that scene. Returns an error message, or null. */
@@ -126,7 +153,7 @@ export interface ViewerActions {
   /** Shows or hides the Export panel. */
   toggleExport(open?: boolean): void;
   /** Exports the scene on screen, or only the selected range. */
-  startExport(target: 'mp4' | 'gif' | 'html', options: { range: boolean; sound: boolean }): Promise<string | null>;
+  startExport(target: 'mp4' | 'gif' | 'html', options: { range: boolean; sound: boolean; media?: boolean }): Promise<string | null>;
   cancelExport(): void;
   /** Shows the last export's file in Finder (the app only). */
   revealExport(): void;
@@ -218,6 +245,14 @@ export class ViewerUi {
   sound = $state<SoundState | null>(null);
   scenes = $state<SceneOption[]>([]);
   projects = $state<ProjectOption[]>([]);
+  /** The studio folder's sound files (ADR 0012). */
+  media = $state<MediaItem[]>([]);
+  /** What the last import or Add at playhead did, for the Media list. */
+  mediaNote = $state<{ text: string; error: boolean } | null>(null);
+  /** The scene on screen plays sound files, so the HTML export can offer to carry them. */
+  usesMedia = $state(false);
+  /** The scene's sound cues on the timeline, or null without any. */
+  sounds = $state<{ bands: SoundBand[]; lanes: number; frameCount: number } | null>(null);
   selectedScene = $state<string | null>(null);
   /** The scene on screen, for the header. */
   header = $state<SceneHeader | null>(null);

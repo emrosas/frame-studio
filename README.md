@@ -8,6 +8,8 @@ Frame Studio is early. The app runs on Apple Silicon Macs only, and it isn't sig
 
 JavaScript draws every frame onto an HTML canvas. A scene has no images, video or fonts in it, and its sound is synthesized too. The scene itself is a JSON file of layers, keyframes and sound cues. Characters and objects are rigs, TypeScript functions that draw a thing from its params, such as a bear's pose, expression and position.
 
+Sound is synthesized from code, and recorded sound files such as voiceover and music mix in where a piece needs them. Drop them into the app and place them on the timeline.
+
 Type is drawn in code too. Seven open-licensed typefaces (Inter, Instrument Serif, Fraunces, JetBrains Mono) are compiled into glyph outlines, and the studio does its own kerning, wrapping and alignment, so text looks the same in every export and on every machine.
 
 In Rive or Lottie, a person draws the artwork in an editor and a runtime plays it back. In Frame Studio the drawing code is the artwork, and an agent writes most of it. Through an MCP server on your machine, the agent can render any frame to look at its work, find which layer is under a pixel, edit scenes and rigs, and export.

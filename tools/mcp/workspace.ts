@@ -21,6 +21,7 @@ import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
 import { checkNewProject, checkNewScene, NEW_PROJECT_MAIN, projectOf, type NewProject, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
+import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
 import type { StudioQueue } from '../studio/queue.ts';
 
 /** What the workspace works with: the studio server's folder, code, render worker and queue. */
@@ -162,6 +163,7 @@ export class Workspace {
    * project and every scene that places it, however deep. Throws with every problem.
    */
   private async checkEdit(modules: LoadedModules, entry: SceneEntry, scene: unknown, action: string): Promise<void> {
+    await this.checkMedia(scene, action);
     if (entry.project !== null) {
       const broken = await this.projectBreaks(modules, (await this.library()).lib, entry.project, entry.path, scene);
       if (broken.length > 0) throw new Error(`${action} would break scenes in the project, so nothing was saved:\n${broken.join('\n')}`);
@@ -169,6 +171,57 @@ export class Workspace {
     }
     const result = modules.validate(scene, entry.registry ?? modules.createRegistry(), entry.context ?? undefined);
     if (!result.ok) throw new Error(`${action} would make the scene invalid, so nothing was saved:\n${result.errors.join('\n')}`);
+  }
+
+  /** Refuses a scene whose sound file cues name files that aren't in media/ (ADR 0012). */
+  private async checkMedia(scene: unknown, action: string): Promise<void> {
+    const cues = (scene as { audio?: unknown } | null)?.audio;
+    if (!Array.isArray(cues)) return;
+    const files = cues.flatMap((c) => (typeof (c as { file?: unknown })?.file === 'string' ? [(c as { file: string }).file] : []));
+    if (files.length === 0) return;
+    const have = new Set((await mediaInfo(this.folder)).map((m) => m.file));
+    const missing = [...new Set(files.filter((f) => !have.has(f)))];
+    if (missing.length > 0) {
+      throw new Error(`${action} plays ${missing.join(', ')}, which ${missing.length === 1 ? "isn't" : "aren't"} in media/, so nothing was saved. list_media shows the files; import_media copies one in.`);
+    }
+  }
+
+  /**
+   * Adds a cue that plays sound file `file` in scene `key` from `start` seconds, snapped to its frame, to the
+   * end of the file or the scene, whichever is first (ADR 0012). Refused while an agent works on the scene.
+   */
+  async placeSound(key: string, file: string, start: number): Promise<{ file: string; cue: Record<string, unknown> }> {
+    const { modules, entry } = await this.entry(key);
+    const working = (await this.queue.list()).find((r) => r.status === 'working' && r.sceneId === entry.key);
+    if (working) throw new Error(`Request #${working.id} is working on this scene; place the sound when its turn ends.`);
+    const info = (await mediaInfo(this.folder)).find((m) => m.file === file);
+    if (!info) throw new Error(`No sound file "${file}" in media/.`);
+    const path = entryPath(entry, this.folder);
+    const raw = JSON.parse(await readFile(path, 'utf8')) as { fps: number; duration: number; audio?: { id: string }[] };
+    const frame = Math.min(Math.max(0, Math.floor(start * raw.fps)), Math.max(0, modules.engine.frameCount(raw as Scene) - 1));
+    const from = frame / raw.fps;
+    const end = Math.min(raw.duration, info.duration !== undefined ? from + info.duration : raw.duration);
+    const taken = new Set((raw.audio ?? []).map((c) => c.id));
+    const stem = file.slice(file.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'sound';
+    let id = stem;
+    for (let n = 2; taken.has(id); n++) id = `${stem}-${n}`;
+    const cue = { id, file, start: Math.round(from * 1e6) / 1e6, end: Math.round(end * 1e6) / 1e6 };
+    const next = { ...raw, audio: [...(raw.audio ?? []), cue] };
+    await this.checkEdit(modules, entry, next, 'Placing the sound');
+    await this.writeScene(path, next, modules);
+    return { file: this.show(path), cue };
+  }
+
+  /** The studio folder's sound files, with their lengths (ADR 0012). */
+  listMedia(): Promise<MediaInfo[]> {
+    return mediaInfo(this.folder);
+  }
+
+  /** Copies a sound file from disk into media/, and returns it with its length. */
+  async importMedia(source: string): Promise<MediaInfo> {
+    const file = await importMedia(this.folder, source);
+    this.ctx.touch();
+    return (await mediaInfo(this.folder)).find((m) => m.file === file) ?? { file, bytes: 0, modified: 0 };
   }
 
   /** The render page on `key`, whose pixels depend on `files`, freshly loaded if anything changed since it last loaded. */
@@ -530,15 +583,15 @@ export class Workspace {
   async export(
     key: string,
     target: ExportTarget,
-    options: { from?: FrameInput; to?: FrameInput; silent?: boolean } = {},
-  ): Promise<{ file: string } & Partial<RenderExportResult> & { bytes?: number; rigs?: string[]; generators?: string[] }> {
+    options: { from?: FrameInput; to?: FrameInput; silent?: boolean; media?: boolean } = {},
+  ): Promise<{ file: string } & Partial<RenderExportResult> & { bytes?: number; rigs?: string[]; generators?: string[]; mediaLeftOut?: string[] }> {
     const { scene, files } = await this.validScene(key);
     if (target === 'html') {
       if (options.from !== undefined || options.to !== undefined) throw new Error('html exports the whole scene; leave out from and to');
-      const embed = await buildEmbed(key, { folder: this.folder, code: this.ctx.code, silent: options.silent });
+      const embed = await buildEmbed(key, { folder: this.folder, code: this.ctx.code, silent: options.silent, media: options.media });
       const path = join(this.folder.out, embed.out, `${scene.id}.html`);
       await writeFileAtomic(path, embed.html);
-      return { file: this.show(path), bytes: embed.bytes.total, rigs: embed.rigs, generators: embed.generators };
+      return { file: this.show(path), bytes: embed.bytes.total, rigs: embed.rigs, generators: embed.generators, ...(embed.mediaLeftOut.length > 0 ? { mediaLeftOut: embed.mediaLeftOut } : {}) };
     }
     if (target === 'gif' && options.silent !== undefined) throw new Error('gif is always silent; leave out silent');
     const studio = await this.page(key, files);

@@ -203,7 +203,7 @@ const BACKGROUND_FIELDS = LAYER_FIELDS.filter((f) => f !== 'id');
 const TRACK_FIELDS = ['param', 'keys'];
 const KEY_FIELDS = ['t', 'v', 'ease'];
 const OVERRIDE_FIELDS = ['from', 'to', 'rig', 'params'];
-const AUDIO_FIELDS = ['id', 'generator', 'start', 'end', 'params', 'tracks'];
+const AUDIO_FIELDS = ['id', 'generator', 'file', 'start', 'end', 'in', 'fadeIn', 'fadeOut', 'params', 'tracks'];
 /** Misspellings too far from the right name for the edit-distance hint. */
 const FIELD_ALIASES: Readonly<Record<string, string>> = { easing: 'ease' };
 
@@ -685,7 +685,20 @@ function checkAudio(env: Env, audio: unknown): void {
     } else {
       seen.set(cue.id, i);
     }
-    if (!isNonEmptyString(cue.generator)) err(`${p}.generator`, `must be a non-empty string (a generator id), got ${show(cue.generator)}`);
+    const isFile = cue.file !== undefined;
+    if (isFile && cue.generator !== undefined) {
+      err(p, 'has both "generator" and "file"; a cue plays a generator\'s sound or a sound file, not both');
+    } else if (isFile) {
+      if (!isMediaPath(cue.file)) err(`${p}.file`, `must be a sound file in the studio folder's media/, like "media/voice.mp3", got ${show(cue.file)}`);
+      if (cue.params !== undefined) err(`${p}.params`, 'a sound file takes no params; use tracks on volume for its loudness');
+      for (const key of ['in', 'fadeIn', 'fadeOut'] as const) {
+        const v = cue[key];
+        if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0)) err(`${p}.${key}`, `must be 0 or more seconds, got ${show(v)}`);
+      }
+    } else {
+      if (!isNonEmptyString(cue.generator)) err(`${p}.generator`, `must be a non-empty string (a generator id), or give "file" for a sound file, got ${show(cue.generator)}`);
+      for (const key of ['in', 'fadeIn', 'fadeOut'] as const) if (cue[key] !== undefined) err(`${p}.${key}`, `only a sound file cue (with "file") takes ${key}`);
+    }
     const startOk = typeof cue.start === 'number' && Number.isFinite(cue.start);
     const endOk = typeof cue.end === 'number' && Number.isFinite(cue.end);
     if (!startOk) err(`${p}.start`, `must be a finite number of seconds, got ${show(cue.start)}`);
@@ -698,15 +711,21 @@ function checkAudio(env: Env, audio: unknown): void {
       err(`${p}.end`, `must be within the scene duration (${env.duration} s), got ${cue.end}`);
     }
     let generator: SchemaOwner | undefined;
-    if (env.generators && isNonEmptyString(cue.generator)) {
+    if (!isFile && env.generators && isNonEmptyString(cue.generator)) {
       generator = env.generators.get(cue.generator);
       if (!generator) err(`${p}.generator`, `unknown generator "${cue.generator}"; known generators: ${env.generatorNames}`);
     }
-    checkParams(env, cue.params, `${p}.params`, generator, 'generator');
+    if (!isFile) checkParams(env, cue.params, `${p}.params`, generator, 'generator');
     checkTracks(env, cue.tracks, `${p}.tracks`, CUE_OWNER);
   });
   // Audio renders at 48 kHz, and a frame has to start on a whole sample for audio and video to line up (ticket 04).
   if (audio.length > 0 && env.fps !== undefined && 48000 % env.fps !== 0) {
     err('fps', `must divide 48000 when the scene has audio, so every frame starts on a whole sample; use 12, 24, 25, 30, 48 or 60, got ${env.fps}`);
   }
+}
+
+/** A path the validator accepts for a sound file: inside media/, relative, with no "..", "." or empty segments, nor backslashes (ADR 0012). */
+export function isMediaPath(value: unknown): value is string {
+  if (typeof value !== 'string' || !value.startsWith('media/') || value.length > 300 || value.includes('\\')) return false;
+  return value.split('/').every((part) => part !== '' && part !== '.' && part !== '..');
 }

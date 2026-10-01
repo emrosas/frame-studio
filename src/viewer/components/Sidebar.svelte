@@ -58,6 +58,23 @@
 
   let creating = $state<NewWhat | null>(null);
 
+  // Sound files (ADR 0012): import by picker, list, and place at the playhead.
+  let picker = $state<HTMLInputElement | null>(null);
+  // "4.5s" under a minute, "2:05" from there.
+  const minutes = (s: number) => (s < 60 ? `${Math.round(s * 10) / 10}s` : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`);
+  async function importPicked(files: FileList | null): Promise<void> {
+    const list = [...(files ?? [])];
+    if (picker) picker.value = '';
+    if (list.length === 0) return;
+    ui.mediaNote = { text: `Importing ${list.length === 1 ? list[0].name : `${list.length} files`}…`, error: false };
+    const problem = await actions.importMedia(list);
+    ui.mediaNote = problem ? { text: problem, error: true } : { text: `Imported ${list.length === 1 ? list[0].name : `${list.length} files`}.`, error: false };
+  }
+  async function place(file: string): Promise<void> {
+    const problem = await actions.placeSound(file);
+    ui.mediaNote = problem ? { text: problem, error: true } : null;
+  }
+
   const threads = $derived([...ui.studio.requests].reverse());
   // Waiting for you: a turn to answer, or a question card or approval in a working turn.
   const yours = $derived(ui.studio.requests.filter((r) => r.status === 'your_turn' || displayStatus(r, ui.studio.now) === 'input').length);
@@ -190,6 +207,49 @@
                   </li>
                 </ul>
               {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+
+    <section class="side-section" aria-label="Media">
+      <div class="side-label">
+        Media
+        <button type="button" class="icon-btn is-small side-add" aria-label="Import sound files" title="Import sound files (or drop them anywhere)" onclick={() => picker?.click()}>
+          <Icon name="plus" size={14} />
+        </button>
+        <input
+          bind:this={picker}
+          type="file"
+          accept="audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus"
+          multiple
+          hidden
+          onchange={(e) => importPicked(e.currentTarget.files)}
+        />
+      </div>
+      {#if ui.mediaNote}<p class="side-empty panel-note" class:is-error={ui.mediaNote.error} role="status">{ui.mediaNote.text}</p>{/if}
+      {#if ui.media.length === 0}
+        <p class="side-empty">No sound files yet. Drop voiceover or music anywhere, or use +.</p>
+      {:else}
+        <ul class="side-list">
+          {#each ui.media as item (item.file)}
+            <li class="media-item">
+              <span class="side-item is-static" title={item.file}>
+                <Icon name="volume" size={15} />
+                <span class="name">{item.name}</span>
+                {#if item.duration !== undefined}<span class="media-length">{minutes(item.duration)}</span>{/if}
+              </span>
+              <button
+                type="button"
+                class="icon-btn is-small media-place"
+                aria-label="Add {item.name} at the playhead"
+                title="Add at the playhead"
+                disabled={ui.selection.sceneId === null}
+                onclick={() => place(item.file)}
+              >
+                <Icon name="plus" size={13} />
+              </button>
             </li>
           {/each}
         </ul>

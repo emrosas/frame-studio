@@ -32,12 +32,14 @@ export interface ExportInput {
   from?: number;
   to?: number;
   silent?: boolean;
+  /** For HTML: inline the sound files its cues play (ADR 0012). */
+  media?: boolean;
 }
 
 /** An export's progress, or its end: the file written, or why it failed. */
 export type ExportEvent =
   | { id: string; stage: string; done: number; total: number }
-  | { id: string; done: true; file: string }
+  | { id: string; done: true; file: string; note?: string }
   | { id: string; error: string };
 
 /** A turn's event as pushed: which thread and turn it belongs to. */
@@ -85,6 +87,22 @@ export class StudioClient {
 
   async create(request: NewRequest): Promise<StudioRequest> {
     return (await call<{ request: StudioRequest }>('/requests', jsonBody(request))).request;
+  }
+
+  /** The studio folder's sound files with their lengths (ADR 0012). */
+  async mediaList(): Promise<{ file: string; bytes: number; duration?: number }[]> {
+    return (await call<{ media: { file: string; bytes: number; duration?: number }[] }>('/media')).media;
+  }
+
+  /** Uploads a sound file into media/; returns its path for cues. */
+  async uploadMedia(file: File): Promise<string> {
+    const type = file.type.startsWith('audio/') ? file.type : 'application/octet-stream';
+    return (await call<{ file: string }>(`/media?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': type }, body: file })).file;
+  }
+
+  /** Adds a cue that plays a sound file in a scene, from `start` seconds. */
+  async placeSound(scene: string, file: string, start: number): Promise<void> {
+    await call('/sounds', jsonBody({ scene, file, start }));
   }
 
   /** Creates an empty scene; returns its id as the library keys it. */

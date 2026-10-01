@@ -14,7 +14,7 @@
 // needs no Vite (ADR 0008); it reads the built-ins and the folder's rigs from
 // disk. Node only; runs as TypeScript through Node's type stripping.
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join, relative, sep } from 'node:path';
 import { rolldown, type Plugin } from 'rolldown';
 import { parseAst } from 'rolldown/parseAst';
@@ -37,6 +37,10 @@ export interface EmbedBuild {
   rigs: string[];
   /** Audio generator ids bundled, sorted. Empty for a silent scene or a silent export. */
   generators: string[];
+  /** Sound files inlined (ADR 0012), sorted. */
+  media: string[];
+  /** Sound files the scene plays that the export left out, sorted: all of them unless asked to inline them. */
+  mediaLeftOut: string[];
   bytes: {
     /** The whole HTML file. */
     total: number;
@@ -58,7 +62,12 @@ export interface EmbedBuildOptions {
   measureRuntime?: boolean;
   /** Leave the scene's audio out. */
   silent?: boolean;
+  /** Inline the sound files its cues play, as base64 (ADR 0012). Without it, file cues are left out. */
+  media?: boolean;
 }
+
+/** Most sound file bytes an export inlines. Past it, the export refuses and says why. */
+const MAX_INLINE_MEDIA = 200 * 1024 * 1024;
 
 const ENTRY = 'virtual:frame-studio-embed';
 
@@ -257,7 +266,18 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
   const problems = [...lib.errors, ...entry.errors, ...(project?.errors ?? []).map((e) => `${project!.file}: ${e}`)];
   if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors, so it cannot be exported:\n${problems.join('\n')}`);
   // A silent export drops the cues, the placed scenes' too, so the embed carries no audio code at all.
-  const quiet = (s: Scene): Scene => (options.silent ? { ...s, audio: undefined } : s);
+  // Without media, the sound files' cues go too (ADR 0012), and the build says which files it left out.
+  const leftOut = new Set<string>();
+  const quiet = (s: Scene): Scene => {
+    if (options.silent) return { ...s, audio: undefined };
+    if (options.media) return s;
+    const kept = (s.audio ?? []).filter((cue) => {
+      if (typeof cue.file !== 'string') return true;
+      leftOut.add(cue.file);
+      return false;
+    });
+    return s.audio ? { ...s, audio: kept.length > 0 ? kept : undefined } : s;
+  };
   const scene = quiet(entry.scene);
   const placed = new Map([...placedScenes(entry.scene, entry.world)].map(([id, s]) => [id, quiet(s)] as const));
   const world: World = { scenes: placed, cast: entry.world.cast };
@@ -267,7 +287,19 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
   const where = project ? `the built-in rigs, rigs/ or projects/${project.id}/rigs/` : 'the built-in rigs or rigs/';
   const missing = ids.filter((id) => !rigFiles.has(id));
   if (missing.length > 0) throw new Error(`No module in ${where} exports rig ${missing.map((m) => `"${m}"`).join(', ')} by name.`);
-  const generatorIds = [...new Set([scene, ...placed.values()].flatMap((s) => (s.audio ?? []).map((cue) => cue.generator)))].sort();
+  const cues = [scene, ...placed.values()].flatMap((s) => s.audio ?? []);
+  const generatorIds = [...new Set(cues.flatMap((cue) => (typeof cue.generator === 'string' && cue.file === undefined ? [cue.generator] : [])))].sort();
+  const mediaFiles = [...new Set(cues.flatMap((cue) => (typeof cue.file === 'string' ? [cue.file] : [])))].sort();
+  const inlined: Record<string, string> = {};
+  let mediaBytes = 0;
+  for (const file of mediaFiles) {
+    const path = join(folder.root, file);
+    const info = await stat(path).catch(() => null);
+    if (!info) throw new Error(`${entry.file} plays ${file}, which isn't in the studio folder.`);
+    mediaBytes += info.size;
+    if (mediaBytes > MAX_INLINE_MEDIA) throw new Error(`The sound files come to over ${MAX_INLINE_MEDIA / 1024 / 1024} MB, too much to inline; export without them, or as MP4.`);
+    inlined[file] = (await readFile(path)).toString('base64');
+  }
   const generatorFiles = modules.generatorDefinitions;
   const missingGenerators = generatorIds.filter((id) => !generatorFiles.has(id));
   if (missingGenerators.length > 0) {
@@ -279,12 +311,13 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
     ...ids.map((id, i) => `import { ${rigFiles.get(id)!.name} as rig${i} } from ${importPath(rigFiles.get(id)!.file)};`),
     ...generatorIds.map((id, i) => `import { ${generatorFiles.get(id)!.name} as gen${i} } from ${importPath(generatorFiles.get(id)!.file)};`),
   ];
-  const sound = generatorIds.length > 0 ? `embedSound([${generatorIds.map((_, i) => `gen${i}`).join(', ')}])` : 'undefined';
+  const hasSound = generatorIds.length > 0 || mediaFiles.length > 0;
+  const sound = hasSound ? `embedSound([${generatorIds.map((_, i) => `gen${i}`).join(', ')}]${mediaFiles.length > 0 ? `, ${sceneLiteral(inlined)}` : ''})` : 'undefined';
   const cast = Object.fromEntries(Object.entries(entry.world.cast ?? {}).filter(([name]) => usesCast(name, [scene, ...placed.values()])));
   const bundled = project ? { scenes: Object.fromEntries([...placed].sort(([a], [b]) => a.localeCompare(b))), cast } : null;
   const code = [
     `import { mountEmbed, optionsFromQuery } from ${importPath(player)};`,
-    ...(generatorIds.length > 0 ? [`import { embedSound } from ${importPath(join(folder.builtins, 'embed/sound.ts'))};`] : []),
+    ...(hasSound ? [`import { embedSound } from ${importPath(join(folder.builtins, 'embed/sound.ts'))};`] : []),
     ...imports,
     `const scene = ${sceneLiteral(scene)};`,
     `window.studio = mountEmbed(document.getElementById('frame-studio'), scene, [${ids.map((_, i) => `rig${i}`).join(', ')}], optionsFromQuery(location.search), ${sound}${bundled ? `, ${sceneLiteral(bundled)}` : ''});`,
@@ -307,6 +340,8 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
     scenes: [...placed.keys()].sort(),
     rigs: ids,
     generators: generatorIds,
+    media: mediaFiles,
+    mediaLeftOut: [...leftOut].sort(),
     bytes: { total: Buffer.byteLength(html), script: Buffer.byteLength(script), runtime },
   };
 }

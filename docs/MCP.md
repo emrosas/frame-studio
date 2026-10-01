@@ -45,12 +45,14 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `get_project(id)` | The project's `project.json` exactly as it is in its file. |
 | `update_project(id, patch)` | A merge patch to `project.json`, such as a cast change. The result must be a valid project, and every scene in the project must stay valid under it. It changes every scene in the project, so it waits while another request in the project is working, for up to about 50 s, and then refuses. Because every scene must match the project's `fps` and `size`, changing either means editing `project.json` and every scene file by hand. |
 | `create_project(id, name, fps, size, duration)` | A new project: `projects/<id>/project.json` with its name, fps and size, and an empty main scene, `<id>/main`, `duration` seconds long. A taken id is refused. |
+| `list_media()` | The sound files in `media/` (ADR 0012), each with its path for a cue, size and, from its header, duration in seconds, channels and sample rate. A cue plays one with `{ "id", "file", "start", "end", "in"?, "fadeIn"?, "fadeOut"?, "tracks"? }`; `docs/SCENES.md`, "Sound files". |
+| `import_media(path)` | Copies a sound file from a path on this computer into `media/`, named after it and numbered if taken, and returns its path and duration. Agents in the studio ask first for a file outside the studio folder. |
 | `list_generators()` | Each audio generator's param schema, for the scene's `audio` cues. |
 | `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` (`out/<project>/<scene>/` in a project) and returns a preview up to `maxWidth` wide (1280 by default). |
 | `render_contact_sheet(sceneId, from?, to?, every?, columns?)` | A labelled grid of every Nth frame, returned as an image and written to `out/<scene>/`. |
 | `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. On a shot a scene places, it names the scene layer; hit-test the shot itself to find what's inside. |
 | `apply_to_selection(selection, patch)` | A scoped edit. Over `[from, to)` of one layer, it swaps to a rig variant and/or holds params, written as overrides. |
-| `export(sceneId, target, from?, to?, silent?)` | `mp4`, `gif` or `html`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. Returns the file path under `out/`. |
+| `export(sceneId, target, from?, to?, silent?, media?)` | `mp4`, `gif` or `html`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. HTML leaves sound files out, and lists them in `mediaLeftOut`, unless `media` is true. Returns the file path under `out/`. |
 | `next_request()` | Claims the oldest request waiting for an external agent and returns the whole thread, with instructions for this turn. |
 | `get_request(id)` | A request by id, as in a pasted line, with its thread. A turn that is still waiting gets claimed, so its checkpoint is taken. |
 | `complete_request(id, status, summary)` | Ends your turn as `done` or `failed`, with a one-line summary the viewer shows. The thread stays open for the user to reply or settle. |

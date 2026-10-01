@@ -1,6 +1,6 @@
 # Frame Studio (working name)
 
-An open-source tool for making storytelling and explainer animations drawn entirely in code. Every frame is rendered procedurally onto an HTML canvas by JavaScript. There are no image, video, or font assets, and sound is procedural too. A coding agent (via MCP, on the user's own machine) is a first-class operator: it can seek to any frame, see rendered frames, edit scenes and rigs, and export.
+An open-source suite for making videos and images from code: storytelling and explainer animations, and still graphics. Every frame is drawn procedurally onto an HTML canvas by JavaScript; there are no image, video or font assets in the picture. Sound is procedural, mixed with recorded sound files (voiceover, music) where a piece needs them (ADR 0012). A coding agent (via MCP, on the user's own machine) is a first-class operator: it can seek to any frame, see rendered frames, edit scenes and rigs, and export.
 
 Inspiration: Kevin Ngo's pieces (kengoworks.com, @kevin_t_ngo): single HTML files with a canvas, computing each frame procedurally, with no embedded media.
 
@@ -20,7 +20,9 @@ Do not add a dependency on Remotion, Rive, Lottie, GSAP, or any animation librar
 One scene, three outputs:
 1. **MP4**: frame-exact render at the scene fps, with audio.
 2. **GIF**: the same frames, palette-quantized.
-3. **Single-file HTML embed**: engine + only the rigs the scene uses + scene data (+ audio generators), inlined into one file. No external requests, no dependencies, droppable into any website.
+3. **Single-file HTML embed**: engine + only the rigs the scene uses + scene data (+ audio generators), inlined into one file. No external requests, no dependencies, droppable into any website. Sound files stay out unless the export is asked to inline them (ADR 0012).
+
+Stills (PNG, JPG) are planned (M14).
 
 The embed is the differentiator. Protect it with the runtime budget below.
 
@@ -38,7 +40,7 @@ The whole system rests on one rule: **the image at frame N is a pure function of
 - `src/engine`, `src/rigs`, `src/audio` and `src/embed` have **zero third-party runtime dependencies**. Validation libraries (zod or similar), Playwright, ffmpeg, and the MCP SDK are tooling only and must never be imported from the runtime path.
 - Runtime TypeScript is **erasable**: no enums, namespaces or constructor parameter properties, since the studio server strips types with Node's own stripping instead of a bundler (ADR 0008). `npm run typecheck` enforces it. Rigs and generators outside `src/` (a studio folder's `rigs/` and `audio/`, a project's `rigs/`) import the built-ins as `@frame-studio/rigs/...`, `@frame-studio/engine/...` and `@frame-studio/audio/...`; inside `src/`, imports stay relative.
 - The embed player (`src/embed/player.ts`) is the one runtime file allowed to read the wall clock, to pick the frame to show during playback. render() never sees time.
-- No fonts, images, or base64 blobs. Text is drawn as vector paths from typeface modules: the `text` rig, or `drawText` in `src/rigs/type/layout.ts` (ADR 0010). `npm run typeface` turns an open-licensed font into such a module. Rigs never call `fillText`, `strokeText` or `measureText`, or set `ctx.font`; a test enforces it.
+- No fonts, images, or base64 blobs in rigs or the picture. The one exception: an HTML export asked to carry a scene's sound files inlines them (ADR 0012); by default it leaves them out. Text is drawn as vector paths from typeface modules: the `text` rig, or `drawText` in `src/rigs/type/layout.ts` (ADR 0010). `npm run typeface` turns an open-licensed font into such a module. Rigs never call `fillText`, `strokeText` or `measureText`, or set `ctx.font`; a test enforces it.
 - Target: engine under ~50 KB minified. Drawing code is expected to be the bulk of a file's size, and that's fine.
 
 ## Time model
@@ -98,7 +100,7 @@ Rules:
 - The canvas renders at the scene's fixed resolution and is scaled with CSS for display. Handle devicePixelRatio for preview only; exports are always native resolution.
 - UI is regular HTML/CSS positioned over the canvas, never drawn into it.
 - The studio ships as a web app and as an Electron app from one viewer (`docs/adr/0001-web-and-electron-targets.md`, ADR 0008). `src/viewer` uses web platform APIs only. Anything that needs the machine goes through the studio server, which serves the viewer, and the app's preload adds only native features (`src/viewer/desktop.ts`).
-- The app and the tools work on a **studio folder** (ADR 0008): `scenes/`, `projects/`, `rigs/`, `audio/`, `references/`, `out/`, `.frame-studio/`. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
+- The app and the tools work on a **studio folder** (ADR 0008): `scenes/`, `projects/`, `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
 - The viewer stays plain TypeScript until M6, then its UI moves to Svelte 5 with Vite, not SvelteKit (`docs/adr/0002-svelte-from-m6.md`). The runtime never imports Svelte.
 
 ## Scene format (JSON)
@@ -168,6 +170,7 @@ Users can attach reference images to a prompt. References are **input to the age
 ## Audio
 
 - Audio generators schedule Web Audio nodes for a time range, seeded like visuals (`src/audio`, ADR 0005). Authoring guide: `docs/SCENES.md`, "Writing a generator".
+- A cue can play a sound file from the studio folder's `media/` instead (ADR 0012): `{ id, file, start, end, in?, fadeIn?, fadeOut?, tracks? }`. The hosts decode the files and hand them to the renderer, which copies their samples into the scene's one buffer.
 - Audio renders at 48 kHz, and a scene with audio needs an fps that divides 48000, so every frame starts on a whole sample. Cue times snap to frames.
 - A cue's loudness can have keys (`tracks` on `volume`). A scene layer brings its shot's sound, rendered on its own and cut in sample for sample, shifted and trimmed, through the layer's `volume` and `mute` (ADR 0007).
 - No input may receive more than two connections: Chromium sums three or more in an order that changes run to run. Sum with `mix()`.
@@ -191,11 +194,12 @@ Users can attach reference images to a prompt. References are **input to the age
 - `create_scene(id, project?, fps?, size?, duration)`, `create_project(id, name, fps, size, duration)`: an empty scene (paper, no layers), loose or in a project, and a project with an empty main scene. The viewer's sidebar makes the same through the studio server
 - `list_rigs()`: each rig's param schema, parts, and variants, with `project` on a project's own rig
 - `list_generators()`: each audio generator's param schema
+- `list_media()`, `import_media(path)`: the sound files in `media/` with their lengths, and copying one in (ADR 0012)
 - `render_frame(sceneId, frame | timecode)`: returns a PNG so the agent can see its work
 - `render_contact_sheet(sceneId, from, to, every)`: a grid of frames for reviewing motion
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
 - `apply_to_selection(selection, patch)`: writes a scoped override for the selection
-- `export(sceneId, target, from?, to?, silent?)`: `mp4` | `gif` | `html`, returns an output path
+- `export(sceneId, target, from?, to?, silent?, media?)`: `mp4` | `gif` | `html`, returns an output path; `media` inlines sound files in HTML
 - `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request threads and current selection (ADR 0003, ADR 0006). `complete_request` ends a turn; the user replies or settles. Plus the `/frame-studio:next` prompt and the `selection://current` resource
 
 ## Integrated AI (M8)

@@ -4,6 +4,7 @@ import { MAX_SCENE_DEPTH, sceneLayerSpan, scenePlacement } from '../engine/scene
 import { timeToFrame } from '../engine/time';
 import type { AudioCue, Layer, Scene, World } from '../engine/types';
 import { readParams } from '../rigs/parts/params';
+import { cutFile, isFileCue, type MediaBuffers } from './media';
 import { mix } from './mix';
 import { cueTimes, paramTime, SAMPLE_RATE, samplesPerFrame, sceneSamples, sourceTime } from './timing';
 import type { AudioGenerator, GeneratorRegistry } from './types';
@@ -45,8 +46,9 @@ function automate(param: AudioParam, from: number, to: number, fps: number, valu
   }
 }
 
-function cueOut(ctx: BaseAudioContext, scene: Pick<Scene, 'fps' | 'seed'>, cue: AudioCue, generators: GeneratorRegistry): AudioNode {
-  const generator = generators.get(cue.generator);
+function cueOut(ctx: BaseAudioContext, scene: Pick<Scene, 'fps' | 'seed'>, cue: AudioCue, generators: GeneratorRegistry, media: MediaBuffers): AudioNode | null {
+  if (isFileCue(cue)) return fileOut(ctx, scene, cue, media);
+  const generator = generators.get(cue.generator ?? '');
   if (!generator) throw new Error(`audio cue "${cue.id}" uses unknown generator "${cue.generator}"`);
   const out = new GainNode(ctx, { gain: 1 });
   const params = readParams(generator.params, cue.params ?? {});
@@ -57,6 +59,31 @@ function cueOut(ctx: BaseAudioContext, scene: Pick<Scene, 'fps' | 'seed'>, cue: 
     automate(out.gain, first, first + (times.endSample - times.startSample) / samplesPerFrame(scene.fps), scene.fps, (f) => cueVolume(cue, scene.fps, f));
   }
   return out;
+}
+
+/**
+ * A sound file's cue (ADR 0012): the file's samples from `in`, cut to the cue's frames and faded, through a
+ * gain that follows its volume keys. Null when the host has no such file, which plays as silence; the viewer
+ * reports the missing file.
+ */
+function fileOut(ctx: BaseAudioContext, scene: Pick<Scene, 'fps'>, cue: AudioCue & { file: string }, media: MediaBuffers): AudioNode | null {
+  const buffer = media.get(cue.file);
+  if (!buffer) return null;
+  if (buffer.sampleRate !== SAMPLE_RATE) throw new Error(`sound file "${cue.file}" was decoded at ${buffer.sampleRate} Hz, not ${SAMPLE_RATE}`);
+  const times = cueTimes(cue, scene.fps);
+  const length = times.endSample - times.startSample;
+  const channels = cutFile(buffer, cue, length);
+  const clip = ctx.createBuffer(channels.length, length, SAMPLE_RATE);
+  channels.forEach((samples, c) => clip.getChannelData(c).set(samples));
+  const source = new AudioBufferSourceNode(ctx, { buffer: clip });
+  const gain = new GainNode(ctx, { gain: 1 });
+  source.connect(gain);
+  if (cue.tracks?.length) {
+    const first = timeToFrame(cue.start, scene.fps);
+    automate(gain.gain, first, first + length / samplesPerFrame(scene.fps), scene.fps, (f) => cueVolume(cue, scene.fps, f));
+  }
+  source.start(times.start);
+  return gain;
 }
 
 /**
@@ -106,8 +133,9 @@ export function scheduleScene(
   generators: GeneratorRegistry,
   dest: AudioNode,
   shots: ReadonlyMap<string, ShotAudio> = new Map(),
+  media: MediaBuffers = new Map(),
 ): void {
-  const outs = (scene.audio ?? []).map((cue) => cueOut(ctx, scene, cue, generators));
+  const outs = (scene.audio ?? []).flatMap((cue) => cueOut(ctx, scene, cue, generators, media) ?? []);
   for (const layer of scene.layers) {
     const shot = layer.scene !== undefined ? shots.get(layer.scene) : undefined;
     const out = shot ? shotOut(ctx, scene, layer, shot.scene, shot.buffer) : null;
@@ -123,21 +151,28 @@ export function scheduleScene(
  * and their buffers are cut into this one. Async, so a generator that throws
  * while scheduling rejects the promise instead of throwing at the caller.
  */
-export function renderSceneAudio(scene: Scene, generators: GeneratorRegistry, world: World = {}): Promise<AudioBuffer> {
-  return renderAt(scene, generators, world, 0, new Map());
+export function renderSceneAudio(scene: Scene, generators: GeneratorRegistry, world: World = {}, media: MediaBuffers = new Map()): Promise<AudioBuffer> {
+  return renderAt(scene, generators, world, media, 0, new Map());
 }
 
-async function renderAt(scene: Scene, generators: GeneratorRegistry, world: World, depth: number, rendered: Map<string, Promise<AudioBuffer>>): Promise<AudioBuffer> {
+async function renderAt(
+  scene: Scene,
+  generators: GeneratorRegistry,
+  world: World,
+  media: MediaBuffers,
+  depth: number,
+  rendered: Map<string, Promise<AudioBuffer>>,
+): Promise<AudioBuffer> {
   const shots = new Map<string, ShotAudio>();
   for (const { layer, shot } of placedShots(scene, world)) {
     if (shots.has(layer.scene!) || !hasAudio(shot, world)) continue;
     if (depth >= MAX_SCENE_DEPTH) throw new Error(`scene "${scene.id}" places scenes more than ${MAX_SCENE_DEPTH} deep`);
     let buffer = rendered.get(layer.scene!);
-    if (!buffer) rendered.set(layer.scene!, (buffer = renderAt(shot, generators, world, depth + 1, rendered)));
+    if (!buffer) rendered.set(layer.scene!, (buffer = renderAt(shot, generators, world, media, depth + 1, rendered)));
     shots.set(layer.scene!, { scene: shot, buffer: await buffer });
   }
   const ctx = new OfflineAudioContext({ numberOfChannels: AUDIO_CHANNELS, length: sceneSamples(scene), sampleRate: SAMPLE_RATE });
-  scheduleScene(ctx, scene, generators, ctx.destination, shots);
+  scheduleScene(ctx, scene, generators, ctx.destination, shots, media);
   return ctx.startRendering();
 }
 
@@ -160,14 +195,14 @@ export function audioKey(scene: Scene, world: World = {}, depth = 0): string {
  * library reload.
  */
 export function generatorsUsed(scene: AudioScene, generators: GeneratorRegistry, world: World = {}, depth = 0): (AudioGenerator | undefined)[] {
-  const own = (scene.audio ?? []).map((cue) => generators.get(cue.generator));
+  const own = (scene.audio ?? []).filter((cue) => !isFileCue(cue)).map((cue) => generators.get(cue.generator ?? ''));
   if (depth >= MAX_SCENE_DEPTH) return own;
   return [...own, ...placedShots(scene, world).flatMap(({ shot }) => generatorsUsed(shot, generators, world, depth + 1))];
 }
 
 /** Ids of the generators the scene's sound needs, its placed scenes' included, sorted: what an embed bundles. */
 export function generatorIdsUsed(scene: AudioScene, world: World = {}, depth = 0): string[] {
-  const ids = new Set((scene.audio ?? []).map((cue) => cue.generator));
+  const ids = new Set((scene.audio ?? []).flatMap((cue) => (isFileCue(cue) || cue.generator === undefined ? [] : [cue.generator])));
   if (depth < MAX_SCENE_DEPTH) for (const { shot } of placedShots(scene, world)) for (const id of generatorIdsUsed(shot, world, depth + 1)) ids.add(id);
   return [...ids].sort();
 }

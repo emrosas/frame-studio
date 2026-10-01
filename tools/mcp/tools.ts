@@ -217,6 +217,28 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
   );
 
   server.registerTool(
+    'list_media',
+    {
+      title: 'List sound files',
+      description:
+        'The sound files in the studio folder\'s media/ (voiceover, music), each with its path for a cue, size and, from its header, duration in seconds, channels and sample rate. A cue plays one with { "id", "file": "media/voice.mp3", "start", "end", "in"?, "fadeIn"?, "fadeOut"?, "tracks"? } in the scene\'s audio: from start to end in scene seconds, starting "in" seconds into the file, with fades in seconds and volume keys.',
+      annotations: { readOnlyHint: true },
+    },
+    tool('list_media', async (w) => text(await w.listMedia())),
+  );
+
+  server.registerTool(
+    'import_media',
+    {
+      title: 'Import a sound file',
+      description:
+        "Copies a sound file (MP3, WAV, M4A, AAC, FLAC, Ogg, Opus) from a path on this computer into the studio folder's media/, named after it and numbered if the name is taken, and returns its path for cues and its duration. Use it when the user points you at a file; never import anything they didn't ask for.",
+      inputSchema: { path: z.string().describe('Absolute path to the sound file') },
+    },
+    tool('import_media', async (w, { path }: { path: string }) => text(await w.importMedia(path))),
+  );
+
+  server.registerTool(
     'render_frame',
     {
       title: 'Render a frame',
@@ -308,21 +330,22 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'Export',
       description:
-        "Exports a scene. mp4 is H.264 at the scene fps, gif loops, and html is a single self-contained file that draws the scene live with no network requests. mp4 and html carry the scene's audio unless silent is true; gif is always silent. mp4 and gif take an optional [from, to) range; html is always the whole scene. Returns the output path.",
+        "Exports a scene. mp4 is H.264 at the scene fps, gif loops, and html is a single self-contained file that draws the scene live with no network requests. mp4 and html carry the scene's audio unless silent is true; gif is always silent. html leaves sound file cues out (and says which in mediaLeftOut) unless media is true, which inlines the files and makes the export as big as its sound. mp4 and gif take an optional [from, to) range; html is always the whole scene. Returns the output path.",
       inputSchema: {
         sceneId,
         target: z.enum(['mp4', 'gif', 'html']),
         from: frame.optional(),
         to: frame.optional(),
         silent: z.boolean().optional().describe("Leave the scene's audio out of an mp4 or html export."),
+        media: z.boolean().optional().describe('For html: inline the sound files its cues play.'),
       },
     },
     tool(
       'export',
       async (
         w,
-        { sceneId: id, target, from, to, silent }: { sceneId: string; target: 'mp4' | 'gif' | 'html'; from?: number | string; to?: number | string; silent?: boolean },
-      ) => text(await w.export(id, target, { from, to, silent })),
+        { sceneId: id, target, from, to, silent, media }: { sceneId: string; target: 'mp4' | 'gif' | 'html'; from?: number | string; to?: number | string; silent?: boolean; media?: boolean },
+      ) => text(await w.export(id, target, { from, to, silent, media })),
     ),
   );
 

@@ -366,6 +366,12 @@ export class AgentRunner {
       thread: thread.id,
       active: () => !running.ended && !running.stopping,
       before: async (name, args) => {
+        // Copying a sound file in reads it from wherever it is, so outside the studio folder it asks, as a read would.
+        if (name === 'import_media' && typeof args.path === 'string') {
+          const why = await this.refusal(thread, settings, running, { kind: 'read', path: args.path });
+          if (why) throw new Error(`Not allowed: ${why}`);
+          return;
+        }
         const projectId = PROJECT_WRITERS[name]?.(args);
         if (typeof projectId === 'string') {
           const why = await this.refusal(thread, settings, running, { kind: 'project', projectId, tool: name });

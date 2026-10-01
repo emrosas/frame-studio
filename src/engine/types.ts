@@ -28,7 +28,27 @@ export interface Layer extends LayerSpec { id: string }
 /** A named character of a project (ADR 0007): a rig and the params that make it that character. */
 export interface CastEntry { rig: string; params?: Params }
 export type Cast = Readonly<Record<string, CastEntry>>;
-export interface AudioCue { id: string; generator: string; start: number; end: number; params?: Params; tracks?: Track[] }   // tracks animate only volume (cue.ts)
+/**
+ * A sound cue from `start` to `end` in scene seconds, snapped to frames: a generator's sound, or a sound
+ * file from the studio folder's media/ (ADR 0012). Its tracks animate only volume (cue.ts).
+ */
+export interface AudioCue {
+  id: string;
+  /** The generator that makes the sound. A cue has this or `file`. */
+  generator?: string;
+  /** A sound file, e.g. "media/voice.mp3". A cue has this or `generator`. */
+  file?: string;
+  start: number;
+  end: number;
+  /** For a file: seconds into it where the cue starts playing. Any sample, so finer than a frame. Default 0. */
+  in?: number;
+  /** For a file: seconds to fade in from silence at the start, and out to silence before the end. */
+  fadeIn?: number;
+  fadeOut?: number;
+  /** For a generator: its params. */
+  params?: Params;
+  tracks?: Track[];
+}
 export interface Scene { id: string; fps: number; duration: number; size: [number, number]; seed: number; background?: LayerSpec; layers: Layer[]; audio?: AudioCue[] }
 export const BACKGROUND_ID = 'background';   // the background layer's id; user layers may not use it
 export interface Rng { next(): number; range(min: number, max: number): number; int(minInclusive: number, maxExclusive: number): number; pick<T>(items: readonly T[]): T; fork(key: string): Rng }

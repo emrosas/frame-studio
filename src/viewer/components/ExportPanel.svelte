@@ -14,12 +14,15 @@
   let target = $state<'mp4' | 'gif' | 'html'>('mp4');
   let useRange = $state(false);
   let sound = $state(true);
+  // HTML leaves sound files out unless asked (ADR 0012): they make the file as big as the sound.
+  let media = $state(false);
   let error = $state<string | null>(null);
 
   const job = $derived(ui.exporting);
   const range = $derived(ui.selection.range);
   const rangeAllowed = $derived(range !== null && target !== 'html');
   const soundAllowed = $derived(target !== 'gif');
+  const mediaAllowed = $derived(target === 'html' && sound && ui.usesMedia);
   const percent = $derived(job.running && job.running.total > 0 ? Math.round((job.running.done / job.running.total) * 100) : 0);
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
@@ -39,7 +42,7 @@
   }
 
   async function start(): Promise<void> {
-    error = await actions.startExport(target, { range: useRange && rangeAllowed, sound: sound && soundAllowed });
+    error = await actions.startExport(target, { range: useRange && rangeAllowed, sound: sound && soundAllowed, media: media && mediaAllowed });
   }
 </script>
 
@@ -68,6 +71,12 @@
       <input type="checkbox" bind:checked={sound} disabled={!soundAllowed || job.running !== null} />
       {soundAllowed ? 'With sound' : 'GIFs are silent'}
     </label>
+    {#if target === 'html' && ui.usesMedia}
+      <label class="check-row" class:is-disabled={!mediaAllowed}>
+        <input type="checkbox" bind:checked={media} disabled={!mediaAllowed || job.running !== null} />
+        Include sound files (makes the file as big as the sound)
+      </label>
+    {/if}
     {#if job.running}
       <div class="export-progress">
         <progress max="100" value={percent} aria-label="Export progress"></progress>
@@ -91,6 +100,7 @@
           Saved <span class="export-file" title={job.result.file}>{fileName(job.result.file)}</span>
           {#if job.canReveal}<button type="button" class="btn is-small" onclick={() => actions.revealExport()}>Reveal in Finder</button>{:else}<code>{job.result.file}</code>{/if}
         </p>
+        {#if job.result.note}<p class="panel-note" role="status">{job.result.note}</p>{/if}
       {:else}
         <p class="export-error" role="alert">{job.result.error}</p>
       {/if}

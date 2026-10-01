@@ -186,9 +186,43 @@ Acceptance:
 5. No rig calls `measureText`, `fillText` or sets `ctx.font` to draw scene text.
 6. `docs/SCENES.md` documents the `text` rig, the typefaces and how to add one.
 
+## M12: Sound files
+
+Recorded sound mixed into the scene's audio (ADR 0012): voiceover and music.
+
+- Cues that play a file from `media/`: start, end, a trim into the file, fades and volume keys.
+- The studio server lists, serves, takes uploads of and imports media files; MCP `list_media` and `import_media`.
+- The viewer, the render worker and the HTML player decode the files a scene uses and render them into its one audio buffer.
+- The viewer imports by picker or drop, lists the folder's sound files with their lengths, places one at the playhead, and shows each cue on the timeline with its waveform.
+- MP4 carries the files; the HTML export leaves them out unless asked to inline them.
+
+Acceptance:
+1. A scene with a file cue renders the file's samples where the cue says: trimmed by `in`, cut at `end`, faded, at its volume, in the viewer and the MP4, identically on two renders.
+2. A placed shot's file cues play inside its film, shifted and trimmed with the shot.
+3. Importing from the viewer, by picker and by drop, puts the file in `media/`; Add at playhead makes a cue the scene validates.
+4. The HTML export leaves file cues out and reports it, or with the option inlines them and plays them.
+5. A missing file is an error the viewer shows, and its cue is silent.
+6. `docs/SCENES.md` and `docs/MCP.md` document sound files.
+
+## M13: The timeline as an editor
+
+A simple video editor's timeline under the canvas (ADR 0012).
+
+- Tracks for the shots a scene places and for its sound cues, with waveforms.
+- Move, trim either edge, split at the playhead, duplicate and delete, snapping to frames, the playhead and other edges.
+- Fades on sound, and transition presets between shots (crossfade, wipe, iris) written as masks and opacity keys.
+- Undo and redo for the timeline's edits.
+- Read-only while an agent works on the scene.
+
+## M14: Stills
+
+- PNG and JPG export of a frame, from the viewer and the tools.
+- A still option in New scene, social size presets, and a timeline that steps aside for a one-frame scene.
+
 ## Later
 
 - Retiming shots (speed, freeze, reverse), selecting inside a shot from its parent, and a library of transitions (ADR 0007, out of scope for M9).
-- Timeline editor for keys and timing; rig-controls panel generated from param schemas.
+- Keyframe editing in the timeline; rig-controls panel generated from param schemas.
+- Retiming shots (speed, freeze, reverse).
 - Camera layer and scene transitions.
 - Hosted service with prompt-crafting and style-steering UI.

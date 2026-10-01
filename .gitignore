@@ -3,6 +3,8 @@ dist
 build
 out
 references
+# Sound files (ADR 0012): a studio folder's own, like references/
+media
 .DS_Store
 *.log
 

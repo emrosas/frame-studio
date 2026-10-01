@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createRegistry } from './registry';
 import type { Rig, Scene } from './types';
-import { validateScene, type ValidationResult } from './validate';
+import { isMediaPath, validateScene, type ValidationResult } from './validate';
 
 const noop = () => {};
 const dot: Rig = {
@@ -472,7 +472,7 @@ describe('unknown fields', () => {
     expectError(
       withChange((s) => (s.audio[0].volume = 1)),
       'audio[0].volume',
-      /allowed fields: id, generator, start, end, params/,
+      /allowed fields: id, generator, file, start, end, in, fadeIn, fadeOut, params/,
     );
   });
 
@@ -770,5 +770,36 @@ describe('override rigs and variants', () => {
 
   it('the shipped fixture passes: dot.torn takes every dot param', () => {
     expect(change(() => {})).toEqual([]);
+  });
+});
+
+describe('sound file cues (ADR 0012)', () => {
+  const expectValid = (errors: string[]) => expect(errors).toEqual([]);
+  const file = { id: 'voice', file: 'media/voice.mp3', start: 1, end: 4, in: 0.5, fadeIn: 0.1, fadeOut: 0.3 };
+
+  it('takes a file in media/ with a trim and fades', () => {
+    expectValid(withChange((s) => s.audio.push(file)));
+    expectValid(withChange((s) => s.audio.push({ ...file, file: 'media/takes/voice 2.wav', tracks: [{ param: 'volume', keys: [{ t: 1, v: 0.5 }] }] })));
+  });
+
+  it('refuses a path outside media/, and a cue with both a file and a generator', () => {
+    for (const bad of ['voice.mp3', '/media/voice.mp3', 'media/../scenes/x.json', 'media/', 'media//x.mp3', 'media\\x.mp3']) {
+      expectError(withChange((s) => s.audio.push({ ...file, file: bad })), 'audio[1].file', /media\//);
+    }
+    expectError(withChange((s) => s.audio.push({ ...file, generator: 'buzz' })), 'audio[1]', /not both/);
+  });
+
+  it('refuses params on a file, negative trims and fades, and a trim on a generator', () => {
+    expectError(withChange((s) => s.audio.push({ ...file, params: { pitch: 1 } })), 'audio[1].params', /takes no params/);
+    expectError(withChange((s) => s.audio.push({ ...file, in: -1 })), 'audio[1].in', /0 or more/);
+    expectError(withChange((s) => s.audio.push({ ...file, fadeOut: 'x' })), 'audio[1].fadeOut', /0 or more/);
+    expectError(withChange((s) => (s.audio[0].in = 1)), 'audio[0].in', /only a sound file cue/);
+  });
+
+  it('knows a media path', () => {
+    expect(isMediaPath('media/a.mp3')).toBe(true);
+    expect(isMediaPath('media/sub/a.mp3')).toBe(true);
+    expect(isMediaPath('media/./a.mp3')).toBe(false);
+    expect(isMediaPath(3)).toBe(false);
   });
 });

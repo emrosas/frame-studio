@@ -4,7 +4,9 @@
 
 // The audio modules without the generators, so a generator edit hot-swaps through ./scenes like a rig edit.
 import { LivePlayback } from '../audio/live';
+import { mediaUsed } from '../audio/media';
 import { audioKey, generatorsUsed, hasAudio, renderSceneAudio, sameGenerators } from '../audio/render';
+import { MediaStore } from './media';
 import type { AudioGenerator } from '../audio/types';
 import {
   formatTimecode,
@@ -13,6 +15,7 @@ import {
   render,
   sceneLayerSpan,
   shotFrame,
+  timeToFrame,
   type HitResult,
   type HitTestOptions,
   type SceneLayerSpan,
@@ -55,7 +58,7 @@ import {
 } from '../studio/protocol';
 import { desktop } from './desktop';
 import { StudioClient } from './studio-client';
-import type { SceneOption, ShotBand, ViewerActions, ViewerUi } from './ui.svelte';
+import type { SceneOption, ShotBand, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
 import { parseFrameParam, RELOAD_KEY, reloadRecord, UrlSync, type UrlPosition } from './url';
 
 /** window.studio.selection: what is picked, in the shape agent tools take. */
@@ -236,6 +239,8 @@ export class App {
 
   // ---- handoff to the agent (ADR 0003) ----
   private readonly studio = new StudioClient();
+  /** Decoded sound files (ADR 0012), kept while they don't change. */
+  readonly media = new MediaStore();
   /** Where the click that picked the layer landed, in scene pixels; sent with the selection. */
   private selectionPoint: Point | null = null;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
@@ -278,6 +283,17 @@ export class App {
         const next = findEntry(this.library, key);
         if (next) this.userSelect(next);
       },
+      importMedia: (files) =>
+        attempt(async () => {
+          for (const file of files) await this.studio.uploadMedia(file);
+        }),
+      placeSound: (file) =>
+        attempt(async () => {
+          const scene = this.validScene();
+          if (!scene || !this.entry) throw new Error('No valid scene is showing.');
+          await this.studio.placeSound(this.entry.key, file, this.clock.frame / scene.fps);
+        }),
+      waveform: (file, from, to, buckets) => this.media.peaks(file, from, to, buckets),
       createScene: (input) => this.create(() => this.studio.createScene(input)),
       createProject: (input) => this.create(() => this.studio.createProject(input)),
       selectShot: (layerId) => {
@@ -404,6 +420,25 @@ export class App {
 
     this.api = this.createApi();
     this.startQueue();
+    this.refreshMedia();
+  }
+
+  /** The media list the sidebar shows was read for this listing of media/. */
+  private mediaListed = '';
+
+  /** Reads the sound files' lengths again when media/ changed (ADR 0012). */
+  private refreshMedia(): void {
+    const listing = JSON.stringify(this.library.media ?? []);
+    if (listing === this.mediaListed) return;
+    this.mediaListed = listing;
+    this.ui.media = (this.library.media ?? []).map((m) => ({ file: m.file, name: m.file.slice('media/'.length) }));
+    this.studio.mediaList().then(
+      (list) => {
+        if (listing !== this.mediaListed) return;
+        this.ui.media = list.map((m) => ({ file: m.file, name: m.file.slice('media/'.length), ...(m.duration !== undefined ? { duration: m.duration } : {}) }));
+      },
+      () => {},
+    );
   }
 
   /** Swaps in a freshly loaded library (hot edit of a scene or rig), keeping scene, frame, and play state. */
@@ -434,6 +469,7 @@ export class App {
       }
     }
     this.errors.set('hmr', null);
+    this.refreshMedia();
   }
 
   /**
@@ -711,7 +747,7 @@ export class App {
   // ---- export (ADR 0008) ----
 
   /** Asks the studio server to export the scene on screen, or its selected range. Returns an error message, or null. */
-  private async startExport(target: 'mp4' | 'gif' | 'html', options: { range: boolean; sound: boolean }): Promise<string | null> {
+  private async startExport(target: 'mp4' | 'gif' | 'html', options: { range: boolean; sound: boolean; media?: boolean }): Promise<string | null> {
     const scene = this.validScene();
     if (!scene || !this.entry) return 'There is no valid scene to export.';
     if (this.ui.exporting.running) return 'An export is already running.';
@@ -722,6 +758,7 @@ export class App {
         target,
         ...(range ? { from: range.from, to: range.to } : {}),
         ...(target !== 'gif' && !options.sound ? { silent: true } : {}),
+        ...(target === 'html' && options.sound && options.media ? { media: true } : {}),
       });
       this.ui.exporting = { ...this.ui.exporting, running: { id, stage: 'starting', done: 0, total: 1 }, result: null, canReveal: desktop() !== null };
       return null;
@@ -1134,7 +1171,7 @@ export class App {
       const state = this.ui.exporting;
       if (state.running?.id !== event.id) return;
       if ('error' in event) this.ui.exporting = { ...state, running: null, result: { error: event.error } };
-      else if ('file' in event) this.ui.exporting = { ...state, running: null, result: { file: event.file } };
+      else if ('file' in event) this.ui.exporting = { ...state, running: null, result: { file: event.file, ...(event.note ? { note: event.note } : {}) } };
       else this.ui.exporting = { ...state, running: { id: event.id, stage: event.stage, done: event.done, total: event.total } };
     });
     this.refreshAgents(false);
@@ -1300,9 +1337,17 @@ export class App {
       this.soundStatus = 'none';
       this.sound.setBuffer(null);
       this.errors.set('audio', null);
+      this.errors.set('media', null);
       return;
     }
-    const key = audioKey(scene, world);
+    // The sound files it plays, and what they are on disk, so a replaced file renders again.
+    const files = mediaUsed(scene, world);
+    const known = this.library.media ?? [];
+    const stamps = files.map((f) => {
+      const m = known.find((k) => k.file === f);
+      return m ? `${f}:${m.bytes}:${m.modified}` : `${f}:missing`;
+    });
+    const key = `${audioKey(scene, world)}|${stamps.join('|')}`;
     const used = generatorsUsed(scene, generators, world);
     // A scene or rig edit reloads the library, but the generator modules it didn't touch are the same objects.
     if (this.soundFor?.key === key && sameGenerators(this.soundFor.generators, used)) return;
@@ -1314,9 +1359,20 @@ export class App {
       this.uiDirty = true;
       this.schedule();
     };
-    renderSceneAudio(scene, generators, world).then(
+    this.media
+      .load(files, known)
+      .then((loaded) => {
+        if (this.soundFor !== request) return null;
+        const lines = [
+          ...loaded.missing.map((f) => `${f} isn't in the studio folder's media/; its cue plays silence. Import it again, or change the cue.`),
+          ...loaded.failed.map((f) => `${f} (it plays silence)`),
+        ];
+        this.errors.set('media', lines.length > 0 ? { title: 'Sound files missing', lines } : null);
+        return renderSceneAudio(scene, generators, world, loaded.buffers);
+      })
+      .then(
       (buffer) => {
-        if (this.soundFor !== request) return;
+        if (this.soundFor !== request || !buffer) return;
         this.sound.setBuffer(buffer);
         this.soundStatus = 'ready';
         this.errors.set('audio', null);
@@ -1472,6 +1528,8 @@ export class App {
     ui.sound = scene && status !== 'none' ? { status, muted: this.sound.isMuted } : null;
     ui.band = scene && this.range ? { range: this.range, frameCount: this.total } : null;
     ui.shots = scene ? this.shotBands() : null;
+    ui.sounds = scene ? this.soundBands(scene) : null;
+    ui.usesMedia = scene !== null && mediaUsed(scene, this.entry?.world ?? {}).length > 0;
     ui.back = this.shotReturn ? { label: this.shotReturn.key.slice(this.shotReturn.key.indexOf('/') + 1), key: this.shotReturn.key } : null;
     ui.selection = {
       sceneId: scene ? (this.entry?.key ?? null) : null,
@@ -1509,6 +1567,28 @@ export class App {
         if (lane < 0) lane = laneEnds.push(0) - 1;
         laneEnds[lane] = s.span.to;
         return { layerId: s.layerId, label: s.label, from: s.span.from, to: s.span.to, lane, selected: s.layerId === this.layerId };
+      });
+    return { bands, lanes: laneEnds.length, frameCount: this.total };
+  }
+
+  /** The scene's own sound cues for the timeline, each in the lowest lane where it overlaps no other. Null without any. */
+  private soundBands(scene: Scene): { bands: SoundBand[]; lanes: number; frameCount: number } | null {
+    const cues = scene.audio ?? [];
+    if (cues.length === 0) return null;
+    const laneEnds: number[] = [];
+    const bands = cues
+      .map((cue) => {
+        const from = timeToFrame(cue.start, scene.fps);
+        return { cue, from, to: Math.max(from + 1, timeToFrame(cue.end, scene.fps)) };
+      })
+      .sort((a, b) => a.from - b.from)
+      .map(({ cue, from, to }): SoundBand => {
+        let lane = laneEnds.findIndex((end) => end <= from);
+        if (lane < 0) lane = laneEnds.push(0) - 1;
+        laneEnds[lane] = to;
+        const label = cue.file ? cue.file.slice(cue.file.lastIndexOf('/') + 1) : (cue.generator ?? cue.id);
+        const played = (to - from) / scene.fps;
+        return { id: cue.id, label, from, to, lane, ...(cue.file ? { file: { path: cue.file, from: cue.in ?? 0, to: (cue.in ?? 0) + played } } : {}) };
       });
     return { bands, lanes: laneEnds.length, frameCount: this.total };
   }
