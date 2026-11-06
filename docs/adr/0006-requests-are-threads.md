@@ -20,7 +20,7 @@ The provider research (`.scratch/frame-studio/research/integrated-ai-providers.m
 - **Access.** By default the agent may use the studio's operations (the MCP tools) and write files in `scenes/`, `src/rigs/` and `src/audio/`. Anything else, including other files, shell commands and the network, shows an approval card in the thread first. A full-access switch turns the prompts off.
 - **Progress.** The thread streams the agent's text, one line per step, and the frames it rendered, as thumbnails. Transcripts and thumbnails live in `.frame-studio/` next to the request, so restarting the studio loses nothing.
 - **Stop and restarts.** Stop keeps the edits made so far and hands the thread back. If the studio server stops mid-turn, the turn shows as interrupted, with Retry. The thread file keeps each provider's session id, so the next reply resumes the session.
-- **Layout.** The thread list moves to a panel on the left, and a thread opens in place with a back arrow. The canvas stays in the middle.
+- **Layout.** The thread list moves to a panel on the left, and a thread opens in place with a back arrow. The canvas stays in the middle. Amended 2026-11-06: the threads are one of two views of the sidebar, Footage and Threads, and the right panel holds only the conversation, so the list can't disappear as a thread grows.
 
 ## Consequences
 

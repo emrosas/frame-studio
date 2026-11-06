@@ -1,16 +1,17 @@
 <!--
-  One project in the sidebar (ADR 0013): a header row with its name, what its
-  threads ask for, and a + on hover, then its videos, its scenes and, last, its
-  older films, folded, each with Convert. The project on screen shows its live
-  list; another shows what the app read off disk, and clicking a row there
-  opens that project on it. Clicking a header only folds it.
+  One project in the sidebar's Footage view (ADR 0013): its header, then its
+  videos, its scenes and, last, its older films, folded, each with Convert. A
+  row whose scene has a thread going shows a dot. The project on screen shows
+  its live list; another shows what the app read off disk, and clicking a row
+  there opens that project on it.
 -->
 <script lang="ts">
   import type { OpenTarget } from '../desktop';
   import type { GroupRow, ProjectGroup } from '../project-groups';
+  import type { ThreadBadge } from '../thread-groups';
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
-  import Popover from './Popover.svelte';
+  import ProjectHead from './ProjectHead.svelte';
   import Thumb from './Thumb.svelte';
 
   let {
@@ -19,6 +20,7 @@
     actions,
     filtering,
     folds,
+    dots,
     onfold,
     onnote,
     onforget,
@@ -28,14 +30,14 @@
     actions: ViewerActions;
     filtering: boolean;
     folds: Readonly<Record<string, boolean>>;
+    /** The scenes with a thread working or waiting, by key. */
+    dots: Readonly<Record<string, ThreadBadge>>;
     onfold: (key: string, open: boolean) => void;
     /** Something to say under the sidebar's head, or null to clear it. */
     onnote: (note: { text: string; error: boolean } | null) => void;
     onforget: () => void;
   } = $props();
 
-  let adding = $state(false);
-  let addBox = $state<HTMLElement | null>(null);
   const canSwitch = $derived(ui.folder?.canSwitch ?? false);
 
   const filmsKey = $derived(`${group.path}#films`);
@@ -66,7 +68,6 @@
   }
 
   function add(what: 'video' | 'scene'): void {
-    adding = false;
     if (group.current) ui.newRequest = what === 'video' ? { kind: 'video' } : { kind: 'scene', project: null };
     else void open({ new: what });
   }
@@ -95,6 +96,7 @@
     >
       {#if poster}<Thumb file={group.current ? ui.thumbs[row.key] : row.poster} project={group.current ? null : group.path} />{/if}
       <span class="name">{row.label}</span>
+      {#if dots[row.key]}<span class="status-dot is-{dots[row.key].kind}" title={dots[row.key].label}></span>{/if}
       {#if row.main}<span class="badge">main</span>{/if}
       {#if row.invalid}<span class="badge">invalid</span>{/if}
     </button>
@@ -108,29 +110,7 @@
 {/snippet}
 
 <section class="project-group" aria-label={group.name}>
-  <div class="project-head" class:is-open={group.open} class:is-missing={group.missing}>
-    <button type="button" class="project-row" aria-expanded={group.open} disabled={group.missing} title={group.missing ? `${group.path} is gone` : group.path} onclick={() => onfold(group.path, !group.open)}>
-      <Icon name="folder" />
-      <span class="name">{group.name}</span>
-      {#if group.status}<span class="status-dot is-{group.status.kind}" role="img" aria-label={group.status.label} title={group.status.label}></span>{/if}
-      {#if !group.missing && !group.open && group.count > 0}<span class="count">{group.count}</span>{/if}
-      {#if !group.missing}<span class="chevron" class:is-closed={!group.open}><Icon name="chevronDown" /></span>{/if}
-    </button>
-    {#if group.missing}
-      <span class="project-gone">Not found</span>
-      <button type="button" class="link-btn" title="Take {group.name} off this list. Nothing on disk changes." onclick={() => void actions.forgetProject(group.path).then(onforget)}>Forget</button>
-    {:else}
-      <div class="anchor" bind:this={addBox}>
-        <button type="button" class="project-add icon-btn" aria-label="New in {group.name}" title="New in {group.name}" aria-haspopup="menu" aria-expanded={adding} onclick={() => (adding = !adding)}><Icon name="plus" /></button>
-        {#if adding}
-          <Popover label="New in {group.name}" role="menu" class="add-menu" anchor={addBox} onclose={() => (adding = false)}>
-            <button type="button" role="menuitem" class="menu-item" onclick={() => add('video')}>New video</button>
-            <button type="button" role="menuitem" class="menu-item" onclick={() => add('scene')}>New scene</button>
-          </Popover>
-        {/if}
-      </div>
-    {/if}
-  </div>
+  <ProjectHead {group} {onfold} onadd={add} onforget={() => void actions.forgetProject(group.path).then(onforget)} />
 
   {#if group.open}
     <div class="project-body">

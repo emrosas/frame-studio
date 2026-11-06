@@ -42,9 +42,10 @@ interface Session {
   left?: number;
 }
 
-/** Where the viewer opens a project: on a scene, or with the New dialog up. */
+/** Where the viewer opens a project: on a scene, on a thread of that scene, or with the New dialog up. */
 interface OpenTarget {
   scene?: string;
+  thread?: number;
   new?: 'video' | 'scene';
 }
 
@@ -322,7 +323,7 @@ function showViewer(url: string, name: string, target?: OpenTarget): void {
     });
   }
   main.setTitle(`${name} · Frame Studio`);
-  const query = new URLSearchParams({ ...(target?.scene ? { scene: target.scene } : {}), ...(target?.new ? { new: target.new } : {}) }).toString();
+  const query = new URLSearchParams({ ...(target?.scene ? { scene: target.scene } : {}), ...(target?.thread !== undefined ? { thread: String(target.thread) } : {}), ...(target?.new ? { new: target.new } : {}) }).toString();
   void main.loadURL(`${url}/${query ? `?${query}` : ''}`);
   main.show();
 }
@@ -543,8 +544,9 @@ function registerIpc(): void {
     if (!fromApp(event)) return null;
     if (!settings.recent.includes(path)) return `${path} is no longer a recent project.`;
     const scene = typeof target?.scene === 'string' ? target.scene : undefined;
+    const thread = Number.isInteger(target?.thread) ? target?.thread : undefined;
     const add = target?.new === 'video' || target?.new === 'scene' ? target.new : undefined;
-    return openFolder(path, { target: { ...(scene ? { scene } : {}), ...(add ? { new: add } : {}) } });
+    return openFolder(path, { target: { ...(scene ? { scene } : {}), ...(thread !== undefined ? { thread } : {}), ...(add ? { new: add } : {}) } });
   });
   ipcMain.handle('frame-studio:forget-recent', (event, path: string) => {
     if (!fromApp(event)) return;

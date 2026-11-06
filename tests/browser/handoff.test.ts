@@ -39,6 +39,7 @@ beforeAll(async () => {
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   page = await context.newPage();
   await page.goto(studio.paired(`?scene=${ID}&frame=60`));
+  await page.getByRole('navigation', { name: 'Studio' }).getByRole('button', { name: 'Threads' }).click();
   await page.waitForFunction(() => (window as unknown as { studio?: { frameCount: number } }).studio?.frameCount === 96);
 });
 
@@ -72,7 +73,8 @@ async function expectText(locator: ReturnType<Page['locator']>, text: string): P
 }
 
 const panel = () => page.getByRole('complementary', { name: 'Agent' });
-const request = (id: number) => panel().getByRole('article', { name: `Request ${id}` });
+const sidebar = () => page.getByRole('navigation', { name: 'Studio' });
+const request = (id: number) => sidebar().getByRole('article', { name: `Request ${id}` });
 const readSelection = () => (existsSync(join(STUDIO, 'selection.json')) ? (JSON.parse(readFileSync(join(STUDIO, 'selection.json'), 'utf8')) as CurrentSelection) : null);
 
 /** The smallest valid PNG: one opaque pixel. */
@@ -175,7 +177,7 @@ describe('following a thread', () => {
     await agent.create({ selection: { sceneId: ID, layerId: 'pip', from: 0, to: 24 }, frame: 0, prompt: 'make pip wave', references: [] });
     await agent.claimNext('test-agent');
     await agent.complete(2, 'failed', 'could not find a wave that reads at 12 fps');
-    await expectText(request(2), 'Your turn');
+    await expectText(request(2), 'Failed');
     await request(2).getByRole('button').click();
     await thread().getByRole('button', { name: 'Try again' }).click();
     const retry = thread().getByRole('textbox', { name: 'Prompt for the next attempt' });
@@ -199,8 +201,9 @@ describe('following a thread', () => {
     await thread().getByRole('button', { name: 'Settle' }).click();
     await expectText(thread().getByRole('status', { name: 'Request status' }), 'Settled');
     await panel().getByRole('button', { name: 'New thread' }).click();
-    await panel().getByRole('button', { name: 'Clear settled' }).click();
-    await expect.poll(() => panel().getByRole('article').count()).toBe(0);
+    await sidebar().getByRole('button', { name: 'Clear settled' }).click();
+    await expect.poll(() => sidebar().getByRole('region', { name: 'Done' }).count()).toBe(0);
+    await expect.poll(() => sidebar().getByRole('article').count()).toBe(0);
     expect(await agent.list()).toEqual([]);
   });
 });

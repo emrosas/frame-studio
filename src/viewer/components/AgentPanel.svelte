@@ -1,15 +1,18 @@
 <!--
-  The agent panel (ADR 0003, ADR 0006), right of the canvas: the threads, then
-  the thread open, or a new thread about the current selection. The new
-  thread's draft lives here, so it waits while you look at a thread or hide the
-  panel. The files in .frame-studio/ are the truth; this only shows them.
+  The agent panel (ADR 0003, ADR 0006), right of the canvas: the conversation
+  only, the thread open or a new thread about the current selection. The list
+  of threads is the sidebar's, so it can't disappear as the conversation grows.
+  The new thread's draft lives here, so it waits while you look at a thread or
+  hide the panel. The files in .frame-studio/ are the truth; this only shows
+  them.
 -->
 <script lang="ts">
-  import type { AgentId, TurnSettings } from '../../studio/protocol';
+  import { threadSummary, type AgentId, type TurnSettings } from '../../studio/protocol';
   import { readDraft, readPref, writeDraft, writePref } from '../prefs';
-  import type { ViewerActions, ViewerUi } from '../ui.svelte';
+  import { seenKey } from '../thread-groups';
+  import { SEEN_KEY, type ViewerActions, type ViewerUi } from '../ui.svelte';
+  import Icon from './Icon.svelte';
   import NewThread from './NewThread.svelte';
-  import ThreadList from './ThreadList.svelte';
   import ThreadView from './ThreadView.svelte';
 
   let { ui, actions, hidden }: { ui: ViewerUi; actions: ViewerActions; hidden: boolean } = $props();
@@ -54,16 +57,31 @@
   }
 
   const open = $derived(ui.studio.open === null ? null : (ui.studio.requests.find((r) => r.id === ui.studio.open) ?? null));
+
+  // A finished turn on screen has been seen, so its card reads Done once you move on.
+  $effect(() => {
+    if (!open || hidden || open.status !== 'your_turn' || !ui.folder) return;
+    const key = seenKey(ui.folder.path, open.id);
+    const { at } = threadSummary(open, ui.studio.now);
+    if (ui.threadsSeen[key] === at) return;
+    ui.threadsSeen = { ...ui.threadsSeen, [key]: at };
+    writePref(SEEN_KEY, JSON.stringify(ui.threadsSeen));
+  });
 </script>
 
 <aside class="agent-panel" aria-label="Agent" {hidden}>
-  <ThreadList {ui} {actions} />
   {#if open}
     <!-- Keyed, so a reply's draft, attached images or Try again never carry over to another thread. -->
     {#key open.id}
       <ThreadView {ui} {actions} thread={open} />
     {/key}
   {:else}
+    <header class="panel-head">
+      <span class="panel-title">New thread</span>
+      <div class="actions">
+        <button type="button" class="icon-btn" aria-label="New thread" title="New thread" aria-current="true" onclick={() => actions.openThread(null)}><Icon name="plus" /></button>
+      </div>
+    </header>
     <NewThread {ui} {actions} onpick={pick} bind:prompt bind:files bind:agent bind:settings />
   {/if}
 </aside>

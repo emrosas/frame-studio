@@ -2,6 +2,8 @@
 // The viewer stays web-only code, so everything here is optional; in a
 // browser tab there is no bridge.
 
+import type { ThreadSummary } from '../studio/protocol';
+
 /** What the app knows about updates (ADR 0009). `notes` is the release page's URL. */
 export type UpdateState =
   // Nothing known, or up to date.
@@ -62,11 +64,14 @@ export interface ProjectEntry {
   videos: ProjectItem[];
   scenes: ProjectItem[];
   films: ProjectFilm[];
+  /** Its threads, from disk, in no order. The viewer shows the project on screen's from the live queue. */
+  threads: ThreadSummary[];
 }
 
-/** Where the viewer opens a project: on a scene, or with the New dialog up. */
+/** Where the viewer opens a project: on a scene, on a thread of that scene, or with the New dialog up. */
 export interface OpenTarget {
   scene?: string;
+  thread?: number;
   new?: 'video' | 'scene';
 }
 

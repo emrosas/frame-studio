@@ -31,6 +31,9 @@ export const STATUS_LABELS: Record<string, string> = {
   stalled: 'Stalled',
   your_turn: 'Your turn',
   input: 'Needs you',
+  done: 'Done',
+  failed: 'Failed',
+  interrupted: 'Interrupted',
   settled: 'Settled',
   cancelled: 'Cancelled',
 };

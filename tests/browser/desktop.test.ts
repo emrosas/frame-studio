@@ -200,14 +200,14 @@ export const twinkle: Rig = {
 
     // Sample's agent is still at it, and its header says so.
     expect(await alive()).toBe(true);
-    const sampleStatus = () => group('Sample').locator('.status-dot').getAttribute('title', { timeout: 10_000 });
+    const sampleStatus = () => group('Sample').locator('.project-head .status-dot').getAttribute('title', { timeout: 10_000 });
     await expect.poll(sampleStatus, { timeout: 10_000 }).toContain('1 working');
     await expect.poll(async () => (await queue.get(slow.id)).status, { timeout: 30_000 }).toBe('your_turn');
     expect((await queue.get(slow.id)).turns[0].summary).toBe('Finished.');
     // Done, Sample's server stops, and its header shows the finished thread as your turn.
     await expect.poll(alive, { timeout: 20_000 }).toBe(false);
     await expect.poll(sampleStatus, { timeout: 10_000 }).not.toContain('working');
-    expect(await group('Sample').locator('.status-dot.is-your_turn').count()).toBe(1);
+    expect(await group('Sample').locator('.project-head .status-dot.is-your_turn').count()).toBe(1);
     // Its videos and scenes are still listed, from disk, with no server there.
     await group('Sample').locator('.project-row').click();
     await group('Sample').getByRole('button', { name: 'hello', exact: true }).waitFor();
@@ -265,17 +265,92 @@ export const twinkle: Rig = {
     await unfold('My Film');
     await group('My Film').getByRole('button', { name: 'Open' }).click();
     await onScreen('My Film');
-    await expect.poll(() => group('Sample').locator('.status-dot.is-input').count(), { timeout: 10_000 }).toBe(1);
-    await expect.poll(() => group('Sample').locator('.status-dot.is-input').getAttribute('title'), { timeout: 10_000 }).toContain('waiting on your input');
+    await expect.poll(() => group('Sample').locator('.project-head .status-dot.is-input').count(), { timeout: 10_000 }).toBe(1);
+    await expect.poll(() => group('Sample').locator('.project-head .status-dot.is-input').getAttribute('title'), { timeout: 10_000 }).toContain('waiting on your input');
     await unfold('Sample');
     await group('Sample').getByRole('button', { name: 'hello', exact: true }).click();
     await onScreen('Sample');
     await viewer.waitForFunction(() => (window as unknown as { studio?: { scenes: string[] } }).studio?.scenes !== undefined, undefined, { timeout: 30_000 });
     // The thread waits where it was; open it and answer.
-    await viewer.getByRole('complementary', { name: 'Agent' }).getByRole('article', { name: `Request ${asking.id}` }).getByRole('button').click();
+    await nav.getByRole('button', { name: /^Threads/ }).click();
+    await nav.getByRole('article', { name: `Request ${asking.id}` }).getByRole('button').click();
     const card = viewer.getByRole('region', { name: 'Questions from the agent' });
     await card.getByRole('radio', { name: /Blue/ }).click();
     await expect.poll(async () => (await queue.get(asking.id)).status, { timeout: 30_000 }).toBe('your_turn');
+  });
+
+  it('opens a thread of another project from its card, with that scene and the conversation, in one load', async () => {
+    const viewer = await viewerWindow(app!);
+    const nav = viewer.getByRole('navigation', { name: 'Studio' });
+    const group = (name: string) => nav.getByRole('region', { name, exact: true });
+    const panel = viewer.getByRole('complementary', { name: 'Agent' });
+    const scene = () => viewer.evaluate(() => (window as unknown as { studio?: { selection: { sceneId: string } | null } }).studio?.selection?.sceneId);
+    const row = (name: string) => group(name).locator('.project-row');
+    const unfold = async (name: string) => {
+      if ((await row(name).getAttribute('aria-expanded')) === 'false') await row(name).click();
+    };
+
+    // Written straight into My Film's folder, with no agent and no server there once we've left it.
+    const film = join(projects, 'My Film');
+    const queue = new StudioQueue(join(folder, '.frame-studio'), async () => join(folder, 'scenes/hello.json'));
+    const finished = (await queue.list()).find((t) => t.status === 'your_turn')!;
+    const at = '2026-11-06T10:00:00.000Z';
+    const ask = (prompt: string, sceneId: string) => ({ prompt, references: [], selection: { sceneId, from: 0, to: 24 }, frame: 0, at });
+    mkdirSync(join(film, '.frame-studio', 'requests'), { recursive: true });
+    writeFileSync(join(film, 'scenes', 'lake.json'), JSON.stringify({ id: 'lake', fps: 24, duration: 2, size: [1920, 1080], seed: 1, background: { rig: 'paper', params: {} }, layers: [] }));
+    writeFileSync(
+      join(film, '.frame-studio', 'requests', '0001.json'),
+      JSON.stringify({ id: 1, createdAt: at, status: 'your_turn', agent: 'claude', sceneId: 'lake', turns: [{ ask: ask('make the lake bluer', 'lake'), status: 'done', settings: { access: 'studio', model: 'test-model-1' }, completedAt: at, summary: 'Bluer.' }] }),
+    );
+    writeFileSync(
+      join(film, '.frame-studio', 'requests', '0002.json'),
+      JSON.stringify({ id: 2, createdAt: at, status: 'settled', agent: 'fake', sceneId: 'lake', settledAt: at, turns: [{ ask: ask('an old idea', 'lake'), status: 'done', completedAt: at }] }),
+    );
+
+    // On Sample, its own thread sits open, and My Film's show from disk with no server started.
+    await nav.getByRole('button', { name: /^Threads/ }).click();
+    expect(await nav.getByRole('button', { name: 'Library' }).count()).toBe(0);
+    await unfold('My Film');
+    const card = group('My Film').getByRole('article', { name: 'Request 1' });
+    await expect.poll(() => card.textContent(), { timeout: 10_000 }).toContain('make the lake bluer');
+    expect(await card.textContent()).toContain('test-model-1');
+    expect(await card.textContent()).toContain('Your turn');
+    expect(await group('My Film').getByRole('article', { name: 'Request 2' }).count()).toBe(0);
+    await group('My Film').getByRole('button', { name: 'Done' }).first().click();
+    await group('My Film').getByRole('article', { name: 'Request 2' }).waitFor();
+    expect(await group('Sample').getByRole('article', { name: `Request ${finished.id}` }).count()).toBe(1);
+
+    // Filtering searches titles, across projects.
+    await viewer.keyboard.press('ControlOrMeta+f');
+    await nav.getByRole('searchbox', { name: 'Filter threads' }).fill('BLUER');
+    await expect.poll(() => nav.getByRole('article').count()).toBe(1);
+    await viewer.keyboard.press('Escape');
+    await expect.poll(() => nav.getByRole('article').count()).toBeGreaterThan(1);
+
+    // One click: the project, its scene and the conversation.
+    let loads = 0;
+    viewer.on('load', () => loads++);
+    await card.getByRole('button').click();
+    await expect.poll(scene, { timeout: 60_000 }).toBe('lake');
+    await panel.getByRole('region', { name: 'Request 1' }).waitFor({ timeout: 30_000 });
+    expect(await panel.getByRole('heading', { name: 'make the lake bluer' }).count()).toBe(1);
+    expect(loads).toBe(1);
+    // The view you were in came along, and the card it opened has the ring.
+    expect(await nav.getByRole('button', { name: /^Threads/ }).getAttribute('aria-pressed')).toBe('true');
+    expect(await group('My Film').getByRole('article', { name: 'Request 1' }).getByRole('button').getAttribute('aria-current')).toBe('true');
+    expect(new URL(viewer.url()).searchParams.has('thread')).toBe(false);
+
+    // Move on and the turn you read reads Done. Command-1 and 2 switch views, and Footage's scene row shows nothing for it.
+    await panel.getByRole('button', { name: 'New thread' }).click();
+    await expect.poll(() => group('My Film').getByRole('article', { name: 'Request 1' }).textContent()).toContain('Done');
+    await viewer.keyboard.press('ControlOrMeta+1');
+    await nav.getByRole('button', { name: 'Library' }).waitFor();
+    expect(await group('My Film').getByRole('button', { name: 'lake', exact: true }).locator('.status-dot').count()).toBe(0);
+    await viewer.keyboard.press('ControlOrMeta+2');
+    await unfold('Sample');
+    await group('Sample').getByRole('article', { name: `Request ${finished.id}` }).getByRole('button').click();
+    await expect.poll(scene, { timeout: 60_000 }).toBe('hello');
+    await panel.getByRole('region', { name: `Request ${finished.id}` }).waitFor({ timeout: 30_000 });
   });
 
   it('reopens the last project on the next launch', async () => {
