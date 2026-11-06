@@ -1,7 +1,6 @@
 # Progress
 
-Last updated 2026-11-06, after keyframe editing and canvas drag.
-Last updated 2026-11-06, after thread cards and the Footage / Threads switch.
+Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards and the Footage / Threads switch.
 
 ## Done
 
