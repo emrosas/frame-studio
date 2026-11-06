@@ -2604,7 +2604,7 @@ button.check-result:hover {
 }
 
 .thread-model {
-  flex: 0 1 auto;
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   gap: 2px;
