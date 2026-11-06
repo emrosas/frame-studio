@@ -6,31 +6,37 @@
 import { LivePlayback } from '../audio/live';
 import { mediaUsed } from '../audio/media';
 import { audioKey, generatorsUsed, hasAudio, renderSceneAudio, sameGenerators } from '../audio/render';
-import { MediaStore } from './media';
+import { mediaUrl, MediaStore } from './media';
+import { PictureStore } from '../export/pictures';
 import type { AudioGenerator } from '../audio/types';
 import {
   formatTimecode,
   frameCount as countFrames,
   hitTest,
+  isImageFile,
+  picturesAt,
   render,
   sceneLayerSpan,
+  sceneLayers,
   shotFrame,
   timeToFrame,
   type HitResult,
+  type PictureRequest,
   type HitTestOptions,
   type SceneLayerSpan,
 } from '../engine';
 import type { Scene, World } from '../engine/types';
 import { createSurfaces } from '../embed/surfaces';
 import { CanvasView } from './canvas';
-import { FpsMeter, PlaybackClock } from './clock';
+import { PlaybackClock } from './clock';
+import { formatClock, type ClipPlace } from './timeline';
 import { ErrorLog, errorText } from './errors';
 import { focusKeepsKey, keyAction } from './keys';
 import { findEntry, openingEntry, type SceneEntry, type SceneLibrary } from './library';
 import { SelectionOverlay } from './overlay';
 import { clientToScene, isDrag, type Point } from './pointer';
+import { SafeZoneGuide } from './safe-zones';
 import {
-  describeRange,
   editRangeEnd,
   isRepeatClick,
   layerLabel,
@@ -40,6 +46,8 @@ import {
   rangeError,
   resolveSelectionParams,
   sceneShape,
+  spanLabel,
+  spanTitle,
   type ClickMemo,
   type FrameRange,
   type SceneShape,
@@ -57,8 +65,10 @@ import {
   type TurnSettings,
 } from '../studio/protocol';
 import { desktop } from './desktop';
+import { readPref, writePref } from './prefs';
 import { StudioClient } from './studio-client';
-import type { SceneOption, ShotBand, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
+import type { LayerRow, SceneOption, ShotBand, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
+import { ClipHistory, clipPlaceKey, clipState } from './undo';
 import { parseFrameParam, RELOAD_KEY, reloadRecord, UrlSync, type UrlPosition } from './url';
 
 /** window.studio.selection: what is picked, in the shape agent tools take. */
@@ -142,6 +152,8 @@ export interface StudioApi {
 export interface AppOptions {
   /** ?scene= from the URL. */
   scene: string | null;
+  /** Open on the library: the project opened with nothing selected. */
+  home?: boolean;
   /** ?frame= from the URL: a frame number or MM:SS:FF. */
   frame: string | null;
   /** Start playing (restoring play state across a full reload). */
@@ -153,7 +165,7 @@ export interface AppOptions {
 /** sessionStorage key: play state carried across Vite's full-reload fallback. */
 export const RESUME_KEY = 'frame-studio:resume-playback';
 
-/** localStorage key: sound muted, kept across reloads and scenes. */
+/** Sound muted, kept across reloads, scenes and projects. */
 const MUTED_KEY = 'frame-studio:muted';
 
 /** Start of the notice shown when a hover probe throws. */
@@ -167,18 +179,17 @@ export class App {
   private entry: SceneEntry | null = null;
   private total = 0;
   private readonly clock = new PlaybackClock(() => performance.now());
-  private readonly meter = new FpsMeter();
   private readonly url = new UrlSync();
   private readonly view: CanvasView;
   private readonly ui: ViewerUi;
   /** What the Svelte components call (ui.svelte.ts). */
   readonly actions: ViewerActions;
   private readonly overlay: SelectionOverlay;
+  private readonly safeZones: SafeZoneGuide;
   private readonly errors: ErrorLog;
   private raf = 0;
   private canvasDirty = true;
   private uiDirty = true;
-  private lastFpsUpdate = -Infinity;
   private resumeAfterScrub = false;
   /** Set when a hot edit made the playing scene invalid; playback resumes once it is valid again. */
   private resumeWhenValid = false;
@@ -193,6 +204,10 @@ export class App {
   private layerId: string | null = null;
   private partId: string | null = null;
   private rangeValue: FrameRange | null = null;
+  /** The span X marks when a click landed on one: a clip, an override, a sound cue. */
+  private pickedSpan: FrameRange | null = null;
+  /** A row or band under the pointer, which outranks the canvas's hover. */
+  private rowHover: string | null = null;
   /** The selected frame range. Playback loops inside it while it is set. */
   private get range(): FrameRange | null {
     return this.rangeValue;
@@ -212,6 +227,11 @@ export class App {
   private probe: OffscreenCanvasRenderingContext2D | null = null;
   /** Offscreen surfaces for masks and faded shots (ADR 0007). */
   private readonly surfaces = createSurfaces();
+  /** Decoded picture clips (ADR 0014). A draw shows the nearest ready frame and asks for the exact one. */
+  private readonly pictures = new PictureStore(mediaUrl);
+  private picturesWanted = '';
+  private picturesNext: PictureRequest[] | null = null;
+  private picturesBusy = false;
   /** Pointer over the canvas, client CSS px; null when outside. */
   private pointer: Point | null = null;
   private downAt: Point | null = null;
@@ -226,6 +246,9 @@ export class App {
   /** The frame on which a hover probe threw; hover skips that frame only, until the next scene swap. */
   private hoverFailedFrame: number | null = null;
   private scrubbing = false;
+  /** Clip edits on the timeline, for Command-Z. */
+  private readonly history = new ClipHistory();
+  private historySteps: Promise<void> = Promise.resolve();
 
   // ---- shots (ADR 0007) ----
   /** Where Open shot came from, so Back returns there. Any other scene switch forgets it. */
@@ -281,7 +304,9 @@ export class App {
       },
       selectScene: (key) => {
         const next = findEntry(this.library, key);
-        if (next) this.userSelect(next);
+        // The scene already behind the library opens as it was left.
+        if (next && next === this.entry && this.ui.home) this.setHome(false);
+        else if (next) this.userSelect(next);
       },
       importMedia: (files) =>
         attempt(async () => {
@@ -292,20 +317,47 @@ export class App {
           const scene = this.validScene();
           if (!scene || !this.entry) throw new Error('No valid scene is showing.');
           await this.studio.placeSound(this.entry.key, file, this.clock.frame / scene.fps);
+          this.setHome(false);
         }),
       waveform: (file, from, to, buckets) => this.media.peaks(file, from, to, buckets),
       createScene: (input) => this.create(() => this.studio.createScene(input)),
-      createComposition: (input) => this.create(() => this.studio.createComposition(input)),
-      selectShot: (layerId) => {
-        const shot = this.shots().find((s) => s.layerId === layerId);
-        if (!shot) return;
-        this.clickMemo = null;
-        this.layerId = layerId;
-        this.partId = null;
-        this.selectionPoint = null;
-        this.range = { from: shot.span.from, to: shot.span.to };
-        this.selectionChanged();
-        this.canvasDirty = true;
+      createVideo: (input) => this.create(() => this.studio.createVideo(input)),
+      showHome: (on) => {
+        if (on && !this.ui.home) this.ui.homeReturn = this.library.entries.length > 0;
+        this.setHome(on);
+      },
+      dragRange: (range) => {
+        this.userSetRange(range);
+        this.flushNow();
+      },
+      moveClip: (layerId, place) => this.moveClip(layerId, place),
+      syncGuides: () => this.syncOverlay(),
+      revealRender: (path) => void desktop()?.reveal(path),
+      selectLayer: (layerId, span) => {
+        this.pick(layerId, span ?? null);
+        this.flushNow();
+      },
+      selectRange: (layerId, range) => {
+        this.pick(layerId, null);
+        this.userSetRange(range.from === 0 && range.to === this.total ? null : range);
+        this.flushNow();
+      },
+      selectCue: (id, span) => {
+        this.pick(null, span);
+        this.ui.cue = id;
+        this.flushNow();
+      },
+      pickStack: (layerId) => {
+        const point = this.ui.stackMenu?.point ?? null;
+        this.ui.stackMenu = null;
+        this.pick(layerId, null);
+        this.selectionPoint = point ? { x: Math.round(point.x), y: Math.round(point.y) } : null;
+        this.flushNow();
+      },
+      hoverLayer: (layerId) => {
+        if (layerId === this.rowHover) return;
+        this.rowHover = layerId;
+        this.uiDirty = true;
         this.flushNow();
       },
       openShot: (layerId) => this.say(this.openShot(layerId)),
@@ -322,11 +374,15 @@ export class App {
         const result = this.ui.exporting.result;
         if (result && 'file' in result) void desktop()?.reveal(result.file);
       },
-      clearLayer: () => {
-        this.userSetLayer(null, null);
-        this.flushNow();
+      startCheck: (loop) => this.startCheck(loop),
+      cancelCheck: () => {
+        const running = this.ui.checking.running;
+        if (running) void this.studio.cancelCheck(running.id).catch(() => {});
       },
-      clearRange: () => {
+      clearSelection: () => {
+        this.ui.rangeEditing = false;
+        this.clickMemo = null;
+        this.userSetLayer(null, null);
         this.userSetRange(null);
         this.flushNow();
       },
@@ -371,13 +427,23 @@ export class App {
       dismissToast: () => (this.ui.toast = null),
       openFolder: () => void desktop()?.openFolder(),
       projects: async () => (await desktop()?.projects().catch(() => [])) ?? [],
-      openProject: async (path) => (await desktop()?.openProject(path).catch((err: unknown) => errorText(err).message)) ?? null,
+      openProject: async (path, name, target) => {
+        this.pauseInternal();
+        this.ui.switching = { name, key: target?.scene ?? null, path };
+        const problem = (await desktop()?.openProject(path, target).catch((err: unknown) => errorText(err).message)) ?? null;
+        // On success the page goes; on failure, or a project that's refused, the stage comes back.
+        if (problem) this.ui.switching = null;
+        return problem;
+      },
+      forgetProject: async (path) => {
+        await desktop()?.forgetProject(path).catch(() => {});
+      },
       newProject: async () => (await desktop()?.newProject().catch((err: unknown) => errorText(err).message)) ?? null,
-      convertFilm: async (id) => {
+      convertFilm: async (id, project) => {
         const app = desktop();
         try {
           if (app) {
-            const problem = await app.convertFilm(id);
+            const problem = await app.convertFilm(id, project);
             return problem ? { text: problem, error: true } : null;
           }
           const path = await this.studio.convertFilm(id);
@@ -405,6 +471,7 @@ export class App {
       frame,
     );
     this.overlay = new SelectionOverlay(frame);
+    this.safeZones = new SafeZoneGuide(frame);
     this.errors = new ErrorLog((blocks) => (this.ui.errors = blocks));
 
     // The letterbox around the canvas is outside the scene: a click there clears the layer.
@@ -416,6 +483,7 @@ export class App {
     canvas.addEventListener('pointerdown', this.onCanvasPointerDown);
     canvas.addEventListener('click', this.onCanvasClick);
     canvas.addEventListener('dblclick', this.onCanvasDoubleClick);
+    canvas.addEventListener('contextmenu', this.onCanvasContextMenu);
     canvas.addEventListener('pointermove', this.onCanvasPointerMove);
     canvas.addEventListener('pointerleave', this.onCanvasPointerLeave);
     window.addEventListener('keydown', this.onKey);
@@ -431,12 +499,116 @@ export class App {
       this.pendingFrameParam = null;
       this.pendingSelection = null;
     }
+    // Before the first scene shows, so the URL never carries one the project didn't open on.
+    this.ui.home = options.home ?? false;
     this.selectEntry(initial, false);
-    if (options.autoplay) this.playInternal();
+    if (options.autoplay && !this.ui.home) this.playInternal();
 
     this.api = this.createApi();
     this.startQueue();
     this.refreshMedia();
+    this.refreshThumbs();
+    void this.refreshRenders();
+  }
+
+  // ---- the library ----
+
+  /**
+   * Shows or hides the library. While it shows, playback stops and the canvas isn't redrawn: it's under the
+   * library, and anything marked dirty meanwhile draws when it closes. It can't close on a project with nothing to show.
+   */
+  private setHome(on: boolean): void {
+    if (on === this.ui.home || (!on && this.library.entries.length === 0)) return;
+    if (on) {
+      this.pauseInternal();
+      this.ui.exporting = { ...this.ui.exporting, open: false };
+    }
+    // Set by the showHome action; the App's own calls open the library with nothing to go back to.
+    this.ui.home = on;
+    if (on) void this.refreshRenders();
+    else this.invalidate();
+    this.syncUrl();
+  }
+
+  private thumbTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Asks where the posters stand, a moment after the last change, so a burst of edits asks once. */
+  private refreshThumbs(): void {
+    if (this.thumbTimer) clearTimeout(this.thumbTimer);
+    this.thumbTimer = setTimeout(() => {
+      this.thumbTimer = null;
+      this.studio.thumbs().then(
+        (thumbs) => {
+          // A scene keeps the poster it has until its new one arrives.
+          const known = this.ui.thumbs;
+          this.ui.thumbs = Object.fromEntries(Object.entries(thumbs).map(([key, file]) => [key, file ?? known[key] ?? null]));
+        },
+        () => {},
+      );
+    }, 600);
+  }
+
+  private async refreshRenders(): Promise<void> {
+    this.ui.renders = await this.studio.renders().catch(() => this.ui.renders);
+  }
+
+  /** Saves a dragged clip. Whatever refuses it says why in the selection bar, and the file stays as it was. */
+  private isPictureClip(layerId: string): boolean {
+    return this.validScene()?.layers.some((l) => l.id === layerId && l.file !== undefined) ?? false;
+  }
+
+  /** Undo waits in line behind a move still saving, or a quick Command-Z would find nothing to take back. */
+  private moveClip(layerId: string, place: ClipPlace): Promise<boolean> {
+    const move = this.moveClipNow(layerId, place);
+    this.historySteps = this.historySteps.then(() => move.then(() => {}));
+    return move;
+  }
+
+  private async moveClipNow(layerId: string, place: ClipPlace): Promise<boolean> {
+    const before = this.clipPlace(layerId);
+    const saved = await this.saveClip(layerId, place, before);
+    if (saved && before) this.history.record({ layerId, before, after: place });
+    return saved;
+  }
+
+  /** Where a clip sits now, from the composition on screen. */
+  private clipPlace(layerId: string): ClipPlace | null {
+    const shot = this.shots().find((s) => s.layerId === layerId);
+    return shot ? { from: shot.span.from, in: shot.span.in, out: shot.end, length: shot.length } : null;
+  }
+
+  /** `leaving` is where the clip was, told by the caller since quick undos outrun the file coming back. */
+  private async saveClip(layerId: string, place: ClipPlace, leaving: ClipPlace | null): Promise<boolean> {
+    const scene = this.validScene();
+    if (!scene || !this.entry) return false;
+    const fps = scene.fps;
+    const key = this.entry.key;
+    const edit = { start: place.from / fps, in: place.in / fps, out: place.out >= place.length && !this.isPictureClip(layerId) ? null : place.out / fps };
+    const spanOf = (p: ClipPlace): FrameRange => ({ from: p.from, to: Math.min(this.total, p.from + p.out - p.in) });
+    const was = leaving ? spanOf(leaving) : null;
+    this.history.saving(layerId, clipPlaceKey(edit.start, edit.in, edit.out));
+    const problem = await attempt(() => this.studio.moveClip(key, { clip: layerId, ...edit }));
+    this.say(problem);
+    // A range marked on the clip stays on the clip.
+    if (problem === null && was && this.range?.from === was.from && this.range.to === was.to) {
+      this.userSetRange(spanOf(place));
+    }
+    return problem === null;
+  }
+
+  /** Command-Z on the timeline, one at a time, so quick presses all count. Nothing happens while an agent works on the composition. */
+  private stepHistory(direction: 'undo' | 'redo'): void {
+    this.historySteps = this.historySteps.then(async () => {
+      if (this.entry?.kind !== 'composition' || this.clipsLocked()) return;
+      const edit = direction === 'undo' ? this.history.undo() : this.history.redo();
+      if (!edit) return;
+      const [to, from] = direction === 'undo' ? [edit.before, edit.after] : [edit.after, edit.before];
+      if (!(await this.saveClip(edit.layerId, to, from))) this.history.clear();
+    });
+  }
+
+  private clipsLocked(): boolean {
+    return this.requests.some((r) => r.sceneId === this.entry?.key && r.status === 'working');
   }
 
   /** The media list the sidebar shows was read for this listing of media/. */
@@ -447,6 +619,9 @@ export class App {
     const listing = JSON.stringify(this.library.media ?? []);
     if (listing === this.mediaListed) return;
     this.mediaListed = listing;
+    // A replaced file must decode again.
+    this.pictures.dispose();
+    this.picturesWanted = '';
     this.ui.media = (this.library.media ?? []).map((m) => ({ file: m.file, name: m.file.slice('media/'.length) }));
     this.studio.mediaList().then(
       (list) => {
@@ -487,6 +662,7 @@ export class App {
     }
     this.errors.set('hmr', null);
     this.refreshMedia();
+    this.refreshThumbs();
   }
 
   /**
@@ -555,6 +731,7 @@ export class App {
   }
 
   private userSelect(entry: SceneEntry): void {
+    this.setHome(false);
     this.shotReturn = null;
     this.pendingFrameParam = null;
     this.pendingSelection = null;
@@ -572,7 +749,15 @@ export class App {
     this.total = scene ? countFrames(scene) : 0;
     this.version++;
     this.shape = renderable ? sceneShape(scene, registry, this.total, entry?.world) : null;
+    this.ui.layers = renderable ? this.layerRows(scene) : [];
+    this.history.sync(entry?.key ?? null, entry?.kind === 'composition' && scene ? clipState(scene) : null);
     this.reconcileSelection(keepFrame);
+    if (!keepFrame) {
+      // Rows and menus of the scene that's leaving won't report the pointer going.
+      this.rowHover = null;
+      this.ui.stackMenu = null;
+      this.ui.rangeEditing = false;
+    }
     this.clickMemo = null;
     this.hoverLayer = null;
     this.hoverFailedFrame = null;
@@ -591,7 +776,7 @@ export class App {
     }
 
     this.view.setSceneSize(renderable ? scene.size : null);
-    this.meter.reset();
+    this.view.canvas.classList.toggle('is-pixel', renderable && this.showsPixels(scene, entry?.world ?? {}));
     this.errors.set('render', null);
     this.syncErrors();
     this.ui.scenes = this.sceneOptions();
@@ -608,9 +793,12 @@ export class App {
           size: scene ? scene.size : null,
           fps: scene?.fps ?? null,
           frames: this.total,
-          empty: scene !== null && scene.layers.length === 0,
+          empty: scene !== null && (scene.layers.length === 0 || scene.layers.every((l) => l.scene !== undefined && entry.world.scenes?.get(l.scene)?.layers.length === 0)),
+          video: entry.kind === 'composition',
+          vertical: scene !== null && scene.size[0] * 16 === scene.size[1] * 9,
         }
       : null;
+    this.ui.markers = scene?.markers ? scene.markers.map((m) => ({ frame: Math.min(this.total - 1, timeToFrame(m.t, scene.fps)), label: m.label })).sort((a, b) => a.frame - b.frame) : [];
     document.title = entry ? `${entry.key} · Frame Studio` : 'Frame Studio';
     this.syncUrl();
     this.schedulePublish();
@@ -633,13 +821,16 @@ export class App {
       this.layerId = resolved.layerId;
       this.partId = resolved.partId;
       this.range = resolved.range;
-      this.notice = resolved.ignored.length > 0 ? `Ignored from the URL: ${resolved.ignored.join('; ')}` : null;
+      this.notice = null;
+      if (resolved.ignored.length > 0) console.warn(`Ignored from the URL: ${resolved.ignored.join('; ')}`);
       return;
     }
     if (!sameScene) {
       this.layerId = null;
       this.partId = null;
       this.range = null;
+      this.pickedSpan = null;
+      this.ui.cue = null;
       this.notice = null;
       return;
     }
@@ -654,16 +845,22 @@ export class App {
       this.partId = null;
     }
     if (this.range && this.range.to > shape.frameCount) {
-      const was = `[${this.range.from}, ${this.range.to})`;
       if (this.range.from < shape.frameCount) {
         this.range = { from: this.range.from, to: shape.frameCount };
-        notes.push(`The scene now has ${shape.frameCount} frames, so the range ${was} was cut to [${this.range.from}, ${this.range.to}).`);
+        notes.push(`The scene got shorter, so the range was cut to ${spanLabel(this.range, shape.fps)}.`);
       } else {
         this.range = null;
-        notes.push(`The scene now has ${shape.frameCount} frames, so the range ${was} was cleared.`);
+        notes.push('The scene got shorter, so the range was cleared.');
       }
     }
     if (notes.length > 0) this.notice = notes.join(' ');
+  }
+
+  /** A scene on a pixel stage, or a composition of nothing else. Square pixels should stay square however the canvas scales. */
+  private showsPixels(scene: Scene, world: World): boolean {
+    if (scene.pixel) return true;
+    const placed = scene.layers.filter((l) => l.scene !== undefined);
+    return placed.length > 0 && placed.length === scene.layers.length && placed.every((l) => world.scenes?.get(l.scene!)?.pixel !== undefined);
   }
 
   /** Compositions and scenes, then each M9 project's scenes under its name, its main scene first (ADR 0007, ADR 0013). */
@@ -688,34 +885,48 @@ export class App {
         label: project ? e.key.slice(project.id.length + 1) : e.key,
         file: e.file,
         invalid: e.scene === null || (project?.errors.length ?? 0) > 0,
-        project: project ? project.id : null,
+        film: project ? project.id : null,
         group: project ? project.name : null,
         main,
         kind: e.kind,
         usedIn: project ? [] : (usedIn.get(e.key) ?? []),
+        format: e.scene ? { size: e.scene.size, fps: e.scene.fps, seconds: e.scene.duration, pixel: e.scene.pixel !== undefined || this.showsPixels(e.scene, e.world) } : null,
       };
     });
-    // Loose scenes keep library order; projects follow in id order, each with its main scene first.
+    // The project's own keep library order; older films follow in id order, each with its main scene first.
     return options
       .map((o, i) => ({ o, i }))
-      .sort((a, b) => Number(a.o.project !== null) - Number(b.o.project !== null) || (a.o.project ?? '').localeCompare(b.o.project ?? '') || Number(b.o.main) - Number(a.o.main) || a.i - b.i)
+      .sort((a, b) => Number(a.o.film !== null) - Number(b.o.film !== null) || (a.o.film ?? '').localeCompare(b.o.film ?? '') || Number(b.o.main) - Number(a.o.main) || a.i - b.i)
       .map(({ o }) => o);
   }
 
   // ---- shots (ADR 0007) ----
 
   /** The scene layers of the scene on screen whose shots show at all, with their spans. */
-  private shots(): { layerId: string; key: string; label: string; span: SceneLayerSpan }[] {
+  private shots(): { layerId: string; key: string; label: string; span: SceneLayerSpan; end: number; length: number }[] {
     const entry = this.entry;
     const scene = entry?.scene;
     if (!entry || !scene || (entry.project === null && entry.kind !== 'composition')) return [];
     return scene.layers.flatMap((layer) => {
+      if (layer.file !== undefined) {
+        const from = timeToFrame(layer.start ?? 0, scene.fps);
+        const start = timeToFrame(layer.in ?? 0, scene.fps);
+        const end = timeToFrame(layer.out ?? 0, scene.fps);
+        const known = this.ui.media.find((m) => m.file === layer.file)?.duration;
+        // A clip of an image can run as long as you like; a video stops where its file does.
+        const length = isImageFile(layer.file) ? Number.MAX_SAFE_INTEGER : known !== undefined ? timeToFrame(known, scene.fps) : end;
+        const span = { from, to: Math.min(this.total, from + Math.max(0, end - start)), in: start };
+        return span.to > span.from ? [{ layerId: layer.id, key: '', label: layer.file.slice(layer.file.lastIndexOf('/') + 1), span, end, length }] : [];
+      }
       const shot = layer.scene !== undefined ? entry.world.scenes?.get(layer.scene) : undefined;
       if (!shot) return [];
       const span = sceneLayerSpan(layer, scene, shot);
       // A composition's clips are folder entries, keyed by their plain id; an M9 shot is "<project>/<scene>".
       const key = entry.project === null ? layer.scene! : `${entry.project}/${layer.scene}`;
-      return span.to > span.from ? [{ layerId: layer.id, key, label: layer.scene!, span }] : [];
+      const length = countFrames(shot);
+      // The trim's end, which the span doesn't show when the composition cuts the clip off.
+      const end = layer.out === undefined || layer.out >= shot.duration ? length : Math.min(length, timeToFrame(layer.out, scene.fps));
+      return span.to > span.from ? [{ layerId: layer.id, key, label: layer.scene!, span, end, length }] : [];
     });
   }
 
@@ -724,6 +935,7 @@ export class App {
     const id = layerId ?? this.layerId;
     const shot = this.shots().find((s) => s.layerId === id);
     if (!shot || !this.entry) return id === null ? 'Select a shot first.' : `Layer "${id}" places no scene.`;
+    if (shot.key === '') return `"${shot.label}" is a recorded clip, so there is no scene to open.`;
     const target = findEntry(this.library, shot.key);
     if (!target) return `Scene "${shot.key}" is missing.`;
     const frame = this.clock.frame;
@@ -801,6 +1013,19 @@ export class App {
     }
   }
 
+  /** Asks the studio server to check the scene on screen. Returns an error message, or null. */
+  private async startCheck(loop: boolean): Promise<string | null> {
+    if (!this.validScene() || !this.entry) return 'There is no valid scene to check.';
+    if (this.ui.checking.running) return 'A check is already running.';
+    try {
+      const id = await this.studio.startCheck({ scene: this.entry.key, loop });
+      this.ui.checking = { running: { id, stage: 'starting', done: 0, total: 1 }, report: null, error: null };
+      return null;
+    } catch (err) {
+      return errorText(err).message;
+    }
+  }
+
   /** Shows why a button did nothing, in the selection bar. */
   private say(problem: string | null): void {
     if (!problem) return;
@@ -831,8 +1056,9 @@ export class App {
       'project',
       project && project.errors.length > 0 ? { title: `Project "${project.id}" has errors (${project.file})`, lines: project.errors } : null,
     );
-    // A project with no scenes yet isn't an error: the stage offers to start one (ADR 0013).
+    // A project with no scenes yet isn't an error: the library offers to start one (ADR 0013).
     this.ui.emptyProject = lib.entries.length === 0;
+    if (lib.entries.length === 0) this.setHome(true);
     if (lib.entries.length === 0) {
       this.errors.set('scene', null);
     } else if (this.entry && this.entry.errors.length > 0) {
@@ -854,8 +1080,6 @@ export class App {
     this.resumeWhenValid = false;
     if (!this.clock.play()) return false;
     this.hoverLayer = null;
-    this.meter.reset();
-    this.lastFpsUpdate = -Infinity;
     this.uiDirty = true;
     this.schedule();
     return true;
@@ -865,7 +1089,6 @@ export class App {
     this.resumeWhenValid = false;
     if (!this.clock.playing) return;
     this.clock.pause();
-    this.meter.reset();
     this.uiDirty = true;
     this.syncUrl();
     this.schedulePublish();
@@ -877,7 +1100,6 @@ export class App {
   private seekInternal(frame: number, sync: boolean): number {
     const before = this.clock.frame;
     const after = this.clock.seek(frame);
-    this.meter.reset();
     this.uiDirty = true;
     if (after !== before) {
       this.canvasDirty = true;
@@ -894,6 +1116,11 @@ export class App {
   private readonly onKey = (e: KeyboardEvent): void => {
     // A modal dialog (New scene) owns the keyboard; Escape there must close it, not clear the selection.
     if (e.defaultPrevented || e.isComposing || document.querySelector('dialog:modal')) return;
+    // The timeline isn't showing under the library. Escape goes back to it.
+    if (this.ui.home) {
+      if (e.key === 'Escape' && this.ui.homeReturn) this.setHome(false);
+      return;
+    }
     const action = keyAction(e, this.entry?.scene?.fps ?? 1);
     if (!action || focusKeepsKey(e.target, e.key)) return;
     e.preventDefault();
@@ -920,6 +1147,17 @@ export class App {
         break;
       case 'mute':
         if (this.soundStatus !== 'none') this.toggleMute();
+        break;
+      case 'markSpan':
+        this.markSpan();
+        break;
+      case 'compose':
+        this.ui.layout.panel = true;
+        requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.agent-panel textarea')?.focus());
+        break;
+      case 'undo':
+      case 'redo':
+        this.stepHistory(action.type);
         break;
       case 'ignore':
         break;
@@ -1015,6 +1253,20 @@ export class App {
     if (top !== null && this.shots().some((s) => s.layerId === top)) this.openShot(top);
   };
 
+  /** Keynote's stack menu: every layer under the pointer, top first. The playhead stops, so the menu matches the picture. */
+  private readonly onCanvasContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+    const p = this.scenePoint({ x: e.clientX, y: e.clientY });
+    if (!p || !this.validScene()) return;
+    this.pauseInternal();
+    try {
+      const layers = this.hit(p.x, p.y, { all: true }).candidates.map((c) => c.layerId);
+      this.ui.stackMenu = layers.length > 0 ? { x: e.clientX, y: e.clientY, layers, point: p } : null;
+    } catch (err) {
+      this.say(`Hit test failed: ${errorText(err).message}`);
+    }
+  };
+
   private readonly onStagePointerDown = (e: PointerEvent): void => {
     this.stageDownAt = e.button === 0 && e.target === this.stageElement ? { x: e.clientX, y: e.clientY } : null;
   };
@@ -1083,16 +1335,17 @@ export class App {
       }
     }
     this.hoverLayer = next;
+    this.ui.hoverLayer = this.rowHover ?? next;
   }
 
-  /** Escape clears one thing: the hover, else the layer (and part), else the range. */
+  /** Escape clears one thing: the hover, else the layer (and part) or sound cue, else the range. */
   private escape(): void {
     const hoverShowing = this.hoverLayer !== null && this.hoverLayer !== this.layerId;
     if (hoverShowing) {
       this.hoverHidden = true;
       this.hoverLayer = null;
       this.schedule();
-    } else if (this.layerId !== null) {
+    } else if (this.layerId !== null || this.ui.cue !== null) {
       // Hide the hover too, or the layer under the pointer would light up again at once.
       this.hoverHidden = true;
       this.hoverLayer = null;
@@ -1105,8 +1358,26 @@ export class App {
   private userSetLayer(layerId: string | null, partId: string | null): void {
     this.layerId = layerId;
     this.partId = layerId !== null ? partId : null;
+    this.pickedSpan = null;
+    this.ui.cue = null;
     if (layerId === null) this.selectionPoint = null;
     this.selectionChanged();
+  }
+
+  /** Selects from the timeline or a list, where no click landed on the canvas. */
+  private pick(layerId: string | null, span: FrameRange | null): void {
+    this.clickMemo = null;
+    this.userSetLayer(layerId, null);
+    this.selectionPoint = null;
+    this.pickedSpan = span;
+  }
+
+  /** X: the range goes to the clip, override or cue clicked, else the selected shot, else the layer's first to last key. */
+  private markSpan(): void {
+    const row = this.ui.layers.find((r) => r.id === this.layerId);
+    const shot = this.shots().find((s) => s.layerId === this.layerId);
+    const span = (shot ? shot.span : null) ?? this.pickedSpan ?? (row && row.keys.length > 1 ? { from: row.keys[0], to: Math.min(this.total, row.keys[row.keys.length - 1] + 1) } : null);
+    if (span) this.userSetRange(span.from === 0 && span.to === this.total ? null : { from: span.from, to: span.to });
   }
 
   private userSetRange(range: FrameRange | null): void {
@@ -1128,8 +1399,7 @@ export class App {
   private requestSelection(): RequestSelection | null {
     const scene = this.validScene();
     if (!scene) return null;
-    const from = this.range?.from ?? 0;
-    const to = this.range?.to ?? this.total;
+    const { from, to } = this.selectedSpan();
     return {
       sceneId: this.entry!.key,
       ...(this.layerId !== null ? { layerId: this.layerId } : {}),
@@ -1137,6 +1407,12 @@ export class App {
       from,
       to,
     };
+  }
+
+  /** What the selection covers: the range, else the selected clip, else everything. The token and a request read this same span. */
+  private selectedSpan(): FrameRange {
+    const clip = this.layerId === null ? undefined : this.shots().find((s) => s.layerId === this.layerId)?.span;
+    return this.range ?? (clip ? { from: clip.from, to: clip.to } : { from: 0, to: this.total });
   }
 
   /** Writes .frame-studio/selection.json 300 ms after the selection stops changing (ADR 0003). */
@@ -1176,6 +1452,9 @@ export class App {
       const kept = Object.entries(this.ui.turnEvents).filter(([key]) => ids.has(key.slice(0, key.indexOf(':') + 1)));
       if (kept.length !== Object.keys(this.ui.turnEvents).length) this.ui.turnEvents = Object.fromEntries(kept);
       for (const key of [...this.loadedTurns]) if (!ids.has(key.slice(0, key.indexOf(':') + 1))) this.loadedTurns.delete(key);
+      // A clip's bands lock while an agent works on its composition.
+      this.uiDirty = true;
+      this.schedule();
       // A thread that got a new turn while open needs that turn's events.
       if (this.ui.studio.open !== null) void this.loadEvents(this.ui.studio.open);
     };
@@ -1198,12 +1477,22 @@ export class App {
         this.ui.toast = { id, status: 'asking', text: event.type === 'questions' ? (event.questions[0]?.question ?? '') : event.summary };
       }
     });
+    this.studio.onThumb(({ key, file }) => (this.ui.thumbs = { ...this.ui.thumbs, [key]: file }));
     this.studio.onExport((event) => {
       const state = this.ui.exporting;
       if (state.running?.id !== event.id) return;
       if ('error' in event) this.ui.exporting = { ...state, running: null, result: { error: event.error } };
-      else if ('file' in event) this.ui.exporting = { ...state, running: null, result: { file: event.file, ...(event.note ? { note: event.note } : {}) } };
+      else if ('file' in event) {
+        this.ui.exporting = { ...state, running: null, result: { file: event.file, ...(event.note ? { note: event.note } : {}) } };
+        void this.refreshRenders();
+      }
       else this.ui.exporting = { ...state, running: { id: event.id, stage: event.stage, done: event.done, total: event.total } };
+    });
+    this.studio.onCheck((event) => {
+      if (this.ui.checking.running?.id !== event.id) return;
+      if ('error' in event) this.ui.checking = { running: null, report: null, error: event.error };
+      else if ('report' in event) this.ui.checking = { running: null, report: event.report, error: null };
+      else this.ui.checking = { running: event, report: null, error: null };
     });
     this.refreshAgents(false);
     // Stalled requests are judged against the clock, and agents sign in and out, so check now and then.
@@ -1332,6 +1621,7 @@ export class App {
   private restoreRequest(id: number, play: boolean): void {
     const request = this.requests.find((r) => r.id === id);
     if (!request) return;
+    this.setHome(false);
     const sel = currentSelection(request);
     const entry = findEntry(this.library, sel.sceneId);
     if (!entry) {
@@ -1432,11 +1722,7 @@ export class App {
 
   private toggleMute(): void {
     this.sound.setMuted(!this.sound.isMuted);
-    try {
-      localStorage.setItem(MUTED_KEY, this.sound.isMuted ? '1' : '0');
-    } catch {
-      // storage unavailable; the setting lasts until reload
-    }
+    writePref(MUTED_KEY, this.sound.isMuted ? '1' : '0');
     this.uiDirty = true;
     this.schedule();
   }
@@ -1465,7 +1751,7 @@ export class App {
 
   /** What the scene on screen draws with beyond its file: its project's scenes and cast, and surfaces for compositing. */
   private world(): World {
-    return { ...this.entry?.world, surfaces: this.surfaces };
+    return { ...this.entry?.world, surfaces: this.surfaces, pictures: this.pictures };
   }
 
   private invalidate(): void {
@@ -1482,23 +1768,18 @@ export class App {
     this.raf = 0;
     if (this.hoverDirty) this.probeHover();
     if (this.clock.tick(now)) {
-      this.meter.record(now);
       this.canvasDirty = true;
       this.uiDirty = true;
       this.syncUrl();
     }
-    if (this.clock.playing && now - this.lastFpsUpdate >= 250) {
-      this.lastFpsUpdate = now;
-      this.uiDirty = true;
-    }
-    this.flushNow(now);
+    this.flushNow();
     if (this.clock.playing) this.schedule();
   };
 
-  private flushNow(now = performance.now()): void {
-    if (this.canvasDirty) this.drawNow();
+  private flushNow(): void {
+    if (this.canvasDirty && !this.ui.home) this.drawNow();
     this.syncSound();
-    if (this.uiDirty) this.syncUi(now);
+    if (this.uiDirty) this.syncUi();
     this.syncOverlay();
   }
 
@@ -1518,9 +1799,38 @@ export class App {
       version: this.version,
       fit: this.view.currentFit,
       selected: scene && this.layerId !== null && !this.clock.playing ? { layerId: this.layerId, partId: this.partId } : null,
-      hover: scene ? this.hoverLayer : null,
+      hover: scene && !this.clock.playing ? (this.rowHover ?? this.hoverLayer) : null,
     });
     this.view.canvas.classList.toggle('is-over-layer', scene !== null && this.hoverLayer !== null);
+    this.safeZones.show(this.ui.layout.safeZones && scene !== null && (this.ui.header?.vertical ?? false));
+  }
+
+  /** Asks for the frame's pictures, and draws again when they arrive. */
+  private wantPictures(scene: Scene, frame: number, world: World): void {
+    const wanted = picturesAt(scene, frame, world);
+    const key = JSON.stringify(wanted);
+    if (wanted.length === 0 || key === this.picturesWanted) return;
+    this.picturesWanted = key;
+    this.picturesNext = wanted;
+    if (this.picturesBusy) return;
+    this.picturesBusy = true;
+    void this.decodePictures();
+  }
+
+  /** Decodes what the newest draw wanted, one at a time, skipping frames a scrub or playback has left behind. */
+  private async decodePictures(): Promise<void> {
+    while (this.picturesNext) {
+      const wanted = this.picturesNext;
+      this.picturesNext = null;
+      try {
+        await this.pictures.prepare(wanted);
+        this.errors.set('pictures', null);
+      } catch (err) {
+        this.errors.set('pictures', { title: 'A picture clip could not be read', lines: [err instanceof Error ? err.message : String(err)] });
+      }
+      this.invalidate();
+    }
+    this.picturesBusy = false;
   }
 
   private drawNow(): DrawResult {
@@ -1533,6 +1843,7 @@ export class App {
     }
     const frame = this.clock.frame;
     const world = this.world();
+    this.wantPictures(scene, frame, world);
     try {
       const drawn = this.view.draw((ctx) => render(ctx, scene, frame, registry, world));
       this.errors.set('render', null);
@@ -1549,7 +1860,7 @@ export class App {
     }
   }
 
-  private syncUi(now: number): void {
+  private syncUi(): void {
     this.uiDirty = false;
     const scene = this.clock.timeline ? (this.entry?.scene ?? null) : null;
     const ui = this.ui;
@@ -1562,12 +1873,17 @@ export class App {
     ui.sounds = scene ? this.soundBands(scene) : null;
     ui.usesMedia = scene !== null && mediaUsed(scene, this.entry?.world ?? {}).length > 0;
     ui.back = this.shotReturn ? { label: this.shotReturn.key.slice(this.shotReturn.key.indexOf('/') + 1), key: this.shotReturn.key } : null;
+    const span = this.selectedSpan();
+    ui.layerId = this.layerId;
+    ui.hoverLayer = this.rowHover ?? this.hoverLayer;
     ui.selection = {
       sceneId: scene ? (this.entry?.key ?? null) : null,
       layer: layerLabel(this.layerId, this.partId),
       shot: scene && this.layerId !== null ? (this.shots().find((s) => s.layerId === this.layerId)?.label ?? null) : null,
       range: scene ? this.range : null,
-      rangeText: scene ? describeRange(this.range, scene.fps, this.total) : null,
+      when: scene ? spanLabel(span, scene.fps) : '',
+      whenTitle: scene ? spanTitle(span) : '',
+      fps: scene?.fps ?? 1,
       frameCount: this.total,
       notice: this.notice,
     };
@@ -1582,14 +1898,33 @@ export class App {
       frameCount: this.total,
       timecode: formatTimecode(frame, scene.fps),
       endTimecode: formatTimecode(this.total, scene.fps),
+      clock: formatClock(frame, scene.fps),
+      endClock: formatClock(this.total, scene.fps),
+      seconds: this.total / scene.fps,
     };
-    ui.fps = { scene: scene.fps, measured: this.clock.playing ? this.meter.fps(now) : null };
+    ui.fps = scene.fps;
+  }
+
+  /** One row per layer, top of the stack first, so the background comes last. Worked out once per scene: a row never changes while it plays. */
+  private layerRows(scene: Scene): LayerRow[] {
+    return sceneLayers(scene)
+      .reverse()
+      .map((layer) => {
+        const keys = new Set<number>();
+        for (const track of layer.tracks ?? []) for (const key of track.keys) keys.add(timeToFrame(key.t, scene.fps));
+        return {
+          id: layer.id,
+          keys: [...keys].filter((f) => f < this.total).sort((a, b) => a - b),
+          overrides: (layer.overrides ?? []).map((o) => ({ from: o.from, to: o.to })),
+        };
+      });
   }
 
   /** The shots for the scrubber, each in the lowest lane where it overlaps no other. Null without any. */
-  private shotBands(): { bands: ShotBand[]; lanes: number; frameCount: number } | null {
+  private shotBands(): { bands: ShotBand[]; lanes: number; frameCount: number; locked: boolean } | null {
     const shots = this.shots();
     if (shots.length === 0) return null;
+    const composition = this.entry?.kind === 'composition';
     const laneEnds: number[] = [];
     const bands = [...shots]
       .sort((a, b) => a.span.from - b.span.from)
@@ -1597,9 +1932,17 @@ export class App {
         let lane = laneEnds.findIndex((end) => end <= s.span.from);
         if (lane < 0) lane = laneEnds.push(0) - 1;
         laneEnds[lane] = s.span.to;
-        return { layerId: s.layerId, label: s.label, from: s.span.from, to: s.span.to, lane, selected: s.layerId === this.layerId };
+        return {
+          layerId: s.layerId,
+          label: s.label,
+          from: s.span.from,
+          to: s.span.to,
+          lane,
+          selected: s.layerId === this.layerId,
+          ...(composition ? { clip: { from: s.span.from, in: s.span.in, out: s.end, length: s.length } } : {}),
+        };
       });
-    return { bands, lanes: laneEnds.length, frameCount: this.total };
+    return { bands, lanes: laneEnds.length, frameCount: this.total, locked: this.clipsLocked() };
   }
 
   /** The scene's own sound cues for the timeline, each in the lowest lane where it overlaps no other. Null without any. */
@@ -1637,6 +1980,8 @@ export class App {
   }
 
   private urlPosition(): UrlPosition {
+    // The library carries no scene, so a reload lands back on it.
+    if (this.ui.home) return { scene: null, frame: null };
     return { scene: this.entry?.key ?? null, frame: this.urlFrame(), ...this.urlSelection() };
   }
 
@@ -1689,9 +2034,11 @@ export class App {
       },
       seek(frame: number): number {
         if (typeof frame !== 'number' || Number.isNaN(frame)) throw new TypeError(`seek(frame) needs a number, got ${String(frame)}`);
+        app.setHome(false);
         return app.seekInternal(frame, true);
       },
       play(): void {
+        app.setHome(false);
         app.playInternal();
         app.flushNow();
       },
@@ -1708,11 +2055,11 @@ export class App {
         if (!Number.isInteger(frame) || frame < 0 || frame >= app.total) {
           throw new RangeError(`renderFrame: frame must be an integer in [0, ${app.total}) for scene "${app.entry?.key ?? scene.id}", got ${String(frame)}`);
         }
+        app.setHome(false);
         app.pauseInternal();
         app.clock.seek(frame);
-        app.meter.reset();
         const result = app.drawNow();
-        app.syncUi(performance.now());
+        app.syncUi();
         app.syncOverlay();
         app.requestHover();
         app.syncUrl();
@@ -1732,8 +2079,7 @@ export class App {
       get selection() {
         const scene = app.validScene();
         if (!scene) return null;
-        const from = app.range?.from ?? 0;
-        const to = app.range?.to ?? app.total;
+        const { from, to } = app.selectedSpan();
         const sceneId = app.entry!.key;
         if (app.layerId === null) return { sceneId, from, to };
         if (app.partId === null) return { sceneId, layerId: app.layerId, from, to };
@@ -1800,11 +2146,7 @@ export class App {
 }
 
 function readMuted(): boolean {
-  try {
-    return localStorage.getItem(MUTED_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readPref(MUTED_KEY) === '1';
 }
 
 /** Runs a studio call, turning a failure into its message for the panel. */

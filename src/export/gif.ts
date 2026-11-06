@@ -33,6 +33,7 @@ export async function exportGif(source: FrameSource, range: ExportRange, sink: B
   const step = Math.max(1, Math.ceil(total / SAMPLE_FRAMES));
   const samples = Math.ceil(total / step);
   for (let i = 0; i < total; i += step) {
+    await source.prepare?.(range.from + i);
     sampler.add(readPixels(source.draw(range.from + i)));
     options.onProgress?.({ done: i / step + 1, total: samples, stage: 'sampling colours' });
   }
@@ -58,6 +59,7 @@ export async function exportGif(source: FrameSource, range: ExportRange, sink: B
   let cur = new Uint8Array(width * height);
   const marked = new Uint8Array(width * height);
   for (let i = 0; i < total; i++) {
+    await source.prepare?.(range.from + i);
     indexPixels(readPixels(source.draw(range.from + i)), map, cur);
     const first = i === 0;
     gif.writeFrame(first ? cur : markUnchanged(cur, prev, UNCHANGED, marked), width, height, {

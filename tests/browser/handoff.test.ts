@@ -72,8 +72,7 @@ async function expectText(locator: ReturnType<Page['locator']>, text: string): P
 }
 
 const panel = () => page.getByRole('complementary', { name: 'Agent' });
-const sidebar = () => page.getByRole('navigation', { name: 'Studio' });
-const request = (id: number) => sidebar().getByRole('article', { name: `Request ${id}` });
+const request = (id: number) => panel().getByRole('article', { name: `Request ${id}` });
 const readSelection = () => (existsSync(join(STUDIO, 'selection.json')) ? (JSON.parse(readFileSync(join(STUDIO, 'selection.json'), 'utf8')) as CurrentSelection) : null);
 
 /** The smallest valid PNG: one opaque pixel. */
@@ -93,7 +92,9 @@ describe('sending a request from the viewer', () => {
   });
 
   it('queues the prompt with its selection and a reference for the external agent, and copies a line for it', async () => {
-    await expect.poll(() => panel().getByRole('combobox', { name: 'Agent' }).inputValue()).toBe('external');
+    // Only the external agent is ready, so there's no picker.
+    await panel().getByRole('button', { name: 'New thread' }).waitFor();
+    expect(await panel().getByRole('button', { name: 'Agent settings' }).count()).toBe(0);
     await panel().getByRole('textbox', { name: 'Prompt' }).fill('make bruno look sad here');
     await panel().locator('input[type=file]').setInputFiles({ name: 'Sad Bear.png', mimeType: 'image/png', buffer: PNG });
     await panel().getByRole('img', { name: 'Sad Bear.png' }).waitFor();
@@ -138,7 +139,7 @@ describe('following a thread', () => {
     await expect.poll(() => notice.count()).toBe(0);
     await expectText(thread(), 'turned bruno blue over frames 72 to 96');
     await expect.poll(() => page.getByRole('status', { name: 'Selected layer' }).textContent()).toBe('bruno');
-    await expect.poll(() => page.getByRole('status', { name: 'Frame range' }).textContent()).toBe('[60, 96)');
+    await expect.poll(() => page.getByRole('status', { name: 'Frame range' }).textContent()).toBe('0:05–0:08');
     const frames = new Set<number>();
     for (let i = 0; i < 8; i++) {
       await page.waitForTimeout(100);
@@ -152,7 +153,7 @@ describe('following a thread', () => {
     await thread().getByRole('textbox', { name: 'Reply' }).fill('a lighter blue');
     await thread().getByRole('button', { name: 'Reply' }).click();
     await expectText(turn(2), 'a lighter blue');
-    await expectText(thread().getByRole('status', { name: 'Request status' }), 'waiting');
+    await expectText(thread().getByRole('status', { name: 'Request status' }), 'Waiting');
     const claimed = await agent.claimNext('test-agent');
     expect(claimed).toMatchObject({ id: 1, turns: [{ status: 'done' }, { status: 'working', ask: { prompt: 'a lighter blue' } }] });
     const scene = JSON.parse(readFileSync(SCENE_FILE, 'utf8'));
@@ -170,7 +171,7 @@ describe('following a thread', () => {
   });
 
   it('tries again with an edited prompt as the next attempt', async () => {
-    await thread().getByRole('button', { name: 'New thread' }).click();
+    await panel().getByRole('button', { name: 'New thread' }).click();
     await agent.create({ selection: { sceneId: ID, layerId: 'pip', from: 0, to: 24 }, frame: 0, prompt: 'make pip wave', references: [] });
     await agent.claimNext('test-agent');
     await agent.complete(2, 'failed', 'could not find a wave that reads at 12 fps');
@@ -190,16 +191,16 @@ describe('following a thread', () => {
 
   it('cancels a waiting turn, settles a thread, and clears settled ones', async () => {
     await thread().getByRole('button', { name: 'Cancel' }).click();
-    await expectText(thread().getByRole('status', { name: 'Request status' }), 'your turn');
+    await expectText(thread().getByRole('status', { name: 'Request status' }), 'Your turn');
     await thread().getByRole('button', { name: 'Settle' }).click();
-    await expectText(thread().getByRole('status', { name: 'Request status' }), 'settled');
-    await thread().getByRole('button', { name: 'New thread' }).click();
+    await expectText(thread().getByRole('status', { name: 'Request status' }), 'Settled');
+    await panel().getByRole('button', { name: 'New thread' }).click();
     await request(1).getByRole('button').click();
     await thread().getByRole('button', { name: 'Settle' }).click();
-    await expectText(thread().getByRole('status', { name: 'Request status' }), 'settled');
-    await thread().getByRole('button', { name: 'New thread' }).click();
-    await sidebar().getByRole('button', { name: 'Clear settled' }).click();
-    await expect.poll(() => sidebar().getByRole('article').count()).toBe(0);
+    await expectText(thread().getByRole('status', { name: 'Request status' }), 'Settled');
+    await panel().getByRole('button', { name: 'New thread' }).click();
+    await panel().getByRole('button', { name: 'Clear settled' }).click();
+    await expect.poll(() => panel().getByRole('article').count()).toBe(0);
     expect(await agent.list()).toEqual([]);
   });
 });

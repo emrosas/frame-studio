@@ -105,7 +105,7 @@
             onfocus={() => (focused = i)}
             onblur={() => (focused = null)}
           >
-            <span class="q-key" aria-hidden="true">{#if q.multiSelect && on}<Icon name="check" size={12} />{:else}{i + 1}{/if}</span>
+            <span class="q-key" aria-hidden="true">{#if q.multiSelect && on}<Icon name="check" />{:else}{i + 1}{/if}</span>
             <span class="q-label">
               <span class="q-name">{option.label}</span>
               {#if option.description}<span class="q-desc">{option.description}</span>{/if}

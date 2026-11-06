@@ -1,334 +1,189 @@
 <!--
-  The sidebar: the project switcher, New thread, the project's compositions
-  and scenes (ADR 0013), any films made before compositions (M9, each under
-  its name, main scene first), sound files, and the threads, newest first. At
-  the bottom, the app's update when it has one. Clicking a scene shows it;
-  clicking a thread opens it in the agent panel. The + by Compositions and by
-  Scenes, and New scene in an M9 film, open the New dialog.
+  The sidebar: the logo with search and one + menu, the library, then one group
+  per project (ADR 0013): the one on screen open at the top, the other recent
+  projects below it, folded until you open them. Which are open is kept in the
+  app, since every project's page has an origin of its own. The filter stays
+  out of sight until Command-F or the search icon, and spans every project. At
+  the bottom, the app's update when it has one. Sound files live in the
+  library, and threads in the agent panel. A browser has the one group.
 -->
 <script lang="ts">
-  import { untrack } from 'svelte';
-  import { currentTurn, displayStatus, type StudioRequest } from '../../studio/protocol';
-  import type { NewWhat, SceneOption, ViewerActions, ViewerUi } from '../ui.svelte';
+  import { tick, untrack } from 'svelte';
+  import { desktop, type ProjectEntry } from '../desktop';
+  import { readPref, writePref } from '../prefs';
+  import { projectGroups } from '../project-groups';
+  import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
-  import ProjectSwitcher from './ProjectSwitcher.svelte';
-  import NewDialog from './NewDialog.svelte';
+  import Logo from './Logo.svelte';
+  import Popover from './Popover.svelte';
+  import ProjectGroup from './ProjectGroup.svelte';
   import UpdateCard from './UpdateCard.svelte';
-  import { desktop } from '../desktop';
 
-  const desktopApp = desktop() !== null;
+  let { ui, actions, hidden }: { ui: ViewerUi; actions: ViewerActions; hidden: boolean } = $props();
 
-  let {
-    ui,
-    actions,
-    hidden,
-    onhide,
-    onthread,
-  }: { ui: ViewerUi; actions: ViewerActions; hidden: boolean; onhide: () => void; onthread: () => void } = $props();
+  /** Which folds you've set and the last project on screen. */
+  const SIDEBAR_KEY = 'frame-studio:sidebar';
 
-  const LABELS: Record<string, string> = {
-    pending: 'Waiting',
-    working: 'Working',
-    stalled: 'Stalled',
-    your_turn: 'Your turn',
-    input: 'Input',
-    settled: 'Settled',
-    cancelled: 'Cancelled',
-  };
-
-
-  // The folder's compositions and scenes, then each M9 film's. The App orders them, so a film's scenes are one run.
-  const compositions = $derived(ui.scenes.filter((s) => s.project === null && s.kind === 'composition'));
-  const loose = $derived(ui.scenes.filter((s) => s.project === null && s.kind === 'scene'));
-  const projects = $derived.by(() => {
-    const groups: { id: string; name: string; scenes: SceneOption[] }[] = [];
-    for (const option of ui.scenes) {
-      if (option.project === null) continue;
-      const last = groups.at(-1);
-      if (last && last.id === option.project) last.scenes.push(option);
-      else groups.push({ id: option.project, name: option.group ?? option.project, scenes: [option] });
+  function savedSidebar(): { folds: Record<string, boolean>; last: string | null } {
+    try {
+      const saved = JSON.parse(readPref(SIDEBAR_KEY) ?? '{}') as { folds?: Record<string, boolean>; last?: string };
+      return { folds: saved.folds ?? {}, last: saved.last ?? null };
+    } catch {
+      return { folds: {}, last: null };
     }
-    return groups;
-  });
+  }
 
-  // Projects fold. Showing a scene opens its project; after that you can fold it again.
-  let folded = $state<Record<string, boolean>>({});
-  const current = $derived(ui.scenes.find((s) => s.key === ui.selectedScene)?.project ?? null);
+  const folder = $derived(ui.folder?.path ?? '');
+  const canSwitch = $derived(ui.folder?.canSwitch ?? false);
+  const saved = savedSidebar();
+  let folds = $state<Record<string, boolean>>(saved.folds);
+  // A project just arrived on screen sits open, even if you left it folded. Each switch loads the page, so this runs once per project.
+  const arrived = untrack(() => folder);
+  if (saved.last !== arrived && folds[arrived] === false) delete folds[arrived];
+  let projects = $state.raw<readonly ProjectEntry[]>(desktop()?.boot.projects ?? []);
+
+  function keep(): void {
+    writePref(SIDEBAR_KEY, JSON.stringify({ folds: $state.snapshot(folds), last: arrived }));
+  }
+  keep();
+
+  function fold(key: string, open: boolean): void {
+    folds[key] = open;
+    keep();
+  }
+
+  async function refresh(): Promise<void> {
+    // The actions arrive once the App has started, after the components mount.
+    if (typeof actions.projects !== 'function') return;
+    projects = await actions.projects();
+  }
+
   $effect(() => {
-    const project = current;
-    if (project !== null) untrack(() => (folded[project] = false));
+    if (!canSwitch) return;
+    const first = setTimeout(() => void refresh(), 0);
+    const timer = setInterval(() => void refresh(), 4000);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+    };
   });
 
-  let creating = $state<NewWhat | null>(null);
-  // The empty stage's New scene opens the same dialog.
+  let filter = $state('');
+  let filtering = $state(false);
+  let field = $state<HTMLInputElement | null>(null);
+  const name = $derived(folder.split(/[\\/]/).filter(Boolean).pop() ?? folder);
+  const query = $derived(filtering ? filter : '');
+  const groups = $derived(projectGroups({ entries: projects, scenes: ui.scenes, folder: { path: folder, name }, folds, query }));
+
+  function openFilter(): void {
+    filtering = true;
+    void tick().then(() => field?.focus());
+  }
+
+  function closeFilter(): void {
+    filtering = false;
+    filter = '';
+  }
+
+  let adding = $state(false);
+  let addBox = $state<HTMLElement | null>(null);
+  let note = $state<{ text: string; error: boolean } | null>(null);
+
+  function add(what: 'video' | 'scene'): void {
+    adding = false;
+    ui.newRequest = what === 'video' ? { kind: 'video' } : { kind: 'scene', project: null };
+  }
+
+  async function newProject(): Promise<void> {
+    adding = false;
+    const problem = await actions.newProject();
+    note = problem ? { text: problem, error: true } : null;
+  }
+
+  function openFolder(): void {
+    adding = false;
+    note = null;
+    actions.openFolder();
+  }
+
+  // Showing a scene of an older film opens its fold; after that you can fold it again.
+  const film = $derived(ui.scenes.find((s) => s.key === ui.selectedScene)?.film ?? null);
   $effect(() => {
-    if (ui.newRequest) {
-      creating = ui.newRequest;
-      ui.newRequest = null;
-    }
+    const id = film;
+    if (id === null) return;
+    untrack(() => {
+      if (folds[`${folder}#films`] !== true || folds[`${folder}#film:${id}`] === false) {
+        folds[`${folder}#films`] = true;
+        folds[`${folder}#film:${id}`] = true;
+        keep();
+      }
+    });
   });
-
-  // Sound files (ADR 0012): import by picker, list, and place at the playhead.
-  let picker = $state<HTMLInputElement | null>(null);
-  // "4.5s" under a minute, "2:05" from there.
-  const minutes = (s: number) => (s < 60 ? `${Math.round(s * 10) / 10}s` : `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`);
-  async function importPicked(files: FileList | null): Promise<void> {
-    const list = [...(files ?? [])];
-    if (picker) picker.value = '';
-    if (list.length === 0) return;
-    ui.mediaNote = { text: `Importing ${list.length === 1 ? list[0].name : `${list.length} files`}…`, error: false };
-    const problem = await actions.importMedia(list);
-    ui.mediaNote = problem ? { text: problem, error: true } : { text: `Imported ${list.length === 1 ? list[0].name : `${list.length} files`}.`, error: false };
-  }
-  async function place(file: string): Promise<void> {
-    const problem = await actions.placeSound(file);
-    ui.mediaNote = problem ? { text: problem, error: true } : null;
-  }
-
-  // Converting an M9 film into a project folder (ADR 0013). The app asks where; a browser confirms first.
-  let convertNote = $state<{ text: string; error: boolean } | null>(null);
-  async function convert(id: string, name: string): Promise<void> {
-    if (!desktopApp && !confirm(`Convert “${name}” into a project folder of its own, beside this one? The film here stays as it is.`)) return;
-    convertNote = null;
-    convertNote = await actions.convertFilm(id);
-  }
-
-  const threads = $derived([...ui.studio.requests].reverse());
-  // Waiting for you: a turn to answer, or a question card or approval in a working turn.
-  const yours = $derived(ui.studio.requests.filter((r) => r.status === 'your_turn' || displayStatus(r, ui.studio.now) === 'input').length);
-  const finished = $derived(ui.studio.requests.filter((r) => r.status === 'settled' || r.status === 'cancelled').length);
-
-  const agentLabel = (r: StudioRequest) => ui.studio.agents.find((a) => a.id === r.agent)?.label ?? r.agent;
-
-  function ago(iso: string | undefined): string {
-    if (!iso) return '';
-    const s = Math.max(0, (ui.studio.now - Date.parse(iso)) / 1000);
-    if (s < 60) return 'now';
-    if (s < 3600) return `${Math.floor(s / 60)}m`;
-    if (s < 86400) return `${Math.floor(s / 3600)}h`;
-    return `${Math.floor(s / 86400)}d`;
-  }
-
-  function threadMeta(r: StudioRequest, shown: string): string {
-    const last = currentTurn(r);
-    const when = ago(last.completedAt ?? last.claimedAt ?? r.createdAt);
-    return [LABELS[shown], agentLabel(r), r.sceneId, when].filter(Boolean).join(' · ');
-  }
-
-  function pick(key: string, e: MouseEvent & { currentTarget: HTMLButtonElement }): void {
-    actions.selectScene(key);
-    // Hand focus back so Space and the arrow keys drive playback again.
-    e.currentTarget.blur();
-  }
 </script>
 
-{#snippet sceneItem(option: SceneOption, icon: 'scene' | 'project' | null)}
-  <li>
-    <button
-      type="button"
-      class="side-item"
-      class:is-invalid={option.invalid}
-      data-key={option.key}
-      aria-label={option.invalid ? `${option.label} (invalid)` : option.label}
-      aria-current={option.key === ui.selectedScene ? 'page' : undefined}
-      title={option.invalid ? `${option.file} (invalid: see the error panel)` : option.usedIn.length > 0 ? `${option.file}, used in ${option.usedIn.join(', ')}` : option.file}
-      onclick={(e) => pick(option.key, e)}
-    >
-      {#if icon}<Icon name={icon} size={15} />{/if}
-      <span class="name">{option.label}</span>
-      {#if option.main}<span class="badge">main</span>{/if}
-      {#if option.invalid}<span class="badge">invalid</span>{/if}
-    </button>
-    {#if option.usedIn.length > 0 && option.key === ui.selectedScene}
-      <p class="used-in">
-        Used in
-        {#each option.usedIn as key, i (key)}{#if i > 0}, {/if}<button type="button" class="link-btn" onclick={(e) => pick(key, e)}>{key}</button>{/each}
-      </p>
-    {/if}
-  </li>
-{/snippet}
+<svelte:window
+  onkeydown={(e) => {
+    if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'f' && !hidden && !ui.newRequest) {
+      e.preventDefault();
+      openFilter();
+    }
+  }}
+/>
 
 <nav class="sidebar" aria-label="Studio" {hidden}>
   <header class="sidebar-head">
-    <ProjectSwitcher {ui} {actions} />
-    <button type="button" class="icon-btn" aria-label="Hide sidebar" title="Hide sidebar" onclick={onhide}><Icon name="sidebar" /></button>
+    <span class="sidebar-logo" title="Frame Studio"><Logo size={20} /></span>
+    <span class="spacer"></span>
+    <button type="button" class="icon-btn" aria-label="Search" title="Search (⌘F)" aria-expanded={filtering} onclick={() => (filtering ? closeFilter() : openFilter())}><Icon name="search" /></button>
+    <div class="anchor" bind:this={addBox}>
+      <button type="button" class="icon-btn" aria-label="New" title="New" aria-haspopup="menu" aria-expanded={adding} onclick={() => (adding = !adding)}><Icon name="plus" /></button>
+      {#if adding}
+        <Popover label="New" role="menu" class="add-menu" anchor={addBox} onclose={() => (adding = false)}>
+          <button type="button" role="menuitem" class="menu-item" onclick={() => add('video')}>New video</button>
+          <button type="button" role="menuitem" class="menu-item" onclick={() => add('scene')}>New scene</button>
+          {#if canSwitch}
+            <div class="menu-rule"></div>
+            <button type="button" role="menuitem" class="menu-item" onclick={newProject}>New project…</button>
+            <button type="button" role="menuitem" class="menu-item" onclick={openFolder}>Open project folder…</button>
+          {/if}
+        </Popover>
+      {/if}
+    </div>
   </header>
 
   <div class="sidebar-top">
-    <button
-      type="button"
-      class="side-item"
-      onclick={() => {
-        actions.openThread(null);
-        onthread();
-      }}
-    >
-      <Icon name="plus" size={15} />
-      <span class="name">New thread</span>
+    <button type="button" class="side-item" aria-current={ui.home ? 'page' : undefined} onclick={(e) => { actions.showHome(true); e.currentTarget.blur(); }}>
+      <Icon name="library" />
+      <span class="name">Library</span>
     </button>
   </div>
 
   <div class="sidebar-scroll">
-    <section class="side-section" aria-label="Compositions">
-      <div class="side-label">
-        Compositions
-        <button type="button" class="icon-btn is-small side-add" aria-label="New composition" title="New composition" onclick={() => (creating = { kind: 'composition' })}>
-          <Icon name="plus" size={14} />
-        </button>
-      </div>
-      {#if compositions.length === 0}
-        <p class="side-empty">No compositions yet. A composition arranges scenes on tracks into a video.</p>
-      {:else}
-        <ul class="side-list">
-          {#each compositions as option (option.key)}{@render sceneItem(option, 'project')}{/each}
-        </ul>
-      {/if}
-    </section>
-
-    <section class="side-section" aria-label="Scenes">
-      <div class="side-label">
-        Scenes
-        <button type="button" class="icon-btn is-small side-add" aria-label="New scene" title="New scene" onclick={() => (creating = { kind: 'scene', project: null })}>
-          <Icon name="plus" size={14} />
-        </button>
-      </div>
-      {#if loose.length === 0}
-        <p class="side-empty">No scenes yet.</p>
-      {:else}
-        <ul class="side-list">
-          {#each loose as option (option.key)}{@render sceneItem(option, 'scene')}{/each}
-        </ul>
-      {/if}
-    </section>
-
-    {#if projects.length > 0}
-    <section class="side-section" aria-label="Films">
-      <div class="side-label" title="Films made before compositions, in projects/">Films</div>
-      {#if convertNote}<p class="side-empty panel-note" class:is-error={convertNote.error} role="status">{convertNote.text}</p>{/if}
-      <ul class="side-list">
-        {#each projects as project (project.id)}
-          <li role="group" aria-label={project.name}>
-            <button type="button" class="side-item" aria-expanded={!folded[project.id]} onclick={() => (folded[project.id] = !folded[project.id])}>
-              <Icon name="project" size={15} />
-              <span class="name">{project.name}</span>
-              <span class="chevron" class:is-closed={folded[project.id]}><Icon name="chevronDown" size={14} /></span>
-            </button>
-            {#if !folded[project.id]}
-              <ul class="side-list side-children">
-                {#each project.scenes as option (option.key)}{@render sceneItem(option, null)}{/each}
-                <li>
-                  <button
-                    type="button"
-                    class="side-item is-add"
-                    title="Makes a project folder of its own, with the film as a composition"
-                    onclick={() => convert(project.id, project.name)}
-                  >
-                    <Icon name="project" size={14} />
-                    <span class="name">Convert to a project…</span>
-                  </button>
-                </li>
-              </ul>
-            {/if}
-          </li>
-        {/each}
-      </ul>
-    </section>
+    {#if filtering}
+      <input
+        class="side-filter"
+        type="search"
+        placeholder="Filter"
+        aria-label="Filter videos and scenes"
+        autocomplete="off"
+        spellcheck="false"
+        bind:this={field}
+        bind:value={filter}
+        onkeydown={(e) => {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            closeFilter();
+          }
+        }}
+      />
     {/if}
-
-    <section class="side-section" aria-label="Media">
-      <div class="side-label">
-        Media
-        <button type="button" class="icon-btn is-small side-add" aria-label="Import sound files" title="Import sound files (or drop them anywhere)" onclick={() => picker?.click()}>
-          <Icon name="plus" size={14} />
-        </button>
-        <input
-          bind:this={picker}
-          type="file"
-          accept="audio/*,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus"
-          multiple
-          hidden
-          onchange={(e) => importPicked(e.currentTarget.files)}
-        />
-      </div>
-      {#if ui.mediaNote}<p class="side-empty panel-note" class:is-error={ui.mediaNote.error} role="status">{ui.mediaNote.text}</p>{/if}
-      {#if ui.media.length === 0}
-        <p class="side-empty">No sound files yet. Drop voiceover or music anywhere, or use +.</p>
-      {:else}
-        <ul class="side-list">
-          {#each ui.media as item (item.file)}
-            <li class="media-item">
-              <span class="side-item is-static" title={item.file}>
-                <Icon name="volume" size={15} />
-                <span class="name">{item.name}</span>
-                {#if item.duration !== undefined}<span class="media-length">{minutes(item.duration)}</span>{/if}
-              </span>
-              <button
-                type="button"
-                class="icon-btn is-small media-place"
-                aria-label="Add {item.name} at the playhead"
-                title="Add at the playhead"
-                disabled={ui.selection.sceneId === null}
-                onclick={() => place(item.file)}
-              >
-                <Icon name="plus" size={13} />
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
-
-    <section class="side-section" aria-label="Threads">
-      <div class="side-label">
-        Threads
-        {#if yours > 0}<span class="count" title="{yours} waiting for you">{yours}</span>{/if}
-        {#if finished > 0}<button type="button" class="link-btn" onclick={() => actions.clearFinished()}>Clear settled</button>{/if}
-      </div>
-      {#if ui.studio.error}<p class="side-empty panel-note is-error">{ui.studio.error}</p>{/if}
-      {#if threads.length === 0}
-        <p class="side-empty">Threads you start show up here.</p>
-      {:else}
-        <ul class="side-list">
-          {#each threads as r (r.id)}
-            {@const shown = displayStatus(r, ui.studio.now)}
-            <li>
-              <article aria-label="Request {r.id}">
-                <button
-                  type="button"
-                  class="side-item thread-item is-{shown}"
-                  aria-current={ui.studio.open === r.id ? 'true' : undefined}
-                  title={r.turns[0].ask.prompt}
-                  onclick={() => {
-                    actions.openThread(r.id);
-                    onthread();
-                  }}
-                >
-                  <span class="status-dot is-{shown}" aria-hidden="true"></span>
-                  <span class="text">
-                    <span class="prompt">{r.turns[0].ask.prompt}</span>
-                    <span class="meta">{threadMeta(r, shown)}</span>
-                  </span>
-                </button>
-              </article>
-            </li>
-          {/each}
-        </ul>
-      {/if}
-    </section>
+    {#if note}<p class="side-empty panel-note" class:is-error={note.error} role="status">{note.text}</p>{/if}
+    {#each groups as group (group.path)}
+      <ProjectGroup {group} {ui} {actions} filtering={query.trim() !== ''} {folds} onfold={fold} onnote={(next) => (note = next)} onforget={() => void refresh()} />
+    {:else}
+      <p class="side-empty">No matches.</p>
+    {/each}
   </div>
-
-  {#if creating}
-    <NewDialog
-      what={creating}
-      {ui}
-      {actions}
-      onclose={() => (creating = null)}
-      ondone={() => {
-        actions.openThread(null);
-        onthread();
-      }}
-    />
-  {/if}
 
   {#if ui.update && ui.update.status !== 'idle' && ui.update.status !== 'checking'}
     <footer class="sidebar-foot">

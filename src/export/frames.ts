@@ -7,6 +7,8 @@ export interface FrameSource {
   width: number;
   height: number;
   fps: number;
+  /** Gets anything `draw` needs for this frame ready: decoded picture clips (ADR 0014). Awaited before each draw. */
+  prepare?(frame: number): Promise<void>;
   /** Draws scene frame `frame` synchronously and returns the canvas holding it. */
   draw(frame: number): FrameCanvas;
 }

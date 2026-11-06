@@ -174,6 +174,18 @@ export interface AgentQuestion {
 export type QuestionAnswers = Record<string, string[]>;
 
 /** An agent the studio can run, as the agent picker shows it. */
+/** A model a provider offers. Its own effort levels and default, where the provider reports them. */
+export interface AgentModel {
+  id: string;
+  label: string;
+  /** The provider's default model. */
+  default?: boolean;
+  /** The efforts this model takes; left out, those of its agent. */
+  efforts?: string[];
+  /** The effort this model starts on, when the provider says. */
+  defaultEffort?: string;
+}
+
 export interface AgentStatus {
   id: AgentId;
   label: string;
@@ -183,7 +195,8 @@ export interface AgentStatus {
   detail: string;
   /** The command that fixes it, e.g. "claude auth login". */
   fix?: string;
-  models: { id: string; label: string }[];
+  models: AgentModel[];
+  /** Every effort of its models, or the efforts of a provider that doesn't say per model. */
   efforts: string[];
 }
 
@@ -200,6 +213,11 @@ export const LIBRARY_EVENT = 'frame-studio:library';
 
 /** Pushed as a viewer export goes: progress, then done with the file, or an error. */
 export const EXPORT_EVENT = 'frame-studio:export';
+
+/** Pushed as a viewer check goes: progress, then the report, or an error. */
+export const CHECK_EVENT = 'frame-studio:check';
+/** A poster finished in the background: its scene key and file name under .frame-studio/thumbs/. */
+export const THUMB_EVENT = 'frame-studio:thumb';
 
 /** Reference image types the studio accepts, with the extension each is saved under. */
 export const REFERENCE_TYPES: Readonly<Record<string, string>> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
@@ -473,6 +491,15 @@ export interface NewScene {
   fps?: number;
   size?: [number, number];
   duration: number;
+  /** A pixel stage (ADR 0014), for a scene in the folder. The server writes it into the new scene file. */
+  pixel?: NewPixel;
+}
+
+/** A new scene's pixel stage, as the engine's scene format takes it. */
+export interface NewPixel {
+  scale: number;
+  palette?: string[];
+  dither?: number;
 }
 
 /**
@@ -486,11 +513,30 @@ export interface NewComposition {
   duration: number;
 }
 
+/**
+ * A new video from the viewer: a composition and, with `scene`, a first empty scene the length of the
+ * video, placed on its track, so there is something to point at. `pixel` is that scene's pixel stage;
+ * compositions have none of their own, so a pixel video always starts with its scene.
+ */
+export interface NewVideo extends NewComposition {
+  scene?: boolean;
+  pixel?: NewPixel;
+}
+
+/** A clip's place in its composition, in seconds: `out` null means the end of what it places. */
+export interface ClipEdit {
+  clip: string;
+  start: number;
+  in: number;
+  out: number | null;
+}
+
 /** The format a new scene or composition gets when neither it nor project.json says. */
 export const DEFAULT_FORMAT = { fps: 24, size: [1920, 1080] as [number, number] };
 
-const NEW_SCENE_FIELDS = new Set(['id', 'project', 'fps', 'size', 'duration']);
+const NEW_SCENE_FIELDS = new Set(['id', 'project', 'fps', 'size', 'duration', 'pixel']);
 const NEW_COMPOSITION_FIELDS = new Set(['id', 'fps', 'size', 'duration']);
+const NEW_VIDEO_FIELDS = new Set([...NEW_COMPOSITION_FIELDS, 'scene', 'pixel']);
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** A scene or project id from a name as typed: "Bears' Story 2" becomes "bears-story-2". Empty when nothing is left. */
@@ -520,6 +566,15 @@ function checkFormat(input: Record<string, unknown>): string | null {
   return null;
 }
 
+/** A pixel stage's shape. The scene validator checks the rest when the scene is saved. */
+function checkNewPixel(pixel: unknown, size: unknown): string | null {
+  if (pixel === undefined) return null;
+  if (!isObject(pixel) || !isInt(pixel.scale, 1)) return 'pixel must be { scale, palette?, dither? } with a whole scale';
+  const scale = pixel.scale as number;
+  if (Array.isArray(size) && size.some((n) => typeof n === 'number' && n % scale !== 0)) return `pixel scale ${scale} must divide the size evenly`;
+  return null;
+}
+
 function checkDuration(duration: unknown): string | null {
   return typeof duration === 'number' && Number.isFinite(duration) && duration > 0 && duration <= 3600 ? null : 'duration must be a number of seconds, above 0 and at most 3600';
 }
@@ -535,8 +590,9 @@ export function checkNewScene(input: unknown): string | null {
     if (inProject) return inProject;
     if (input.id === 'project') return 'a scene in a project can\'t be called "project"; project.json is taken';
     if (input.fps !== undefined || input.size !== undefined) return "a scene in a project takes the project's fps and size; leave them out";
+    if (input.pixel !== undefined) return 'a pixel stage is for scenes in the folder; a film made before compositions keeps its own format';
   } else {
-    const format = checkFormat(input);
+    const format = checkFormat(input) ?? checkNewPixel(input.pixel, input.size);
     if (format) return format;
   }
   return checkDuration(input.duration);
@@ -547,6 +603,26 @@ export function checkNewComposition(input: unknown): string | null {
   if (!isObject(input)) return 'a new composition must be a JSON object';
   for (const key of Object.keys(input)) if (!NEW_COMPOSITION_FIELDS.has(key)) return `unknown field "${key}"`;
   return checkId(input.id, 'a composition') ?? checkFormat(input) ?? checkDuration(input.duration);
+}
+
+/** Why `input` is not a well-formed NewVideo, or null when it is. */
+export function checkNewVideo(input: unknown): string | null {
+  if (!isObject(input)) return 'a new video must be a JSON object';
+  for (const key of Object.keys(input)) if (!NEW_VIDEO_FIELDS.has(key)) return `unknown field "${key}"`;
+  if (input.scene !== undefined && typeof input.scene !== 'boolean') return 'scene must be true or false';
+  if (input.pixel !== undefined && input.scene === false) return 'a pixel video needs its first scene, which carries the pixel stage';
+  return checkId(input.id, 'a video') ?? checkFormat(input) ?? checkNewPixel(input.pixel, input.size) ?? checkDuration(input.duration);
+}
+
+/** Why `input` is not a well-formed ClipEdit, or null when it is. */
+export function checkClipEdit(input: unknown): string | null {
+  if (!isObject(input)) return 'a clip edit must be a JSON object';
+  if (typeof input.clip !== 'string' || input.clip === '') return 'clip must be a clip id';
+  const seconds = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  if (!seconds(input.start)) return 'start must be seconds, 0 or more';
+  if (!seconds(input.in)) return 'in must be seconds, 0 or more';
+  if (input.out !== null && !(seconds(input.out) && (input.out as number) > (input.in as number))) return 'out must be seconds after in, or null for the end';
+  return null;
 }
 
 const QUESTION_ANSWER_LIMIT = 2000;

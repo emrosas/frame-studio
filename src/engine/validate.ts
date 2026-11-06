@@ -1,5 +1,7 @@
 import { isCssColor } from './color';
 import { EASING_NAMES } from './easing';
+import { isPictureFile } from './picture';
+import { isHexColour } from './pixel';
 import { baseRigId, variantsOf } from './registry';
 import { SCENE_LAYER_PARAMS } from './scene-layer';
 import { CUE_PARAMS } from './cue';
@@ -102,6 +104,10 @@ export function validateScene(
     sceneId: isNonEmptyString(s.id) ? s.id : undefined,
   };
 
+  checkPixel(env, s);
+  checkCamera(env, s.camera);
+  checkMarkers(env, s.markers);
+
   if (s.background !== undefined) {
     if (!isObject(s.background)) {
       err('background', `must be an object like { "rig": "paper", "params": {...} }, got ${show(s.background)}`);
@@ -200,8 +206,16 @@ function truncate(text: string): string {
   return text.length > 60 ? `${text.slice(0, 57)}...` : text;
 }
 
-const SCENE_FIELDS = ['id', 'fps', 'duration', 'size', 'seed', 'background', 'layers', 'audio'];
-const LAYER_FIELDS = ['id', 'rig', 'cast', 'scene', 'start', 'in', 'out', 'params', 'tracks', 'stepFps', 'overrides', 'mask'];
+const SCENE_FIELDS = ['id', 'fps', 'duration', 'size', 'seed', 'background', 'layers', 'audio', 'pixel', 'camera', 'markers'];
+const PIXEL_FIELDS = ['scale', 'palette', 'dither'];
+const CAMERA_FIELDS = ['x', 'y', 'zoom', 'tracks'];
+const MARKER_FIELDS = ['t', 'label'];
+/** What a camera's tracks animate. */
+const CAMERA_OWNER: SchemaOwner = {
+  id: 'camera',
+  params: { x: { type: 'number', default: 0 }, y: { type: 'number', default: 0 }, zoom: { type: 'number', default: 1, min: 0.01 } },
+};
+const LAYER_FIELDS = ['id', 'rig', 'cast', 'scene', 'start', 'in', 'out', 'params', 'tracks', 'stepFps', 'overrides', 'mask', 'depth', 'file', 'fit'];
 const MASK_FIELDS = ['rig', 'params', 'tracks'];
 /** The background is a layer without an id; background.id gets its own message. */
 const BACKGROUND_FIELDS = LAYER_FIELDS.filter((f) => f !== 'id');
@@ -329,13 +343,24 @@ function checkParams(env: Env, params: unknown, path: string, rig: SchemaOwner |
 
 function checkLayerSpec(env: Env, layer: Obj, path: string): void {
   const { err } = env;
-  const kinds = (['rig', 'cast', 'scene'] as const).filter((k) => layer[k] !== undefined);
+  if (layer.depth !== undefined) {
+    if (layer.scene !== undefined) err(`${path}.depth`, 'a placed scene has its own camera, so depth does nothing here; remove it');
+    else if (!(typeof layer.depth === 'number' && Number.isFinite(layer.depth) && layer.depth >= 0)) {
+      err(`${path}.depth`, `must be 0 or more: 0 stays put, 1 moves with the camera, between is further away; got ${show(layer.depth)}`);
+    }
+  }
+  if (layer.file !== undefined && layer.rig === undefined && layer.cast === undefined && layer.scene === undefined) {
+    checkPictureLayer(env, layer, path);
+    return;
+  }
+  const kinds = (['rig', 'cast', 'scene', 'file'] as const).filter((k) => layer[k] !== undefined);
   if (kinds.length === 0) {
     err(path, 'needs a "rig" (a rig id), a "cast" member of its project, or a "scene" of its project to place');
     return;
   }
   if (kinds.length > 1) {
-    err(path, `names both ${kinds.map((k) => `"${k}"`).join(' and ')}; a layer draws a rig, draws a cast member, or places a scene`);
+    if (kinds.includes('file')) err(`${path}.file`, 'a picture clip names only its file; remove the rig, cast or scene');
+    else err(path, `names both ${kinds.map((k) => `"${k}"`).join(' and ')}; a layer draws a rig, draws a cast member, or places a scene`);
     return;
   }
   if (kinds[0] === 'scene') {
@@ -374,6 +399,98 @@ function checkLayerSpec(env: Env, layer: Obj, path: string): void {
   checkTracks(env, layer.tracks, `${path}.tracks`, rig);
   checkOverrides(env, layer, path, rig);
   checkMask(env, layer.mask, `${path}.mask`);
+}
+
+/** A picture clip (ADR 0014): compositions only, from media/, with a trim that says how long it shows. */
+function checkPictureLayer(env: Env, layer: Obj, path: string): void {
+  const { err, project } = env;
+  if (project?.kind !== 'composition') {
+    err(`${path}.file`, 'a scene is drawn in code; place images and videos as clips in a composition (ADR 0014)');
+    return;
+  }
+  if (!isMediaPath(layer.file) || !isPictureFile(layer.file)) {
+    err(`${path}.file`, `must be an image or video in the studio folder's media/, like "media/clip.mp4" or "media/photo.png", got ${show(layer.file)}`);
+  }
+  const start = checkSeconds(env, layer.start, `${path}.start`, 'where the clip starts');
+  const from = checkSeconds(env, layer.in, `${path}.in`, 'where in the file the clip starts') ?? 0;
+  const to = checkSeconds(env, layer.out, `${path}.out`, 'where in the file the clip ends');
+  if (to === undefined) err(`${path}.out`, 'a picture clip needs an out: seconds into the file for a video, how long it shows for an image');
+  else if (to <= from) err(`${path}.out`, `must be after in (${from}), got ${to}`);
+  if (start !== undefined && env.duration !== undefined && start >= env.duration) err(`${path}.start`, `is past the end, ${env.duration} s`);
+  if (layer.fit !== undefined && layer.fit !== 'cover' && layer.fit !== 'contain') err(`${path}.fit`, `must be "cover" or "contain", got ${show(layer.fit)}`);
+  if (layer.stepFps !== undefined) err(`${path}.stepFps`, 'a picture clip runs at its composition\'s fps; remove it');
+  checkParams(env, layer.params, `${path}.params`, SCENE_OWNER, 'scene layer');
+  checkTracks(env, layer.tracks, `${path}.tracks`, SCENE_OWNER);
+  checkOverrides(env, layer, path, undefined, true);
+  checkMask(env, layer.mask, `${path}.mask`);
+}
+
+/** A pixel stage (ADR 0014): a whole scale that divides the size, and an optional palette and dither. */
+function checkPixel(env: Env, s: Obj): void {
+  const { err } = env;
+  const pixel = s.pixel;
+  if (pixel === undefined) return;
+  if (!isObject(pixel)) {
+    err('pixel', `must be an object like { "scale": 6, "palette": ["#101020", "#f4d090"], "dither": 0.5 }, got ${show(pixel)}`);
+    return;
+  }
+  checkFields(err, pixel, 'pixel', PIXEL_FIELDS);
+  if (!isPositiveInteger(pixel.scale)) {
+    err('pixel.scale', `must be a positive integer: output pixels per stage pixel, e.g. 6 draws 1080x1920 on 180x320; got ${show(pixel.scale)}`);
+  } else if (Array.isArray(s.size) && s.size.some((v) => typeof v === 'number' && v % (pixel.scale as number) !== 0)) {
+    err('pixel.scale', `must divide the size evenly, and ${pixel.scale} doesn't divide [${s.size.join(', ')}]`);
+  }
+  if (pixel.palette !== undefined) {
+    if (!Array.isArray(pixel.palette) || pixel.palette.length < 2 || pixel.palette.length > 256) {
+      err('pixel.palette', `must be a list of 2 to 256 colours, got ${show(pixel.palette)}`);
+    } else {
+      pixel.palette.forEach((c: unknown, i: number) => {
+        if (!isHexColour(c)) err(`pixel.palette[${i}]`, `must be a colour like "#a1c2e3", got ${show(c)}`);
+      });
+    }
+  }
+  if (pixel.dither !== undefined) {
+    if (!(typeof pixel.dither === 'number' && pixel.dither >= 0 && pixel.dither <= 1)) err('pixel.dither', `must be a number from 0 to 1, got ${show(pixel.dither)}`);
+    else if (pixel.palette === undefined) err('pixel.dither', 'dithers between palette colours, so it needs a palette');
+  }
+  if (Array.isArray(s.layers) && s.layers.some((l: unknown) => isObject(l) && l.scene !== undefined)) {
+    err('pixel', "a pixel stage draws and places nothing; give each scene its own pixel stage and place them in a composition");
+  }
+}
+
+function checkCamera(env: Env, camera: unknown): void {
+  const { err } = env;
+  if (camera === undefined) return;
+  if (!isObject(camera)) {
+    err('camera', `must be an object like { "x": 0, "y": 0, "zoom": 1, "tracks": [...] }, got ${show(camera)}`);
+    return;
+  }
+  checkFields(err, camera, 'camera', CAMERA_FIELDS);
+  for (const key of ['x', 'y', 'zoom'] as const) {
+    const v = camera[key];
+    if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && (key !== 'zoom' || v > 0))) err(`camera.${key}`, `must be a ${key === 'zoom' ? 'positive ' : ''}finite number, got ${show(v)}`);
+  }
+  checkTracks(env, camera.tracks, 'camera.tracks', CAMERA_OWNER);
+}
+
+function checkMarkers(env: Env, markers: unknown): void {
+  const { err, duration } = env;
+  if (markers === undefined) return;
+  if (!Array.isArray(markers)) {
+    err('markers', `must be a list like [{ "t": 2, "label": "hook ends" }], got ${show(markers)}`);
+    return;
+  }
+  markers.forEach((marker: unknown, i: number) => {
+    const path = `markers[${i}]`;
+    if (!isObject(marker)) {
+      err(path, `must be an object like { "t": 2, "label": "hook ends" }, got ${show(marker)}`);
+      return;
+    }
+    checkFields(err, marker, path, MARKER_FIELDS);
+    if (!(typeof marker.t === 'number' && Number.isFinite(marker.t) && marker.t >= 0)) err(`${path}.t`, `must be seconds, 0 or more, got ${show(marker.t)}`);
+    else if (duration !== undefined && marker.t > duration) err(`${path}.t`, `is past the end of the scene, ${duration} s`);
+    if (!isNonEmptyString(marker.label)) err(`${path}.label`, `must be a short name, got ${show(marker.label)}`);
+  });
 }
 
 /** A seconds field of a scene layer: a finite number, 0 or more. */

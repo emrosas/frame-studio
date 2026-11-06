@@ -10,15 +10,22 @@
 
 import { hasAudio, mediaUsed, renderSceneAudio, SAMPLE_RATE, samplesPerFrame } from '../audio';
 import { MediaStore } from './media';
-import { formatTimecode, frameCount, hitTest, render, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
+import { formatTimecode, frameCount, hitTest, picturesAt, render, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
 import { createSurfaces } from '../embed/surfaces';
+import { mediaUrl } from './media';
+import { PictureStore } from '../export/pictures';
 import {
+  buildReport,
+  checkSize,
   contactSheetFrames,
   contactSheetLayout,
   exportGif,
   exportMp4,
+  FrameMeter,
+  readPixels,
   type AudioTrackSource,
   type ByteSink,
+  type CheckReport,
   type ExportProgress,
   type FrameSource,
 } from '../export';
@@ -92,7 +99,8 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
   const project = entry?.project ? library.projects.find((p) => p.id === entry.project) : undefined;
   if (project) errors.push(...project.errors.map((e) => `${project.file}: ${e}`));
   // Surfaces rasterize on the CPU like the canvas, so masks and fades give the same pixels everywhere.
-  const world: World = { ...entry?.world, surfaces: createSurfaces({ willReadFrequently: true, colorSpace: 'srgb' }) };
+  const pictures = new PictureStore(mediaUrl);
+  const world: World = { ...entry?.world, surfaces: createSurfaces({ willReadFrequently: true, colorSpace: 'srgb' }), pictures };
   const total = scene ? frameCount(scene) : 0;
   const sound = scene !== null && hasAudio(scene, world);
   if (sound && !library.generators) errors.push('The scene has audio, but the audio generators failed to load.');
@@ -113,12 +121,15 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       throw new RangeError(`frame must be an integer in [0, ${total}) for scene "${scene?.id}", got ${String(frame)}`);
     }
   };
-  const draw = (frame: number) => {
+  const drawOn = (target: CanvasRenderingContext2D, frame: number) => {
     const ready = need();
     checkFrame(frame);
-    render(ctx as unknown as Ctx2D, ready.scene, frame, ready.registry, world);
-    return canvas;
+    render(target as unknown as Ctx2D, ready.scene, frame, ready.registry, world);
+    return target.canvas;
   };
+  const draw = (frame: number) => drawOn(ctx, frame);
+  /** Decodes the picture clips a frame shows (ADR 0014). A render that can't read one fails rather than leaving it out. */
+  const prepare = (frame: number): Promise<void> => (scene ? pictures.prepare(picturesAt(scene, frame, world)) : Promise.resolve());
   const range = (from = 0, to = total) => {
     need();
     const problem = rangeError(from, to, total);
@@ -156,6 +167,7 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
     errors,
     scenes: library.entries.map((e) => e.key),
     canvas,
+    dispose: () => pictures.dispose(),
     resolveFrame(text, end = false) {
       const { scene: s } = need();
       const parsed = parseFrameText(text, s.fps);
@@ -163,7 +175,8 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       if (!(end && parsed.frame === total)) checkFrame(parsed.frame);
       return parsed.frame;
     },
-    renderFrame(frame) {
+    async renderFrame(frame) {
+      await prepare(frame);
       draw(frame);
       return frame;
     },
@@ -212,10 +225,12 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       return max;
     },
     async pixelHash(frame) {
+      await prepare(frame);
       draw(frame);
       return hex(ctx.getImageData(0, 0, canvas.width, canvas.height).data);
     },
     async writePng(frame, sinkId, options = {}) {
+      await prepare(frame);
       draw(frame);
       let source = canvas;
       if (options.maxWidth !== undefined && options.maxWidth < canvas.width) {
@@ -233,9 +248,10 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       await sink.close?.();
       return bytes.length;
     },
-    hitTest(frame, x, y, options = {}) {
+    async hitTest(frame, x, y, options = {}) {
       const ready = need();
       checkFrame(frame);
+      await prepare(frame);
       probe ??= new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
       if (!probe) throw new Error('This browser did not provide an offscreen 2D context for hit testing.');
       const result = hitTest(probe as unknown as Ctx2D, ready.scene, frame, x, y, ready.registry, { parts: options.parts, world });
@@ -244,7 +260,7 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
     async exportVideo(target: ExportTarget, sinkId, options = {}): Promise<RenderExportResult> {
       const { scene: s } = need();
       const r = range(options.from, options.to);
-      const source: FrameSource = { width: s.size[0], height: s.size[1], fps: s.fps, draw };
+      const source: FrameSource = { width: s.size[0], height: s.size[1], fps: s.fps, draw, prepare };
       const sink = hostSink(sinkId);
       const start = performance.now();
       if (target === 'mp4') {
@@ -273,6 +289,41 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       }
       throw new Error(`unknown export target ${JSON.stringify(target)}; use mp4 or gif`);
     },
+    async check(options = {}): Promise<CheckReport> {
+      const { scene: s } = need();
+      const r = range(options.from, options.to);
+      // Drawn small under a base transform, as the viewer does. It's what makes checking every frame quick.
+      const [width, height] = checkSize(s.size[0], s.size[1]);
+      const small = document.createElement('canvas');
+      small.width = width;
+      small.height = height;
+      const target = context2d(small);
+      target.setTransform(width / s.size[0], 0, 0, height / s.size[1], 0, 0);
+      const frames = new FrameMeter();
+      const total = r.to - r.from;
+      let rested = performance.now();
+      for (let frame = r.from; frame < r.to; frame++) {
+        await prepare(frame);
+        frames.add(readPixels(drawOn(target, frame)));
+        progress({ stage: 'checking frames', done: frame - r.from + 1, total });
+        // Let a cancel, and the progress just posted, through.
+        if (performance.now() - rested > 100) {
+          await new Promise((resolve) => setTimeout(resolve));
+          rested = performance.now();
+        }
+      }
+      let audio: Float32Array[] | string | null = null;
+      if (sound) {
+        progress({ stage: 'measuring sound', done: 0, total: 1 });
+        try {
+          const buffer = await sceneAudio();
+          audio = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c));
+        } catch (err) {
+          audio = err instanceof Error ? err.message : String(err);
+        }
+      }
+      return buildReport({ scene: entry?.key ?? s.id, fps: s.fps, duration: s.duration, width: s.size[0], height: s.size[1], ...r, frames, loop: options.loop, markers: s.markers, audio });
+    },
     async contactSheet(sinkId, options = {}): Promise<ContactSheetResult> {
       const { scene: s } = need();
       const r = range(options.from, options.to);
@@ -287,13 +338,14 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       out.imageSmoothingQuality = 'high';
       out.font = '13px monospace'; // a generic family only (CLAUDE.md, runtime budget)
       out.textBaseline = 'middle';
-      frames.forEach((frame, i) => {
+      for (const [i, frame] of frames.entries()) {
         const { x, y } = layout.cell(i);
+        await prepare(frame);
         out.drawImage(draw(frame), x, y, layout.thumbWidth, layout.thumbHeight);
         out.fillStyle = '#c9cbcf';
         out.fillText(`${frame}  ${formatTimecode(frame, s.fps)}`, x + 2, y + layout.thumbHeight + layout.labelHeight / 2);
         progress({ stage: 'contact sheet', done: i + 1, total: frames.length });
-      });
+      }
       const sink = hostSink(sinkId);
       await sink.write(await blobBytes(sheet), 0);
       await sink.close?.();
@@ -310,6 +362,8 @@ interface Job {
   args: unknown[];
   /** The server's file generation when the job was made; an older library loads again first. */
   generation: number;
+  /** One-off work: drop the scene's canvas afterwards, so posters of many scenes don't each keep one. */
+  release?: boolean;
 }
 
 /**
@@ -360,7 +414,10 @@ async function runWorker(): Promise<void> {
     try {
       if (job.generation > loaded.generation) {
         loaded = await loadLibrary();
-        for (const api of apis.values()) api.canvas.remove();
+        for (const api of apis.values()) {
+          api.canvas.remove();
+          api.dispose();
+        }
         apis.clear();
       }
       let api = apis.get(job.scene);
@@ -381,6 +438,11 @@ async function runWorker(): Promise<void> {
     } finally {
       cancelled.delete(job.id);
       current = null;
+      if (job.release) {
+        apis.get(job.scene)?.canvas.remove();
+        apis.get(job.scene)?.dispose();
+        apis.delete(job.scene);
+      }
     }
   }
 

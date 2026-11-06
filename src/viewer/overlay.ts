@@ -8,7 +8,9 @@
 // overlay's resolution, capped at scene size (see maskSize). Faint paint is dropped (alpha below 0.25) so washes and cast shadows
 // do not bloat the shape. The mask is scaled to the overlay, tinted faintly,
 // and outlined by drawing it at whole-pixel offsets around a circle and
-// cutting the mask itself out.
+// cutting the mask itself out. The outline is the app's blue with a 1 px white
+// halo outside it, so it holds up on blue artwork. A highlight on a new layer
+// fades in; following a layer from frame to frame doesn't.
 
 import { drawLayer, onlyParts, PASS_THROUGH, sceneLayers } from '../engine';
 import type { Layer, RigRegistry, Scene, World } from '../engine/types';
@@ -41,15 +43,18 @@ interface Mask {
 }
 
 interface HighlightStyle {
-  color: string;
   /** Outline width in CSS pixels. */
   width: number;
   outlineAlpha: number;
   tintAlpha: number;
+  haloAlpha: number;
 }
 
-const SELECTED: HighlightStyle = { color: '#4da3ff', width: 2, outlineAlpha: 1, tintAlpha: 0.16 };
-const HOVER: HighlightStyle = { color: '#4da3ff', width: 1, outlineAlpha: 0.75, tintAlpha: 0.06 };
+const SELECTED: HighlightStyle = { width: 2, outlineAlpha: 1, tintAlpha: 0.14, haloAlpha: 0.95 };
+const HOVER: HighlightStyle = { width: 1, outlineAlpha: 0.8, tintAlpha: 0.05, haloAlpha: 0.6 };
+/** Halo width in CSS pixels. */
+const HALO = 1;
+const FADE_MS = 120;
 
 /** Masks kept: the selection, the hover and a couple of recent ones (scrubbing back and forth). */
 const CACHE_SIZE = 4;
@@ -65,6 +70,8 @@ export class SelectionOverlay {
   private scaled: OffscreenCanvasRenderingContext2D | null = null;
   private scratch: OffscreenCanvasRenderingContext2D | null = null;
   private lastKey = '';
+  /** Which layers lit up last, to fade only when that changes. */
+  private lastShown = '';
   /** Mask timings (ms) for the last update that drew any, newest last. */
   readonly timings: number[] = [];
 
@@ -104,12 +111,14 @@ export class SelectionOverlay {
     this.selectedTag.hidden = true;
     if (!ready) return;
     this.timings.length = 0;
+    this.fadeIn(JSON.stringify([input.selected?.layerId ?? null, input.selected?.partId ?? null, input.hover]));
 
     if (hov && hovKey) {
       const mask = this.mask(scene, hov, frame, null, registry, hovKey, fit);
       if (mask) {
         this.highlight(mask, fit, HOVER);
-        this.placeTag(this.hoverTag, hov.id, mask, fit);
+        // Nothing drawn on this frame: the row stays lit, and no tag lands on the selection's.
+        if (mask.box) this.placeTag(this.hoverTag, hov.id, mask, fit);
       }
     }
     if (sel && selKey && input.selected) {
@@ -119,6 +128,15 @@ export class SelectionOverlay {
         this.placeTag(this.selectedTag, layerLabel(sel.id, input.selected.partId), mask, fit);
       }
     }
+    // Two tags in one spot read as one label: the one being pointed at wins.
+    if (!this.hoverTag.hidden && !this.selectedTag.hidden && overlaps(this.hoverTag.getBoundingClientRect(), this.selectedTag.getBoundingClientRect())) this.selectedTag.hidden = true;
+  }
+
+  private fadeIn(shown: string): void {
+    if (shown === this.lastShown) return;
+    this.lastShown = shown;
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    this.canvas.animate([{ opacity: 0 }, { opacity: 1 }], { duration: FADE_MS, easing: 'cubic-bezier(.2,0,0,1)' });
   }
 
   /** Forget cached masks (their drawing may be stale). */
@@ -203,11 +221,13 @@ export class SelectionOverlay {
     const s = fit.scale / mask.scale;
     const dpr = fit.cssWidth > 0 ? fit.backingWidth / fit.cssWidth : 1;
     const r = Math.max(1, Math.round(style.width * dpr));
+    const halo = r + Math.max(1, Math.round(HALO * dpr));
+    const color = getComputedStyle(this.canvas).getPropertyValue('--accent').trim() || '#007aff';
     const mw = mask.canvas.width;
     const mh = mask.canvas.height;
 
     // Work only inside the mask's box, padded by the outline.
-    const pad = r + 2;
+    const pad = halo + 2;
     const x0 = Math.max(0, Math.floor(box.x0 * s) - pad);
     const y0 = Math.max(0, Math.floor(box.y0 * s) - pad);
     const x1 = Math.min(fit.backingWidth, Math.ceil(box.x1 * s) + pad);
@@ -223,13 +243,25 @@ export class SelectionOverlay {
     scaled.imageSmoothingEnabled = false;
     scaled.drawImage(mask.canvas, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0, box.x0 * s, box.y0 * s, (box.x1 - box.x0) * s, (box.y1 - box.y0) * s);
     scaled.globalCompositeOperation = 'source-in';
-    scaled.fillStyle = style.color;
+    scaled.fillStyle = color;
     scaled.fillRect(x0, y0, w, h);
     scaled.globalCompositeOperation = 'source-over';
 
     // Tint.
     ctx.globalAlpha = style.tintAlpha;
     ctx.drawImage(scaled.canvas, x0, y0, w, h, x0, y0, w, h);
+
+    // The halo: the mask dilated past the outline, in white, under the outline.
+    scratch.globalCompositeOperation = 'source-over';
+    scratch.clearRect(x0, y0, w, h);
+    for (const [dx, dy] of ringOffsets(halo)) scratch.drawImage(scaled.canvas, x0, y0, w, h, x0 + dx, y0 + dy, w, h);
+    scratch.globalCompositeOperation = 'source-in';
+    scratch.fillStyle = '#fff';
+    scratch.fillRect(x0, y0, w, h);
+    scratch.globalCompositeOperation = 'destination-out';
+    scratch.drawImage(scaled.canvas, x0, y0, w, h, x0, y0, w, h);
+    ctx.globalAlpha = style.haloAlpha;
+    ctx.drawImage(scratch.canvas, x0, y0, w, h, x0, y0, w, h);
 
     // Outline: the mask dilated by r, minus the mask.
     scratch.globalCompositeOperation = 'source-over';
@@ -243,7 +275,7 @@ export class SelectionOverlay {
 
     // A layer covering the whole stage has its outline off the canvas: frame the canvas instead.
     if (box.x0 === 0 && box.y0 === 0 && box.x1 === mw && box.y1 === mh) {
-      ctx.strokeStyle = style.color;
+      ctx.strokeStyle = color;
       ctx.lineWidth = r;
       ctx.strokeRect(r / 2, r / 2, fit.backingWidth - r, fit.backingHeight - r);
     }
@@ -263,6 +295,10 @@ export class SelectionOverlay {
     // Above the box when a tag fits between it and the canvas top; inside otherwise.
     el.classList.toggle('is-inside', top < 22);
   }
+}
+
+function overlaps(a: DOMRect, b: DOMRect): boolean {
+  return a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 }
 
 function tag(className: string): HTMLElement {

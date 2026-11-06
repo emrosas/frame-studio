@@ -20,6 +20,10 @@ export interface RenderProgress {
 export interface RenderCallOptions {
   onProgress?(progress: RenderProgress): void;
   signal?: AbortSignal;
+  /** Runs only when nothing else waits, so background work such as a poster never holds up an export or an agent's render. */
+  low?: boolean;
+  /** The worker drops the scene's canvas after this job, for one-off work across many scenes. */
+  release?: boolean;
 }
 
 interface Job {
@@ -50,6 +54,8 @@ const MAX_ATTEMPTS = 3;
 export class RenderPool {
   private worker: ServerResponse | null = null;
   private readonly jobs: Job[] = [];
+  /** Background jobs: they run when `jobs` is empty, in order. */
+  private readonly low: Job[] = [];
   private current: Job | null = null;
   private readonly sinks = new Map<string, FileHandle>();
   private launch: WorkerLauncher | null;
@@ -89,7 +95,7 @@ export class RenderPool {
       if (this.worker !== res) return;
       this.worker = null;
       // The job it had goes to the next worker, which has to come first.
-      if (this.current || this.jobs.length > 0) this.ensureWorker();
+      if (this.current || this.waitingJobs > 0) this.ensureWorker();
     });
     // A job whose worker went away mid-way (a crash, a reload) goes to this one, unless it keeps doing that.
     if (this.current) this.send(this.current);
@@ -103,18 +109,22 @@ export class RenderPool {
     return new Promise((resolve, reject) => {
       const job: Job = { id: randomBytes(8).toString('hex'), scene, method, args, options, resolve, reject, attempts: 0 };
       options.signal?.addEventListener('abort', () => this.cancel(job.id), { once: true });
-      this.jobs.push(job);
+      (options.low ? this.low : this.jobs).push(job);
       this.pump();
     });
   }
 
+  private get waitingJobs(): number {
+    return this.jobs.length + this.low.length;
+  }
+
   private pump(): void {
-    if (this.current || this.jobs.length === 0) return;
+    if (this.current || this.waitingJobs === 0) return;
     if (!this.worker) {
       this.ensureWorker();
       return;
     }
-    this.current = this.jobs.shift()!;
+    this.current = this.jobs.shift() ?? this.low.shift()!;
     this.send(this.current);
   }
 
@@ -126,7 +136,7 @@ export class RenderPool {
       this.pump();
       return;
     }
-    const payload = { id: job.id, scene: job.scene, method: job.method, args: job.args, generation: this.generation() };
+    const payload = { id: job.id, scene: job.scene, method: job.method, args: job.args, generation: this.generation(), ...(job.options.release ? { release: true } : {}) };
     this.worker.write(`event: job\ndata: ${JSON.stringify(payload)}\n\n`);
   }
 
@@ -139,7 +149,7 @@ export class RenderPool {
           void worker.exited.then(() => {
             if (this.launched !== launched) return;
             this.launched = null;
-            if (!this.worker && !this.closed && (this.current || this.jobs.length > 0)) this.ensureWorker();
+            if (!this.worker && !this.closed && (this.current || this.waitingJobs > 0)) this.ensureWorker();
           });
           return worker;
         },
@@ -160,7 +170,7 @@ export class RenderPool {
   }
 
   private failAll(err: Error): void {
-    const all = [...(this.current ? [this.current] : []), ...this.jobs.splice(0)];
+    const all = [...(this.current ? [this.current] : []), ...this.jobs.splice(0), ...this.low.splice(0)];
     this.current = null;
     for (const job of all) job.reject(err);
   }
@@ -192,10 +202,12 @@ export class RenderPool {
 
   /** Withdraws a job: a waiting one at once, a running one at its next progress report, or at once with no worker. */
   cancel(id: string): void {
-    const at = this.jobs.findIndex((j) => j.id === id);
-    if (at >= 0) {
-      this.jobs.splice(at, 1)[0].reject(new Error('Cancelled.'));
-      return;
+    for (const queue of [this.jobs, this.low]) {
+      const at = queue.findIndex((j) => j.id === id);
+      if (at >= 0) {
+        queue.splice(at, 1)[0].reject(new Error('Cancelled.'));
+        return;
+      }
     }
     if (this.current?.id !== id) return;
     if (this.worker) {

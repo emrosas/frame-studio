@@ -8,7 +8,7 @@
  * own test with the parse error instead of breaking the whole file.
  */
 import { describe, expect, it } from 'vitest';
-import { BACKGROUND_ID, frameCount, render, resolveLayer, sceneLayers, timeToFrame, validateScene, type Layer, type Scene } from '../src/engine';
+import { BACKGROUND_ID, frameCount, render, resolveLayer, sceneLayers, stageSize, timeToFrame, validateScene, type Layer, type Scene } from '../src/engine';
 import { createRecordingContext, splitLayerLogs, type LogEntry } from '../src/engine/testing/recording-context';
 import { createDefaultGenerators } from '../src/audio';
 import { createDefaultRegistry } from '../src/rigs';
@@ -141,7 +141,9 @@ describe('scenes/*.json', () => {
   // state leaking from one frame to the next, or from a later frame back to an
   // earlier one, still shows.
   it.each(paths)('%s renders every frame, the same whether played, seeked, or scrubbed backwards', (path) => {
-    const scene = loadScene(path);
+    // A pixel stage's layers, as drawn on the stage. The last step needs real pixels: src/engine/pixel.test.ts.
+    const loaded = loadScene(path);
+    const scene: Scene = loaded.pixel ? { ...loaded, size: stageSize(loaded), pixel: undefined } : loaded;
     const count = frameCount(scene);
     const first = frameLog(recorder(), scene, 0);
     let frames = Array.from({ length: count }, (_, f) => f);

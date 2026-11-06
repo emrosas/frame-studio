@@ -7,18 +7,21 @@
 // through canUseTool, which asks the access rules. Node only.
 
 import { relative } from 'node:path';
-import { query, type CanUseTool, type PermissionResult, type SDKMessage } from '@anthropic-ai/claude-agent-sdk';
-import type { AgentQuestion, TurnUsage } from '../../../src/studio/protocol.ts';
+import { query, type CanUseTool, type ModelInfo, type PermissionResult, type SDKMessage, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import type { AgentModel, AgentQuestion, TurnUsage } from '../../../src/studio/protocol.ts';
 import { agentEnv, findExecutable, run } from './exec.ts';
 import type { Action, AgentProvider, TurnCallbacks, TurnHandle, TurnInput, TurnOutcome } from './types.ts';
 
-const MODELS = [
-  { id: 'default', label: 'Default model' },
+/** What's offered until the CLI says, or when an older one can't. */
+const MODELS: AgentModel[] = [
+  { id: 'default', label: 'Default model', default: true },
   { id: 'opus', label: 'Opus' },
   { id: 'sonnet', label: 'Sonnet' },
   { id: 'haiku', label: 'Haiku' },
 ];
 const EFFORTS = ['low', 'medium', 'high', 'xhigh', 'max'];
+const MODELS_TTL_MS = 10 * 60 * 1000;
+const MODELS_TIMEOUT_MS = 15_000;
 /** The studio's MCP server name, so its tools are mcp__frame-studio__<tool>. */
 const STUDIO = 'frame-studio';
 
@@ -74,7 +77,44 @@ export function summaryOf(text: string): string {
   return last.length > 300 ? `${last.slice(0, 297)}…` : last;
 }
 
+/** The models the signed-in CLI offers, each with its own efforts. */
+export function claudeModels(infos: readonly ModelInfo[]): { models: AgentModel[]; efforts: string[] } {
+  const models = infos.map((m): AgentModel => ({
+    id: m.value,
+    label: m.displayName.replace(/\s*\(recommended\)$/i, ''),
+    efforts: m.supportsEffort === false ? [] : [...(m.supportedEffortLevels ?? [])],
+    ...(m.value === 'default' ? { default: true } : {}),
+  }));
+  return { models, efforts: EFFORTS.filter((e) => models.some((m) => m.efforts?.includes(e))) };
+}
+
+/** Asks the CLI for its models: it starts, answers and stops, with no turn, no session and nothing to sign in to. */
+async function askModels(bin: string): Promise<ModelInfo[]> {
+  const abort = new AbortController();
+  // A prompt that never arrives keeps the process up just long enough to answer.
+  const silence = async function* (): AsyncGenerator<SDKUserMessage> {
+    await new Promise((done) => abort.signal.addEventListener('abort', done, { once: true }));
+  };
+  const q = query({ prompt: silence(), options: { pathToClaudeCodeExecutable: bin, env: agentEnv(), abortController: abort, settingSources: [], persistSession: false } });
+  const timer = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('claude took too long to list its models')), MODELS_TIMEOUT_MS).unref?.());
+  try {
+    return await Promise.race([q.supportedModels(), timer]);
+  } finally {
+    abort.abort();
+    q.close();
+  }
+}
+
 export function claudeProvider(): AgentProvider {
+  let listed: { at: number; models: AgentModel[]; efforts: string[] } | null = null;
+
+  async function listModels(bin: string): Promise<{ models: AgentModel[]; efforts: string[] }> {
+    if (listed && Date.now() - listed.at < MODELS_TTL_MS) return listed;
+    const found = await askModels(bin).then(claudeModels).catch(() => null);
+    listed = { at: Date.now(), ...(found && found.models.length > 0 ? found : { models: MODELS, efforts: EFFORTS }) };
+    return listed;
+  }
+
   return {
     id: 'claude',
     label: 'Claude',
@@ -86,7 +126,8 @@ export function claudeProvider(): AgentProvider {
         const out = await run(bin, ['auth', 'status']);
         const status = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)) as { loggedIn?: boolean; authMethod?: string };
         if (!status.loggedIn) return { ...base, ready: false, detail: 'claude is not signed in', fix: 'claude auth login' };
-        return { ...base, ready: true, detail: status.authMethod === 'claude.ai' ? 'Signed in with your Claude account' : 'Signed in' };
+        const { models, efforts } = await listModels(bin);
+        return { ready: true, detail: status.authMethod === 'claude.ai' ? 'Signed in with your Claude account' : 'Signed in', models, efforts };
       } catch (err) {
         return { ...base, ready: false, detail: `claude auth status failed: ${err instanceof Error ? err.message : String(err)}`, fix: 'claude auth login' };
       }

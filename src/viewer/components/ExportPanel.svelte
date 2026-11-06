@@ -3,10 +3,13 @@
   GIF or HTML of the scene on screen, or of its selected range, with or
   without sound. The studio server encodes it in the render worker while the
   viewer keeps playing, and writes it to out/. Progress shows with Cancel;
-  the finished file shows with Reveal in Finder in the app.
+  the finished file shows with Reveal in Finder in the app. Check video, under
+  it, measures the scene first (CheckPanel.svelte).
 -->
 <script lang="ts">
+  import { spanLabel } from '../selection';
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
+  import CheckPanel from './CheckPanel.svelte';
   import Icon from './Icon.svelte';
 
   let { ui, actions }: { ui: ViewerUi; actions: ViewerActions } = $props();
@@ -34,9 +37,9 @@
 
   let panel = $state<HTMLElement | null>(null);
 
-  /** Escape closes the panel from inside it, when nothing runs. Capture, so the viewer doesn't also clear the selection. */
+  /** Escape closes the panel, when nothing runs. Capture, so the viewer doesn't also clear the selection. */
   function onKeydown(e: KeyboardEvent): void {
-    if (e.key !== 'Escape' || job.running || !panel || !panel.contains(document.activeElement)) return;
+    if (e.key !== 'Escape' || job.running || !panel) return;
     e.preventDefault();
     actions.toggleExport(false);
   }
@@ -55,7 +58,7 @@
       <h2>Export</h2>
       <span class="sub">{ui.selection.sceneId ?? ''}</span>
       <button type="button" class="icon-btn is-small" aria-label="Close export" title="Close" onclick={() => actions.toggleExport(false)}>
-        <Icon name="close" size={14} />
+        <Icon name="close" />
       </button>
     </header>
     <div class="segmented" role="radiogroup" aria-label="Format">
@@ -65,7 +68,7 @@
     </div>
     <label class="check-row" class:is-disabled={!rangeAllowed}>
       <input type="checkbox" bind:checked={useRange} disabled={!rangeAllowed || job.running !== null} />
-      {range && target !== 'html' ? `Only frames [${range.from}, ${range.to})` : target === 'html' ? 'HTML is always the whole scene' : 'Only the selected range (none set)'}
+      {range && target !== 'html' ? `Only ${spanLabel(range, ui.selection.fps)}` : target === 'html' ? 'HTML is always the whole scene' : 'Only the selected range (none set)'}
     </label>
     <label class="check-row" class:is-disabled={!soundAllowed}>
       <input type="checkbox" bind:checked={sound} disabled={!soundAllowed || job.running !== null} />
@@ -105,5 +108,6 @@
         <p class="export-error" role="alert">{job.result.error}</p>
       {/if}
     {/if}
+    <CheckPanel {ui} {actions} />
   </div>
 {/if}

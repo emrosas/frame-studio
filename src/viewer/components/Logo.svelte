@@ -16,5 +16,5 @@
     stroke-linecap="round"
     stroke-linejoin="round"
   />
-  <circle cx="412" cy="412" r="116" fill="var(--accent, #ff5a1f)" />
+  <circle cx="412" cy="412" r="116" fill="var(--orange, #ff5a1f)" />
 </svg>

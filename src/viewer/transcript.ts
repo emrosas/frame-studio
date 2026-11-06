@@ -24,6 +24,32 @@ export interface Transcript {
   asking: Extract<TranscriptItem, { kind: 'questions' }> | null;
 }
 
+/** What the thread view shows for a status, the same in the list and in the thread. */
+export const STATUS_LABELS: Record<string, string> = {
+  pending: 'Waiting',
+  working: 'Working',
+  stalled: 'Stalled',
+  your_turn: 'Your turn',
+  input: 'Needs you',
+  settled: 'Settled',
+  cancelled: 'Cancelled',
+};
+
+/** A run of steps, which the thread shows folded to "7 steps". */
+export type TranscriptEntry = Exclude<TranscriptItem, { kind: 'step' }> | { kind: 'steps'; steps: Extract<TranscriptItem, { kind: 'step' }>[] };
+
+/** The items with each run of steps as one entry. */
+export function groupSteps(items: readonly TranscriptItem[]): TranscriptEntry[] {
+  const entries: TranscriptEntry[] = [];
+  for (const item of items) {
+    const last = entries[entries.length - 1];
+    if (item.kind !== 'step') entries.push(item);
+    else if (last?.kind === 'steps') last.steps.push(item);
+    else entries.push({ kind: 'steps', steps: [item] });
+  }
+  return entries;
+}
+
 export function foldTurn(events: readonly TurnEvent[]): Transcript {
   const items: TranscriptItem[] = [];
   const steps = new Map<string, Extract<TranscriptItem, { kind: 'step' }>>();
@@ -79,9 +105,11 @@ export function foldTurn(events: readonly TurnEvent[]): Transcript {
       case 'usage':
         usage = e.usage;
         break;
-      case 'status':
-        items.push({ kind: 'note', text: e.message, error: false });
+      case 'status': {
+        const last = items[items.length - 1];
+        if (last?.kind !== 'note' || last.text !== e.message) items.push({ kind: 'note', text: e.message, error: false });
         break;
+      }
       case 'error':
         items.push({ kind: 'note', text: e.message, error: true });
         break;

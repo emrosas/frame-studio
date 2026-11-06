@@ -27,7 +27,25 @@ export interface DesktopUpdates {
   openNotes(): Promise<void>;
 }
 
-/** A recent project, as the switcher shows it (ADR 0013). */
+/** A video or scene of a project whose server may not run, read from disk. */
+export interface ProjectItem {
+  key: string;
+  label: string;
+  file: string;
+  kind: 'scene' | 'composition';
+  /** Its poster's file name in .frame-studio/thumbs/, for `poster()`. */
+  poster: string | null;
+  invalid: boolean;
+}
+
+/** A film made before compositions, in projects/ (M9). */
+export interface ProjectFilm {
+  id: string;
+  name: string;
+  items: ProjectItem[];
+}
+
+/** A recent project, as the sidebar lists it (ADR 0013). */
 export interface ProjectEntry {
   path: string;
   name: string;
@@ -40,23 +58,49 @@ export interface ProjectEntry {
   working: number;
   input: number;
   yours: number;
+  /** What it holds, from disk. The viewer shows the project on screen from its own live list. */
+  videos: ProjectItem[];
+  scenes: ProjectItem[];
+  films: ProjectFilm[];
+}
+
+/** Where the viewer opens a project: on a scene, or with the New dialog up. */
+export interface OpenTarget {
+  scene?: string;
+  new?: 'video' | 'scene';
+}
+
+/** What a page starts from, so nothing it keeps arrives late. */
+export interface DesktopBoot {
+  prefs: Readonly<Record<string, string>>;
+  drafts: Readonly<Record<string, string>>;
+  projects: readonly ProjectEntry[];
 }
 
 export interface DesktopBridge {
   /** The studio server's pairing token, handed over once. */
   readonly token: string;
+  readonly boot: DesktopBoot;
+  /** Keeps a value in the app's settings: each project's server has its own port, so localStorage won't do. */
+  setPref(key: string, value: string): void;
+  /** Keeps an unsent prompt for this project; empty text drops it. */
+  setDraft(key: string, text: string): void;
+  /** A listed project's poster as a data URL. */
+  poster(path: string, file: string): Promise<string | null>;
   /** Shows a file in Finder. */
   reveal(path: string): Promise<void>;
   /** Opens a folder picker, then switches the app to the project chosen. Resolves to why it failed, or null. */
   openFolder(): Promise<string | null>;
-  /** The recent projects with their threads' status. */
+  /** The recent projects, with what they hold and their threads' status. */
   projects(): Promise<ProjectEntry[]>;
   /** Asks for a name and place, makes the project, and switches to it. */
   newProject(): Promise<string | null>;
-  /** Switches to a recent project. */
-  openProject(path: string): Promise<string | null>;
-  /** Asks where, converts film `id` in projects/ into a project folder of its own (ADR 0013), and switches to it. */
-  convertFilm(id: string): Promise<string | null>;
+  /** Takes a recent project off the list. The folder is left alone. */
+  forgetProject(path: string): Promise<void>;
+  /** Switches to a recent project, on `target` when given. */
+  openProject(path: string, target?: OpenTarget): Promise<string | null>;
+  /** Asks where, converts film `id` in `project`'s projects/, or this one's, into a project folder of its own (ADR 0013), and switches to it. */
+  convertFilm(id: string, project?: string): Promise<string | null>;
   /** Missing when the app can't update, such as when it runs from the repo. */
   readonly updates?: DesktopUpdates;
 }

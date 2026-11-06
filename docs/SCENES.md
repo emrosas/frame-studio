@@ -384,6 +384,37 @@ A variant of `bear` with a sticking plaster on its head: two crossed painted str
 | `plasterColor` | colour | `#efcb98` | | Colour of the plaster strips. |
 | `plasterPad` | colour | `#fbf7ee` | | Colour of the gauze pad where the strips cross. |
 
+## Pixel stages, the camera and markers
+
+A pixel stage draws at low resolution and shows with square pixels (ADR 0014). `size` stays the output size:
+
+```json
+{ "size": [1080, 1920], "pixel": { "scale": 6, "palette": ["#0e1030", "#b8406a", "#f3b562", "#f6efd8"], "dither": 0.5 } }
+```
+
+That draws on 180x320. Every coordinate, track and `stage` value is in those small pixels. `scale` must divide the size; use 4 or 6, so video's colour blocks land on pixel edges. With a `palette` of up to 256 `#rrggbb` colours, every pixel snaps to one, soft edges go hard, and `dither` from 0 to 1 adds ordered dither between colours, so ordinary gradients dither on their own. A pixel stage places nothing, and a composition has none: each clip brings its own.
+
+Write style as numbers. A palette of 16, one reveal colour held back for the payoff, and a look that never changes in a film do more than any description.
+
+The camera is `camera: { x, y, zoom, tracks }`, with tracks on `x`, `y` and `zoom`. A layer's `depth` says how much it follows: 0 stays put (captions), 1 is the world, and between is further away (`far-hills` at 0.25, `pines` at 0.8). The background defaults to 0 and everything else to 1. The camera runs on output time, so a layer on `stepFps` still glides. On a pixel stage a layer moves by whole pixels, so keep moves to one stage pixel a frame or less, or they stutter.
+
+`markers: [{ "t": 0.8, "label": "chunk lands!" }]`, on a scene or a composition, name moments on the timeline and draw nothing. A label ending in `!` is a sync point: the check tool fails if no sound starts within 2 frames.
+
+### Pixel rigs
+
+- `pixel-text`: bitmap capitals, whole pixels. `|` starts a line, `reveal` types it on, `card` puts it on a card.
+- `sprite`: pixel art as text. `rows` is `.aa.|abba`, `colors` is `a=#fff b=#222`, `/` splits frames that cycle at `fps`.
+- `sky`: three-stop gradient with a banded sun, for a background.
+- `ridge`: a seeded skyline of hills or city blocks, running past the stage for parallax.
+- `drift`: seeded dots moving in closed form: snow, stars, bubbles, molecules.
+- `arrow`: a blocky arrow for forces and flows.
+
+The `chip` generator plays a written line of notes (`C4 . - E4`), one voice per cue, and `hit` is a thud or click on the cue's first frame. `scenes/why-lakes-stay-liquid.json` is a worked example of all of it.
+
+### A short
+
+The method that works for agents, as the research found it. Keep a `brief.md` next to `project.json` per film: one sentence on what the viewer learns; each fact, marked solid or hedged, with sources; the hook; beats with times; sync points. Forty seconds is about hook 0 to 2, setup 2 to 10, turn 10 to 25, payoff 25 to 35, close 35 to 40. Frame 0 is already moving, with no fade in. One idea a beat. Put the sync points in `markers`, run `check`, and fix what fails.
+
 ## Sound
 
 A scene's sound is a list of audio cues. Each cue names a generator, which is code that makes the sound, the way a rig is code that draws. Like the picture, the sound depends only on the scene file: the same scene gives the same samples every time.
@@ -476,7 +507,7 @@ A short beep for UI moments and hits. Each blip starts exactly on a frame.
 
 ## Projects and compositions
 
-A project is a folder (ADR 0013). Everything a piece uses lives in it, and the app's switcher moves between projects. Its parts:
+A project is a folder (ADR 0013). Everything a piece uses lives in it, and the app's sidebar lists your projects. Its parts:
 
 - `project.json`: the project's name, the format new scenes and compositions start with, and its cast.
 - `scenes/`: scenes, which draw. A scene never places another scene.
@@ -563,6 +594,16 @@ A cut is two clips back to back. A crossfade is two that overlap, with the upper
 Compositions nest: a clip can place a composition that places others, up to 16 deep. A composition can't place itself, however indirectly. A clip's scene brings its sound: its cues, shifted by `start` and cut to `[in, out)`, sample for sample, through the clip's `volume` and `mute`.
 
 An edit that would break a composition is refused, such as shortening a scene below a clip's `out` or changing its fps. Selecting a scene in the sidebar shows "Used in" with the compositions that place it.
+
+### Pictures in a composition
+
+A clip can show an image or video from `media/` instead of a scene (ADR 0014):
+
+```json
+{ "id": "drone", "file": "media/drone.mp4", "start": 4, "in": 1.5, "out": 6, "fit": "cover", "sound": true, "params": { "opacity": 0.9 } }
+```
+
+`in` and `out` are seconds into the file, and `out` is required, since the validator doesn't read files (`list_media` has lengths). For an image, `out` is how long it shows. `fit` is `cover`, the default, or `contain`. A video is silent unless `sound` is true. Params are a clip's placement, so tracks, opacity and masks work. Scenes can't name a file: the drawing stays code. MP4 and GIF carry pictures; an HTML export refuses them and says so.
 
 ### Masks
 

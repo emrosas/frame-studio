@@ -1,13 +1,15 @@
 <!--
-  One sound cue on the timeline (ADR 0012), in a lane under the shots: its
-  name and, for a sound file, its waveform over the seconds of the file the
-  cue plays. The waveform comes once the file has decoded for the scene's
-  sound.
+  One sound cue on the timeline (ADR 0012), in a row under the clips: its id
+  when that fits, and for a sound file its waveform over the seconds of the file
+  the cue plays. The waveform comes once the file has decoded for the scene's
+  sound. Read-only.
 -->
 <script lang="ts">
+  import { labelFits } from '../timeline';
+  import { spanLabel } from '../selection';
   import type { SoundBand, ViewerActions } from '../ui.svelte';
 
-  let { band, style, ready, actions }: { band: SoundBand; style: string; ready: boolean; actions: ViewerActions } = $props();
+  let { band, style, ready, actions, px, fps, selected }: { band: SoundBand; style: string; ready: boolean; actions: ViewerActions; px: number; fps: number; selected: boolean } = $props();
 
   const BUCKETS = 160;
   let path = $state('');
@@ -29,9 +31,9 @@
   });
 </script>
 
-<div class="sound-band" class:is-file={band.file !== undefined} {style} title="{band.label}, frames [{band.from}, {band.to})" role="img" aria-label="Sound {band.label}">
+<div class="sound-band" class:is-file={band.file !== undefined} class:is-selected={selected} {style} data-cue={band.id} title="{band.label}, {spanLabel(band, fps)}. Click, then X to mark it." role="img" aria-label="Sound {band.label}">
   {#if path}
     <svg class="waveform" viewBox="0 0 {BUCKETS} 1" preserveAspectRatio="none" aria-hidden="true"><path d={path} /></svg>
   {/if}
-  <span class="sound-label">{band.label}</span>
+  {#if labelFits(band.id, px)}<span class="sound-label">{band.id}</span>{/if}
 </div>

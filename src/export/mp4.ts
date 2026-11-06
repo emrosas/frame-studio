@@ -132,6 +132,7 @@ export async function exportMp4(source: FrameSource, range: ExportRange, sink: B
     encoder.configure(config);
     for (let i = 0; i < total; i++) {
       if (failure) throw failure;
+      await source.prepare?.(range.from + i);
       rgbaToI420(readPixels(source.draw(range.from + i)), width, height, i420);
       const frame = new VideoFrame(i420, {
         format: 'I420',

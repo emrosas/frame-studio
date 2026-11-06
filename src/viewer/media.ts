@@ -19,7 +19,7 @@ export interface LoadedMedia {
   failed: string[];
 }
 
-const url = (file: string) => `/__studio/${file.split('/').map(encodeURIComponent).join('/')}`;
+export const mediaUrl = (file: string) => `/__studio/${file.split('/').map(encodeURIComponent).join('/')}`;
 
 export class MediaStore {
   private readonly decoded = new Map<string, { stamp: string; buffer: Promise<AudioBuffer> }>();
@@ -39,7 +39,7 @@ export class MediaStore {
         const stamp = `${entry.bytes}:${entry.modified}`;
         let held = this.decoded.get(file);
         if (!held || held.stamp !== stamp) {
-          const buffer = fetch(url(file), { cache: 'no-store' }).then(async (res) => {
+          const buffer = fetch(mediaUrl(file), { cache: 'no-store' }).then(async (res) => {
             if (!res.ok) throw new Error(`the studio server answered ${res.status}`);
             return decodeMedia(await res.arrayBuffer());
           });

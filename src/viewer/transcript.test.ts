@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { TurnEvent, TurnEventBody } from '../studio/protocol';
-import { describeUsage, foldTurn } from './transcript';
+import { describeUsage, foldTurn, groupSteps } from './transcript';
 
 let seq = 0;
 const ev = (body: TurnEventBody): TurnEvent => ({ ...body, seq: ++seq, at: '' }) as TurnEvent;
@@ -86,5 +86,18 @@ describe('question cards in a turn (ADR 0011)', () => {
     ]);
     expect(skipped.items[0]).toMatchObject({ kind: 'questions', answers: null });
     expect(skipped.asking).toBeNull();
+  });
+});
+
+describe('groupSteps', () => {
+  const step = (id: string) => ({ kind: 'step' as const, id, label: id, status: 'done' as const });
+
+  it('folds each run of steps into one entry, and leaves everything else in place', () => {
+    const grouped = groupSteps([{ kind: 'text', text: 'a' }, step('1'), step('2'), { kind: 'text', text: 'b' }, step('3')]);
+    expect(grouped.map((e) => (e.kind === 'steps' ? e.steps.length : e.kind))).toEqual(['text', 2, 'text', 1]);
+  });
+
+  it('has nothing to fold in an empty turn', () => {
+    expect(groupSteps([])).toEqual([]);
   });
 });

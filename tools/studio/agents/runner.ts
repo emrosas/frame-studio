@@ -310,7 +310,6 @@ export class AgentRunner {
       const url = this.options.mcpUrl();
       if (!url) throw new Error('The studio server is not listening yet.');
       const info = await this.options.sceneInfo(thread.sceneId);
-      if (thread.session) log.append({ type: 'status', message: `Resuming the ${provider.label} session` });
       const handle = provider.startTurn(
         {
           thread,

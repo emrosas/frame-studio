@@ -3,17 +3,22 @@
 // event stream, the queue and the live events of turns. The viewer always
 // comes from a studio server, and pairs with it before it boots.
 
+import type { CheckReport } from '../export/check';
 import { studioEvents } from './studio-events';
+import type { RenderItem } from './ui.svelte';
 import {
+  CHECK_EVENT,
   EXPORT_EVENT,
   QUEUE_EVENT,
+  THUMB_EVENT,
   TURN_EVENT,
   type AgentStatus,
   type ApprovalDecision,
+  type ClipEdit,
   type CurrentSelection,
-  type NewComposition,
   type NewRequest,
   type NewScene,
+  type NewVideo,
   type QuestionAnswers,
   type Reply,
   type StudioRequest,
@@ -41,6 +46,16 @@ export type ExportEvent =
   | { id: string; stage: string; done: number; total: number }
   | { id: string; done: true; file: string; note?: string }
   | { id: string; error: string };
+
+export interface CheckInput {
+  scene: string;
+  from?: number;
+  to?: number;
+  loop?: boolean;
+}
+
+/** A check's progress, or its end: the report, or why it failed. */
+export type CheckEvent = { id: string; stage: string; done: number; total: number } | { id: string; report: CheckReport } | { id: string; error: string };
 
 /** A turn's event as pushed: which thread and turn it belongs to. */
 export interface PushedTurnEvent {
@@ -115,9 +130,29 @@ export class StudioClient {
     return (await call<{ path: string }>(`/projects/${encodeURIComponent(id)}/convert`, jsonBody({}))).path;
   }
 
-  /** Creates a composition with one empty track (ADR 0013); returns its id. */
-  async createComposition(composition: NewComposition): Promise<string> {
-    return (await call<{ id: string }>('/compositions', jsonBody(composition))).id;
+  /** Creates a video: a composition (ADR 0013), by default with a first scene on its track. Returns the composition's id. */
+  async createVideo(video: NewVideo): Promise<string> {
+    return (await call<{ id: string }>('/videos', jsonBody(video))).id;
+  }
+
+  /** Moves or trims a clip, through the checked edit path. */
+  async moveClip(composition: string, edit: ClipEdit): Promise<void> {
+    await call(`/compositions/${encodeURIComponent(composition)}/clip`, jsonBody(edit));
+  }
+
+  /** Each scene's poster file, or null while it renders; those arrive through onThumb. */
+  async thumbs(): Promise<Record<string, string | null>> {
+    return (await call<{ thumbs: Record<string, string | null> }>('/thumbs')).thumbs;
+  }
+
+  /** Calls `listener` when a poster finishes in the background. */
+  onThumb(listener: (thumb: { key: string; file: string }) => void): () => void {
+    return this.on(THUMB_EVENT, listener);
+  }
+
+  /** The files in out/, newest first. */
+  async renders(): Promise<RenderItem[]> {
+    return (await call<{ renders: RenderItem[] }>('/renders')).renders;
   }
 
   /** Answers a question card in a working turn, or skips it with null (ADR 0011). */
@@ -175,6 +210,20 @@ export class StudioClient {
   /** Calls `listener` with every export event: progress, then done with the file, or an error. */
   onExport(listener: (event: ExportEvent) => void): () => void {
     return this.on(EXPORT_EVENT, listener);
+  }
+
+  /** Starts a check of a scene on the studio server; progress and the report come as check events. Returns its id. */
+  async startCheck(input: CheckInput): Promise<string> {
+    return (await call<{ id: string }>('/check', jsonBody(input))).id;
+  }
+
+  async cancelCheck(id: string): Promise<void> {
+    await call(`/check/${encodeURIComponent(id)}/cancel`, jsonBody({}));
+  }
+
+  /** Calls `listener` with every check event: progress, then the report, or an error. */
+  onCheck(listener: (event: CheckEvent) => void): () => void {
+    return this.on(CHECK_EVENT, listener);
   }
 
   /** Copies an image into references/ and returns its repo-relative path. */

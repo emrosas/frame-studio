@@ -1,6 +1,6 @@
 # Frame Studio (working name)
 
-An open-source suite for making videos and images from code: storytelling and explainer animations, and still graphics. Every frame is drawn procedurally onto an HTML canvas by JavaScript; there are no image, video or font assets in the picture. Sound is procedural, mixed with recorded sound files (voiceover, music) where a piece needs them (ADR 0012). A coding agent (via MCP, on the user's own machine) is a first-class operator: it can seek to any frame, see rendered frames, edit scenes and rigs, and export.
+An open-source suite for making videos and images from code: storytelling and explainer animations, and still graphics. Every scene is drawn procedurally onto an HTML canvas by JavaScript, with no image, video or font assets. Sound is procedural, mixed with recorded sound files (voiceover, music) where a piece needs them (ADR 0012). Compositions can place recorded images and video as clips (ADR 0014); scenes never do. A coding agent (via MCP, on the user's own machine) is a first-class operator: it can seek to any frame, see rendered frames, edit scenes and rigs, and export.
 
 Inspiration: Kevin Ngo's pieces (kengoworks.com, @kevin_t_ngo): single HTML files with a canvas, computing each frame procedurally, with no embedded media.
 
@@ -40,7 +40,7 @@ The whole system rests on one rule: **the image at frame N is a pure function of
 - `src/engine`, `src/rigs`, `src/audio` and `src/embed` have **zero third-party runtime dependencies**. Validation libraries (zod or similar), Playwright, ffmpeg, and the MCP SDK are tooling only and must never be imported from the runtime path.
 - Runtime TypeScript is **erasable**: no enums, namespaces or constructor parameter properties, since the studio server strips types with Node's own stripping instead of a bundler (ADR 0008). `npm run typecheck` enforces it. Rigs and generators outside `src/` (a studio folder's `rigs/` and `audio/`, a project's `rigs/`) import the built-ins as `@frame-studio/rigs/...`, `@frame-studio/engine/...` and `@frame-studio/audio/...`; inside `src/`, imports stay relative.
 - The embed player (`src/embed/player.ts`) is the one runtime file allowed to read the wall clock, to pick the frame to show during playback. render() never sees time.
-- No fonts, images, or base64 blobs in rigs or the picture. The one exception: an HTML export asked to carry a scene's sound files inlines them (ADR 0012); by default it leaves them out. Text is drawn as vector paths from typeface modules: the `text` rig, or `drawText` in `src/rigs/type/layout.ts` (ADR 0010). `npm run typeface` turns an open-licensed font into such a module. Rigs never call `fillText`, `strokeText` or `measureText`, or set `ctx.font`; a test enforces it.
+- No fonts, images, or base64 blobs in rigs or scenes. Picture clips in compositions come from `media/` and are decoded by the hosts, never by `src/engine` or `src/embed`; an HTML export refuses them (ADR 0014). The one blob exception: an HTML export asked to carry a scene's sound files inlines them (ADR 0012); by default it leaves them out. Text is drawn as vector paths from typeface modules: the `text` rig, or `drawText` in `src/rigs/type/layout.ts` (ADR 0010). `npm run typeface` turns an open-licensed font into such a module. Rigs never call `fillText`, `strokeText` or `measureText`, or set `ctx.font`; a test enforces it.
 - Target: engine under ~50 KB minified. Drawing code is expected to be the bulk of a file's size, and that's fine.
 
 ## Time model
@@ -103,7 +103,7 @@ Rules:
 - The canvas renders at the scene's fixed resolution and is scaled with CSS for display. Handle devicePixelRatio for preview only; exports are always native resolution.
 - UI is regular HTML/CSS positioned over the canvas, never drawn into it.
 - The studio ships as a web app and as an Electron app from one viewer (`docs/adr/0001-web-and-electron-targets.md`, ADR 0008). `src/viewer` uses web platform APIs only. Anything that needs the machine goes through the studio server, which serves the viewer, and the app's preload adds only native features (`src/viewer/desktop.ts`).
-- **A project is a folder** (ADR 0013), the studio folder the app and the tools work on (ADR 0008): `project.json` (name, default format, cast), `scenes/`, `compositions/`, `projects/` (old films, until converted), `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The app shows one project at a time, switched from the top left, and keeps a project's server running while a thread there works. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
+- **A project is a folder** (ADR 0013), the studio folder the app and the tools work on (ADR 0008): `project.json` (name, default format, cast), `scenes/`, `compositions/`, `projects/` (old films, until converted), `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The app lists each recent project in the sidebar, read from disk, and shows one on screen. A project's server runs while it's on screen, while a thread there works, and for ten minutes after you leave it (the last two left). Folds, layout and recent models live in the app's settings, since each server has its own port. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
 - The viewer stays plain TypeScript until M6, then its UI moves to Svelte 5 with Vite, not SvelteKit (`docs/adr/0002-svelte-from-m6.md`). The runtime never imports Svelte.
 
 ## Scene format (JSON)
@@ -143,6 +143,9 @@ Scenes are data, so the agent, the selection UI, and any future timeline editor 
 - The background is a layer like any other (it can have tracks and overrides), so "change the background for frames 1 to 14" is an ordinary scoped edit.
 - **`overrides`** express scoped edits: over a frame range, a layer may swap to a rig variant and/or apply param overrides. This keeps "change this element for frames 36 to 48" a contained change instead of forking drawing code. Overlapping overrides on one layer are invalid.
 - **Compositions (M14, ADR 0013).** Scenes draw and never place anything. A composition, `compositions/<id>.json`, arranges: `{ id, fps, duration, size, background?: colour, tracks: [{ id, clips }], audio? }`, bottom track first. A clip places a scene or another composition with a start, a trim (`in`, `out`), trackable placement, opacity and volume, and an optional animated **mask**, which covers transitions. Compositions nest up to 16 deep, loops are refused, clips run at their composition's fps, and a clip of another size sits centred. A clip renders identically inside its composition and on its own. The engine renders a composition as a scene whose layers are its clips (`src/engine/composition.ts`). Scenes and compositions share one id namespace.
+- **Pixel stages (ADR 0014).** `pixel: { scale, palette?, dither? }`: rigs draw on `size / scale`, and `render()` snaps to the palette with ordered dither and blows up square pixels. Coordinates are the small stage's. Use the `pixel-text`, `sprite`, `sky`, `ridge`, `drift` and `arrow` rigs.
+- **The camera (ADR 0014).** `camera: { x, y, zoom, tracks }`, with `depth` on layers: 0 stays put, 1 is the world, between is further away.
+- **Markers (ADR 0014).** `markers: [{ t, label }]` on scenes and compositions. A label ending in `!` is a sync point the check tool tests.
 - **The cast.** `project.json` holds named characters (rig plus params) that layers use with `"cast": "bruno"` and can override.
 - **Old films (M9, ADR 0007)** in `projects/<id>/` still work: scenes sharing one fps and size that place each other as scene layers, with qualified ids, `<project>/<scene>`. The viewer converts one into a project folder of its own on request.
 - Validate scenes on load and surface clear errors in the viewer.
@@ -204,6 +207,7 @@ Users can attach reference images to a prompt. References are **input to the age
 - `render_contact_sheet(sceneId, from, to, every)`: a grid of frames for reviewing motion
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
 - `apply_to_selection(selection, patch)`: writes a scoped override for the selection
+- `check(sceneId, from?, to?)`: measures a scene or composition before anyone watches it (format, black, freeze, flashing, loudness, sync; ADR 0014)
 - `export(sceneId, target, from?, to?, silent?, media?)`: `mp4` | `gif` | `html`, returns an output path; `media` inlines sound files in HTML
 - `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request threads and current selection (ADR 0003, ADR 0006). `complete_request` ends a turn; the user replies or settles. Plus the `/frame-studio:next` prompt and the `selection://current` resource
 
@@ -229,7 +233,7 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 
 - The app signed and notarized, with electron-updater in place of the unsigned updater (ADR 0009), and Windows and Linux builds (ADR 0008 left them for later). The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
 - Timeline editor for keys and timing; rig-controls panel generated from param schemas.
-- Camera layer (pan, zoom, shake), scene transitions, multi-shot story files.
+- Scene transitions as a library, multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.
 
 ## Agent skills

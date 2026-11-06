@@ -1,14 +1,18 @@
 <!--
   The prompt box, for a new thread and for replies: what it's about, the
   prompt, reference images (paste, drop, or attach), and who works it (ADR
-  0006): the agent, its model and effort, and full access. Return sends;
-  Shift+Return starts a new line. A thread keeps its agent, so replies show it
-  fixed. An agent that isn't ready says why and which command fixes it; the
-  studio never asks for credentials itself.
+  0006), folded into one pill. Return sends; Shift+Return starts a new line; Esc
+  hands the keyboard back to the viewer. Typing @ lists the scene's layers, and
+  picking one sets the selection without adding any text. A thread keeps its
+  agent, so replies show it fixed. An agent that isn't ready says why and which
+  command fixes it; the studio never asks for credentials itself.
 -->
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { MAX_REFERENCE_BYTES, REFERENCE_TYPES, type AgentId, type AgentStatus, type TurnSettings } from '../../studio/protocol';
   import Icon from './Icon.svelte';
+  import ModelPicker from './ModelPicker.svelte';
+  import Popover from './Popover.svelte';
 
   let {
     value = $bindable(''),
@@ -16,6 +20,8 @@
     agent = $bindable(),
     settings = $bindable(),
     agents,
+    layers,
+    onmention,
     fixed = false,
     label,
     placeholder,
@@ -25,40 +31,103 @@
     onsubmit,
     onproblem,
     onrefresh,
+    onpick,
   }: {
     value?: string;
     files?: { file: File; url: string }[];
     agent: AgentId;
     settings: TurnSettings;
     agents: AgentStatus[];
+    /** The scene's layers, top first, for the @ list. */
+    layers: readonly { id: string }[];
+    /** A layer was picked from the @ list. */
+    onmention: (id: string) => void;
     fixed?: boolean;
     label: string;
     placeholder: string;
-    /** What the prompt is about, e.g. "bear › nose · [12, 24)". */
-    target: string;
+    /** What the prompt is about: the selection token. */
+    target: Snippet;
     sendLabel: string;
     canSend: boolean;
     onsubmit: () => void;
     onproblem: (text: string) => void;
     onrefresh: () => void;
+    /** You chose an agent in the picker. */
+    onpick?: (id: AgentId) => void;
   } = $props();
 
   let dragging = $state(false);
   let picker = $state<HTMLInputElement | null>(null);
+  let box = $state<HTMLTextAreaElement | null>(null);
 
   const status = $derived(agents.find((a) => a.id === agent));
   const external = $derived(agent === 'external');
+  const choices = $derived(agents.filter((a) => a.ready).length);
+  // The agent you could have instead, when the external one is all that's ready.
+  const signedOut = $derived(!fixed && choices === 1 && external ? agents.find((a) => a.id !== 'external' && a.fix) : undefined);
 
-  // Keep the model and effort to ones this agent offers. Before the pickers render, since a select bound to a
-  // value it doesn't offer takes its first option instead.
-  $effect.pre(() => {
-    const s = status;
-    if (!s) return;
-    if (s.models.length > 0 && !s.models.some((m) => m.id === settings.model)) settings.model = s.models[0].id;
-    if (s.efforts.length > 0 && (settings.effort === undefined || !s.efforts.includes(settings.effort))) {
-      settings.effort = s.efforts.includes('medium') ? 'medium' : s.efforts[0];
+  // ---- the @ list ----
+
+  /** The @ being typed: where it starts, and the row the keyboard is on. */
+  let mention = $state<{ start: number; query: string; index: number } | null>(null);
+  const LIST_MAX = 8;
+  const matches = $derived(mention ? layers.filter((l) => l.id.toLowerCase().includes(mention!.query)).slice(0, LIST_MAX) : []);
+
+  function readMention(): void {
+    if (!box) return;
+    const caret = box.selectionStart;
+    const typed = /(?:^|\s)@([^\s@]*)$/.exec(box.value.slice(0, caret));
+    if (!typed) {
+      mention = null;
+      return;
     }
-  });
+    const query = typed[1].toLowerCase();
+    mention = { start: caret - typed[1].length - 1, query, index: mention?.query === query ? mention.index : 0 };
+  }
+
+  /** Sets the selection and takes the typed @ back out, so the token says it and the prompt doesn't. */
+  function pickMention(id: string): void {
+    if (!mention || !box) return;
+    const caret = box.selectionStart;
+    const start = mention.start;
+    value = value.slice(0, start) + value.slice(caret);
+    mention = null;
+    onmention(id);
+    const field = box;
+    queueMicrotask(() => {
+      field.focus();
+      field.setSelectionRange(start, start);
+    });
+  }
+
+  function onPromptKey(e: KeyboardEvent & { currentTarget: HTMLTextAreaElement }): void {
+    if (mention && matches.length > 0) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        mention.index = (mention.index + (e.key === 'ArrowDown' ? 1 : matches.length - 1)) % matches.length;
+        return;
+      }
+      if ((e.key === 'Enter' || e.key === 'Tab') && !e.shiftKey) {
+        e.preventDefault();
+        pickMention(matches[Math.min(mention.index, matches.length - 1)].id);
+        return;
+      }
+    }
+    // A popover that took this Escape marked it, so the first press only closes that.
+    if (e.key === 'Escape') {
+      if (!e.defaultPrevented) {
+        e.currentTarget.blur();
+        // Back to where Return came from, so Up and Down still walk the layers.
+        document.querySelector<HTMLElement>('.tl-row.is-selected')?.focus({ preventScroll: true });
+      }
+      return;
+    }
+    // keyCode 229: Safari's Enter that ends an input method composition, which it doesn't mark as composing.
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      if (canSend) onsubmit();
+    }
+  }
 
   function addFiles(list: Iterable<File>): void {
     for (const file of list) {
@@ -87,6 +156,12 @@
     <button type="button" class="link-btn" onclick={onrefresh}>check again</button>
   </p>
 {/if}
+{#if signedOut}
+  <p class="agent-note is-quiet" role="status">
+    To let {signedOut.label} work here, run <code>{signedOut.fix}</code> in a terminal, then
+    <button type="button" class="link-btn" onclick={onrefresh}>check again</button>
+  </p>
+{/if}
 <div
   class="composer"
   class:is-dragging={dragging}
@@ -103,15 +178,30 @@
     if (e.dataTransfer) addFiles(e.dataTransfer.files);
   }}
 >
-  <div class="composer-target" title="What this is about. Select on the canvas to change it.">
-    <Icon name="viewfinder" size={13} />
-    <span>{target}</span>
-  </div>
+  <div class="composer-target">{@render target()}</div>
+  {#if mention && matches.length > 0}
+    <Popover label="Layers" role="listbox" class="mention-menu" onclose={() => (mention = null)}>
+      {#each matches as layer, i (layer.id)}
+        <button
+          type="button"
+          role="option"
+          class="menu-item"
+          class:is-on={i === mention.index}
+          aria-selected={i === mention.index}
+          onpointerdown={(e) => e.preventDefault()}
+          onclick={() => pickMention(layer.id)}>{layer.id}</button
+        >
+      {/each}
+    </Popover>
+  {/if}
   <textarea
     aria-label={label}
     rows="2"
     {placeholder}
+    bind:this={box}
     bind:value
+    oninput={readMention}
+    onblur={() => (mention = null)}
     onpaste={(e) => {
       const images = [...(e.clipboardData?.files ?? [])].filter((f) => f.type.startsWith('image/'));
       if (images.length > 0) {
@@ -119,13 +209,7 @@
         addFiles(images);
       }
     }}
-    onkeydown={(e) => {
-      // keyCode 229: Safari's Enter that ends an input method composition, which it doesn't mark as composing.
-      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
-        e.preventDefault();
-        if (canSend) onsubmit();
-      }
-    }}
+    onkeydown={onPromptKey}
   ></textarea>
   {#if files.length > 0}
     <ul class="composer-refs" aria-label="Reference images">
@@ -139,7 +223,7 @@
   {/if}
   <div class="composer-tools">
     <button type="button" class="attach" aria-label="Attach image" title="Attach a reference image (or paste or drop one)" onclick={() => picker?.click()}>
-      <Icon name="plus" size={15} />
+      <Icon name="plus" />
     </button>
     <input
       type="file"
@@ -152,43 +236,10 @@
         e.currentTarget.value = '';
       }}
     />
-    {#if fixed}
-      <span class="picker is-fixed" title="A thread keeps its agent; start a new thread to use another">{status?.label ?? agent}</span>
-    {:else}
-      <span class="picker" title="Who works this thread">
-        <select aria-label="Agent" bind:value={agent}>
-          {#each agents as a (a.id)}
-            <option value={a.id}>{a.label}{a.ready ? '' : ' (not ready)'}</option>
-          {/each}
-        </select>
-        <Icon name="chevronDown" size={13} />
-      </span>
-    {/if}
-    {#if !external && status}
-      {#if status.models.length > 1}
-        <span class="picker">
-          <select aria-label="Model" bind:value={settings.model}>
-            {#each status.models as m (m.id)}<option value={m.id}>{m.label}</option>{/each}
-          </select>
-          <Icon name="chevronDown" size={13} />
-        </span>
-      {/if}
-      {#if status.efforts.length > 0}
-        <span class="picker">
-          <select aria-label="Effort" bind:value={settings.effort}>
-            {#each status.efforts as e (e)}<option value={e}>{e}</option>{/each}
-          </select>
-          <Icon name="chevronDown" size={13} />
-        </span>
-      {/if}
-      <label class="toggle" title="Without full access, the agent asks before editing files outside scenes/, rigs and audio, and before running commands">
-        <input type="checkbox" checked={settings.access === 'full'} onchange={(e) => (settings.access = e.currentTarget.checked ? 'full' : 'studio')} />
-        Full access
-      </label>
-    {/if}
+    <ModelPicker bind:agent bind:settings {agents} {fixed} {onpick} {onrefresh} />
     <span class="spacer"></span>
     <button type="button" class="send-button" aria-label={sendLabel} title="{sendLabel} (Return)" disabled={!canSend} onclick={onsubmit}>
-      <Icon name="send" size={16} />
+      <Icon name="send" />
     </button>
   </div>
 </div>

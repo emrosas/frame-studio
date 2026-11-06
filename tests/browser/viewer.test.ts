@@ -40,6 +40,11 @@ const readout = (page: Page) => page.getByRole('status', { name: 'Frame number' 
 const timecode = (page: Page) => page.getByRole('status', { name: 'Timecode' }).textContent();
 const layer = (page: Page) => page.getByRole('status', { name: 'Selected layer' }).textContent();
 const range = (page: Page) => page.getByRole('status', { name: 'Frame range' }).textContent();
+/** Clicks the token's time, which shows the From and To fields. */
+const openRange = (page: Page) => page.getByRole('status', { name: 'Frame range' }).getByRole('button').click();
+const layersList = (page: Page) => page.getByRole('listbox', { name: 'Layers' });
+type Picked = { studio: { selection: { layerId?: string; from: number; to: number }; range: { from: number; to: number } | null; scene: { markers?: { t: number }[]; fps: number } } };
+const picked = (page: Page) => page.evaluate(() => (window as unknown as Picked).studio.selection);
 const sidebar = (page: Page) => page.getByRole('navigation', { name: 'Studio' });
 /** The scene the sidebar marks as the one on screen. */
 const currentScene = (page: Page) => sidebar(page).locator('[aria-current="page"]').getAttribute('data-key');
@@ -60,7 +65,12 @@ describe('the viewer', () => {
   it('opens the scene and frame in the URL', async () => {
     const page = await open('?scene=shapes-test&frame=12');
     await expect.poll(() => readout(page)).toBe('frame 12 of 72');
+    await expect.poll(() => timecode(page)).toBe('0:01.00 / 0:06.00');
+    // A click on the clock switches it to MM:SS:FF and back.
+    await page.getByRole('status', { name: 'Timecode' }).getByRole('button').click();
     await expect.poll(() => timecode(page)).toBe('00:01:00 / 00:06:00');
+    await page.getByRole('status', { name: 'Timecode' }).getByRole('button').click();
+    await expect.poll(() => timecode(page)).toBe('0:01.00 / 0:06.00');
     expect(await currentScene(page)).toBe('shapes-test');
     expect(await page.title()).toBe('shapes-test · Frame Studio');
     await page.close();
@@ -117,7 +127,7 @@ describe('the viewer', () => {
     await expect.poll(() => layer(page)).toMatch(/^bruno › \w+/);
     await page.mouse.move(5, 5);
     await page.keyboard.press('Escape');
-    await expect.poll(() => layer(page)).toBe('No layer');
+    await expect.poll(() => layer(page)).toBe('Whole scene');
     await page.close();
   });
 
@@ -128,11 +138,12 @@ describe('the viewer', () => {
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('ArrowRight');
     await page.keyboard.press('o');
-    await expect.poll(() => range(page)).toBe('[12, 27)');
+    await expect.poll(() => range(page)).toBe('0:01–0:02.25');
+    await openRange(page);
     const to = page.getByRole('textbox', { name: /^To frame/ });
     await to.fill('00:02:00');
     await to.press('Enter');
-    await expect.poll(() => range(page)).toBe('[12, 24)');
+    await expect.poll(() => range(page)).toBe('0:01–0:02');
     await expect.poll(() => page.url()).toMatch(/from=12&to=24/);
     await page.close();
   });
@@ -140,6 +151,7 @@ describe('the viewer', () => {
   it('keeps what you type in a range field while playback runs, and a rejected entry and its error', async () => {
     const page = await open('?scene=shapes-test&frame=0');
     await page.getByRole('button', { name: 'Play' }).click();
+    await openRange(page);
     const from = page.getByRole('textbox', { name: /^From frame/ });
     await from.click();
     await from.pressSequentially('00:01', { delay: 60 });
@@ -175,6 +187,169 @@ describe('the viewer', () => {
     // The page is connected for hot updates now, so the new file reaches it.
     writeFileSync(BROKEN, JSON.stringify({ id: 'test-tmp-broken', fps: 0, duration: 1, size: [100, 100], seed: 1, layers: [] }));
     await expect.poll(() => page.getByRole('alert').textContent(), { timeout: 8000 }).toMatch(/fps/);
+    await page.close();
+  });
+});
+
+describe('selecting, every way', () => {
+  /** The middle of the star at frame 20 of shapes-test, over the paper. */
+  const STAR = [956, 657] as const;
+
+  it('lists the layers under a right-click, top first, and picks one a click would not reach', async () => {
+    const page = await open('?scene=shapes-test&frame=20');
+    const at = await scenePoint(page, ...STAR);
+    await page.mouse.click(at.x, at.y, { button: 'right' });
+    const menu = page.getByRole('menu', { name: 'Layers here' });
+    await menu.waitFor();
+    expect(await menu.getByRole('menuitem').allTextContents()).toEqual(['star', 'background']);
+    // Opening it selects nothing.
+    expect((await picked(page)).layerId).toBeUndefined();
+    await menu.getByRole('menuitem', { name: 'background' }).click();
+    await expect.poll(() => layer(page)).toBe('background');
+    await expect.poll(() => menu.count()).toBe(0);
+    // Escape closes it without touching the selection.
+    await page.mouse.click(at.x, at.y, { button: 'right' });
+    await menu.waitFor();
+    await page.keyboard.press('Escape');
+    await expect.poll(() => menu.count()).toBe(0);
+    expect(await layer(page)).toBe('background');
+    await page.close();
+  });
+
+  it('lists the layers top first, background last, and keeps rows and canvas in step both ways', async () => {
+    const page = await open('?scene=shapes-test&frame=20');
+    const rows = layersList(page).getByRole('option');
+    await expect.poll(() => rows.count()).toBe(5);
+    expect(await rows.locator('.row-head').allTextContents()).toEqual(['block', 'star', 'onTwos', 'onOnes', 'background']);
+
+    await rows.nth(1).click();
+    await expect.poll(() => layer(page)).toBe('star');
+    expect(await rows.nth(1).getAttribute('aria-selected')).toBe('true');
+    expect(await page.evaluate(() => document.activeElement?.getAttribute('data-layer'))).toBe('star');
+    // The keyboard stays the viewer's: Up and Down move rows, the others still drive the viewer.
+    await page.keyboard.press('ArrowDown');
+    await expect.poll(() => layer(page)).toBe('onTwos');
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => readout(page)).toBe('frame 21 of 72');
+    await page.keyboard.press('Escape');
+    await expect.poll(() => layer(page)).toBe('Whole scene');
+    await page.keyboard.press('ArrowLeft');
+
+    const at = await scenePoint(page, ...STAR);
+    await page.mouse.move(at.x, at.y);
+    await expect.poll(() => rows.nth(1).evaluate((r) => r.classList.contains('is-hover'))).toBe(true);
+    await page.mouse.click(at.x, at.y);
+    await expect.poll(() => rows.nth(1).getAttribute('aria-selected')).toBe('true');
+    await rows.nth(0).hover();
+    await expect.poll(() => rows.nth(0).evaluate((r) => r.classList.contains('is-hover'))).toBe(true);
+    await page.close();
+  });
+
+  it('scrolls the selected row into view when the selection comes from elsewhere', async () => {
+    const page = await open('?scene=why-lakes-stay-liquid&frame=0');
+    const last = layersList(page).getByRole('option').last();
+    await last.waitFor({ state: 'attached' });
+    const id = (await last.getAttribute('data-layer'))!;
+    await page.evaluate((layer) => (window as unknown as { studio: { select(l: string): void } }).studio.select(layer), id);
+    await expect.poll(() => last.evaluate((row) => {
+      const list = row.closest('.tl-scroll')!.getBoundingClientRect();
+      const box = row.getBoundingClientRect();
+      return box.top >= list.top && box.bottom <= list.bottom + 1;
+    })).toBe(true);
+    await page.close();
+  });
+
+  it('sets a layer and a range from a drag on its row, snapping to a marker', async () => {
+    const page = await open('?scene=why-lakes-stay-liquid&frame=0');
+    // The background has no keys, so the only targets are markers and sound. Take a marker with neither close by.
+    const row = layersList(page).getByRole('option').last();
+    await row.scrollIntoViewIfNeeded();
+    const id = (await row.getAttribute('data-layer'))!;
+    const ruler = (await page.locator('.ruler').boundingBox())!;
+    const box = (await row.boundingBox())!;
+    const { total, marker } = await page.evaluate(() => {
+      const { studio } = window as unknown as Picked & { studio: { frameCount: number; scene: { audio?: { start: number; end: number }[] } } };
+      const frame = (t: number) => Math.floor(t * studio.scene.fps);
+      const marks = studio.scene.markers!.map((m) => frame(m.t));
+      const others = [...marks, ...(studio.scene.audio ?? []).flatMap((c) => [frame(c.start), frame(c.end)])];
+      const lonely = marks.filter((m) => m > 110 && others.every((o) => o === m || Math.abs(o - m) > 16));
+      return { total: studio.frameCount, marker: lonely[0] };
+    });
+    const perFrame = ruler.width / total;
+    const y = box.y + box.height / 2;
+    await page.mouse.move(ruler.x + perFrame * (marker - 100), y);
+    await page.mouse.down();
+    // 4 px short of the marker, which is inside the 6 px it snaps from.
+    await page.mouse.move(ruler.x + perFrame * marker - 4, y, { steps: 5 });
+    await page.mouse.up();
+    const selection = await picked(page);
+    expect(selection).toMatchObject({ layerId: id, to: marker });
+    expect(Math.abs(selection.from - (marker - 100))).toBeLessThanOrEqual(1);
+    // The ruler still scrubs.
+    await page.mouse.click(ruler.x + perFrame * 30, ruler.y + ruler.height - 4);
+    await expect.poll(() => readout(page)).toMatch(/^frame 30 of/);
+    await page.close();
+  });
+
+  it('picks a layer from the @ list, which sets the selection and adds no text', async () => {
+    const page = await open('?scene=shapes-test&frame=20');
+    const prompt = page.getByRole('textbox', { name: 'Prompt' });
+    await prompt.click();
+    await page.keyboard.type('make @st');
+    const list = page.getByRole('listbox', { name: 'Layers' }).and(page.locator('.popover'));
+    await list.waitFor();
+    expect(await list.getByRole('option').allTextContents()).toEqual(['star']);
+    await page.keyboard.press('Enter');
+    await expect.poll(() => layer(page)).toBe('star');
+    expect(await prompt.inputValue()).toBe('make ');
+    expect(await page.evaluate(() => document.activeElement?.tagName)).toBe('TEXTAREA');
+    expect(await prompt.getAttribute('placeholder')).toBe('Change star…');
+    await page.close();
+  });
+
+  it('Return goes to the prompt and Esc comes back, and the token clears the lot', async () => {
+    const page = await open('?scene=shapes-test&frame=20&layer=star&from=12&to=24');
+    await page.keyboard.press('Enter');
+    await expect.poll(() => page.evaluate(() => document.activeElement?.tagName)).toBe('TEXTAREA');
+    await page.keyboard.press('Escape');
+    await page.keyboard.press('ArrowRight');
+    await expect.poll(() => readout(page)).toBe('frame 21 of 72');
+    await page.getByRole('group', { name: 'Selection' }).getByRole('button', { name: 'Clear selection' }).click();
+    await expect.poll(() => layer(page)).toBe('Whole scene');
+    expect(await page.evaluate(() => (window as unknown as Picked).studio.range)).toBeNull();
+    await page.close();
+  });
+
+  it('keeps the filter out of sight until Command-F, and Escape puts it away', async () => {
+    const page = await open('?scene=shapes-test&frame=0');
+    const filter = sidebar(page).getByRole('searchbox', { name: 'Filter videos and scenes' });
+    expect(await filter.count()).toBe(0);
+    await page.keyboard.press('Meta+f');
+    await filter.waitFor();
+    await expect.poll(() => filter.evaluate((el) => el === document.activeElement)).toBe(true);
+    await page.keyboard.type('hel');
+    expect(await sidebar(page).locator('button[data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('data-key')))).toContain('hello');
+    expect(await sidebar(page).getByRole('button', { name: 'bear-test', exact: true }).count()).toBe(0);
+    await page.keyboard.press('Escape');
+    await expect.poll(() => filter.count()).toBe(0);
+    await page.close();
+  });
+
+  it('closes Export when the library opens', async () => {
+    const page = await open('?scene=shapes-test&frame=0');
+    await page.getByRole('button', { name: 'Export', exact: true }).click();
+    await page.getByRole('region', { name: 'Export' }).waitFor();
+    await sidebar(page).getByRole('button', { name: 'Library' }).click();
+    await expect.poll(() => page.getByRole('region', { name: 'Export' }).count()).toBe(0);
+    await page.close();
+  });
+
+  it('keeps developer text off the surface', async () => {
+    const page = await open('?scene=shapes-test&frame=20&layer=nope&from=12&to=24');
+    await expect.poll(() => range(page)).toBe('0:01–0:02');
+    const body = await page.locator('.viewer').evaluate((el) => (el as HTMLElement).innerText);
+    expect(body).not.toMatch(/\[\d+, \d+\)|Ignored from|Whole frame|All layers/);
+    expect(await page.locator('.viewer').evaluate((el) => getComputedStyle(el).fontFamily)).not.toMatch(/mono/i);
     await page.close();
   });
 });
@@ -227,8 +402,6 @@ describe('projects (ADR 0007)', () => {
     expect(await currentScene(page)).toBe('bears-story/pip');
     const project = sidebar(page).getByRole('group', { name: "Bears' story" });
     expect(await project.locator('button[data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['film', 'meet', 'pip', 'together']);
-    // Then a row to convert the film into a project folder (ADR 0013).
-    expect(await project.getByRole('listitem').last().getByRole('button').textContent()).toContain('Convert to a project');
     expect(await project.getByRole('button', { name: 'film', exact: true }).textContent()).toContain('main');
     // Loose scenes stay outside the project.
     expect(await sidebar(page).getByRole('region', { name: 'Scenes' }).getByRole('button', { name: 'bear-test', exact: true }).count()).toBe(1);
@@ -246,13 +419,16 @@ describe('projects (ADR 0007)', () => {
       { layerId: 'again', scene: 'bears-story/meet', from: 120, to: 144 },
     ]);
     const bands = page.getByRole('group', { name: 'Shots' }).getByRole('button');
-    expect((await bands.allTextContents()).map((t) => t.trim())).toEqual(['meet', 'pip', 'together', 'meet']);
-    expect(await bands.nth(3).getAttribute('aria-label')).toBe('meet (layer again)');
+    expect((await bands.allTextContents()).map((t) => t.trim())).toEqual(['meet', 'pip', 'together', 'again']);
+    expect(await bands.nth(3).getAttribute('aria-label')).toBe('again (scene meet)');
     await bands.nth(1).click();
     expect(await bands.nth(1).getAttribute('aria-pressed')).toBe('true');
     await expect.poll(() => layer(page)).toBe('pip');
-    await expect.poll(() => range(page)).toBe('[36, 84)');
     await expect.poll(() => page.getByRole('button', { name: 'Open shot' }).isVisible()).toBe(true);
+    // A click selects; X marks its span.
+    expect(await page.evaluate(() => (window as unknown as Picked).studio.range)).toBeNull();
+    await page.keyboard.press('x');
+    await expect.poll(() => range(page)).toBe('0:03–0:07');
     await page.close();
   });
 
@@ -273,10 +449,21 @@ describe('projects (ADR 0007)', () => {
     await page.close();
   });
 
+  it('names a sound cue in the dock, and Escape clears it', async () => {
+    const page = await open('?scene=audio-test&frame=0');
+    const band = page.locator('.sound-band').first();
+    await band.click();
+    await expect.poll(() => band.evaluate((el) => el.classList.contains('is-selected'))).toBe(true);
+    await expect.poll(() => layer(page)).toBe(await band.getAttribute('data-cue'));
+    await page.keyboard.press('Escape');
+    await expect.poll(() => band.evaluate((el) => el.classList.contains('is-selected'))).toBe(false);
+    await page.close();
+  });
+
   it('opens a shot from a double-click on its band, even though the first click reflows the controls', async () => {
     const page = await open(`?scene=${encodeURIComponent('bears-story/film')}&frame=0`);
     await expect.poll(() => readout(page)).toBe('frame 0 of 144');
-    await page.getByRole('group', { name: 'Shots' }).getByRole('button', { name: 'meet (layer again)' }).dblclick();
+    await page.getByRole('group', { name: 'Shots' }).getByRole('button', { name: 'again (scene meet)' }).dblclick();
     await expect.poll(() => url(page).get('scene')).toBe('bears-story/meet');
     await expect.poll(() => readout(page)).toBe('frame 12 of 48');
     await page.close();
@@ -326,7 +513,7 @@ describe('export (ADR 0008)', () => {
     await page.getByRole('button', { name: 'Export', exact: true }).click();
     const panel = page.getByRole('region', { name: 'Export' });
     await panel.getByRole('radio', { name: 'GIF' }).check();
-    await panel.getByRole('checkbox', { name: /Only frames \[0, 12\)/ }).check();
+    await panel.getByRole('checkbox', { name: 'Only 0:00–0:01' }).check();
     await expect.poll(() => panel.getByRole('checkbox', { name: 'GIFs are silent' }).isDisabled()).toBe(true);
     await panel.getByRole('button', { name: 'Export', exact: true }).click();
     await expect.poll(() => panel.getByRole('status').textContent(), { timeout: 60_000 }).toMatch(/Saved shapes-test-00000-00012\.gif/);

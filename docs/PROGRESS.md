@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-09-26, after M10 and the app's icon, updates and redesign.
+Last updated 2026-11-06, after the projects sidebar and the model picker.
 
 ## Done
 
@@ -799,6 +799,63 @@ How each acceptance criterion was verified:
 6. MCP tools for compositions: `tests/browser/mcp.test.ts` lists `create_composition`, and the compositions test drives the rest.
 7. Typecheck clean, 1231 unit tests and 139 browser tests, and the installed-app tests on a fresh build.
 
+### Measured checks
+
+`check(sceneId, from?, to?, loop?)` measures a scene or composition, since an agent can't watch motion or hear sound and a person wants a preflight before exporting. The render worker draws every frame at 320 pixels on the long side under a base transform, as the viewer does, and `src/export/check.ts` does the arithmetic: format, duration, black, freeze, opening, loop seam, flashing, sparse, loudness (BS.1770-4), true peak, dropouts, and sync markers against onsets in the audio buffer. `tools/studio/check.ts` runs the job for the MCP tool and the viewer, and saves the report to `.frame-studio/checks/<id>.json`. Check video sits at the foot of the Export popover (`CheckPanel.svelte`); clicking a result with frames seeks there. The studio's agents are told to run it before calling a film done. `docs/MCP.md` has what each check measures.
+
+A flash counts as WCAG 2.3.1 counts it, a swing up and back, so 3 a second is six changes of luminance. Counting each change alone would fail a 2 Hz beat pulse, which is safe.
+
+Tests: `src/export/check.test.ts` on synthetic pixels and samples, with loudness against the EBU Tech 3341 cases, and `tests/browser/check.test.ts` through the worker and the viewer. Run on the repo's scenes, `why-lakes-stay-liquid` (600 frames) took under 2 s.
+
+### Viewer overhaul: a place to make videos in
+
+The viewer now opens on a library and works around a timeline dock. There is still no layer panel, and the canvas stays the selection surface.
+
+- Library (`Library.svelte`), over the stage and the dock, with the render loop paused: videos and scenes as poster cards, sound files, renders from `out/`, and a row per older film with Convert. It's where a project opens with nothing selected, and its URL carries no scene.
+- Posters (`tools/studio/thumbs.ts`): `.frame-studio/thumbs/<id>-<hash>.png`, hashed over the scene, what it places, the cast and the rigs. The render pool gained a low-priority queue, so a poster waits behind every export and agent render, and they arrive by push.
+- Sidebar: Library, New video, New scene, then videos and scenes with small posters, a filter past eight, and older films folded. Threads moved to a list at the top of the agent panel. Sound moved to the library.
+- New dialog: format cards, with a Pixel short that picks one of four sixteen-colour looks (`src/viewer/formats.ts`). A new video starts with an empty scene on its track, since a pixel stage lives on a scene. `create_scene` itself has no pixel argument yet, so the server sets `pixel` with `updateScene` straight after creating the file.
+- Timeline dock (`Timeline.svelte`, `timeline.ts`): resizable, with a seconds ruler, markers, range handles, and bands. On a composition a clip drags to move and its edges trim, through `POST /__studio/compositions/<id>/clip`, which refuses while an agent works there. This is the one part of M15 built; sound bands stay read-only.
+- Safe zones for 9:16 scenes, an SVG over the canvas (`safe-zones.ts`). Its numbers are rounded from what's commonly quoted for TikTok, Reels and Shorts, not measured, so treat it as a guide.
+- Agent default: the integrated agent when ready, and no picker when only one agent is ready. A pick by hand is kept under a new storage key, so the old saved default doesn't pin anyone to the external agent.
+
+### M14.5: Shorts (ADR 0014)
+
+Research on Science in 8bit and HyperFrames is in `.scratch/frame-studio/research/science-in-8bit-and-hyperframes.md`. Their MP4s are tagged as Remotion renders on a 180x320 canvas, so there was no secret tool, only method. We built what our engine lacked for that method.
+
+- Pixel stages: `pixel: { scale, palette, dither }` in `src/engine/pixel.ts` and `render.ts`. Every host gets them, because `render()` does the work.
+- The camera and layer `depth`, in `drawLayer`, so hit testing follows.
+- Markers on scenes and compositions. A label ending in `!` is a sync point.
+- Pixel rigs in `src/rigs/pixel`: `pixel-text`, `sprite`, `sky`, `ridge`, `drift`, `arrow`, with our own 5x7 alphabet. The `chip` and `hit` generators.
+- Picture clips in compositions: `src/engine/picture.ts`, decoded by `src/export/pictures.ts` in the viewer and the worker. An HTML export refuses them. Picture clips show on the timeline, and they move and trim.
+- `scenes/why-lakes-stay-liquid.json`, a 20 s sample with sources in the facts: water is densest near 4 C, ice about 9% less dense. HTML export 62 KB. It passes every check.
+
+### The UI pass
+
+One selection with many ways to it, a real timeline, and one visual system. The engine, rigs, embed and the selection shape did not change.
+
+- Selecting. The canvas (click, click again, Option-click) gained a right-click menu of every layer under the pointer. Timeline rows and bands select too, Up and Down move between rows, and X marks the selected clip, override or cue as the range. A drag on an empty part of a row sets that layer and a range, snapping within 6 px to markers, clip and sound edges and the row's own keys. Typing @ in a prompt picks a layer and adds no text. Return goes to the prompt, and Esc comes back.
+- The timeline. Headers on the left, the ruler pinned, the rows scrolling under it. A scene has a row per layer, top of the stack first, with key ticks and override spans, read-only. Key editing stays Later.
+- Undo. Command-Z and Shift-Command-Z for clip edits only (`src/viewer/undo.ts`). Saves come back as file changes a moment later and can overlap, so the history judges by content: a clip may only land where one of our saves put it, and anything else in the file must stay the same, or the history ends.
+- Words. `selection.ts` holds the one formatter: "pip · 0:02–0:04", and "Whole scene" for no layer. Frames stay in tooltips and the typed fields, and the interval notation is gone from the screen.
+- Chrome. A + menu for New video and New scene, a hidden filter (Command-F), a View popover for safe zones and shortcuts, threads filtered to this scene with All, one pill for agent, model, effort and full access, and a 16:9 library grid.
+- The look. New tokens in `style.css`, light and dark: one blue for everything selected, orange only for the logo and the your-turn dot, sizes 11, 12, 13, 15 and 20, radii 6, 10 and 14, no mono outside code, and one material for what floats. `Popover.svelte` is the one popover.
+
+Removed: `FpsMeter`, since measured fps no longer shows, and the poster's name tint.
+
+A few choices the spec left open. A click on a clip no longer sets the range; X does. A sound cue isn't a layer, so clicking one selects the whole scene and marks the cue for X. Composition lanes are labelled Clips, Clips 2, since a composition's tracks flatten into its layers. The thread list also keeps threads stopped on a question from any scene, so a waiting agent can't hide behind All.
+
+### Projects in the sidebar and the model picker
+
+ADR 0013 is amended: many projects listed, one on screen.
+
+- The sidebar has a group per recent project, with a status dot, a count when folded and a + on hover. The app reads each project's videos, scenes, older films and posters from disk (`desktop/projects.ts`), so a listed project needs no server. The switcher menu is gone; New project and Open project folder moved to the + menu. The filter spans every project. Older films are a last fold inside their project, with Convert.
+- Clicking a row of another project shows "Opening <name>" on the stage and loads that project's server on that scene, once. The last two projects left stay warm for ten minutes: 100 to 600 ms back to one, one to two seconds cold, measured with three projects.
+- Folds, layout, recent models, the agent picked and mute live in the app's settings (`src/viewer/prefs.ts`), and unsent text in the main process per project, since each server has its own port. Attached images in a draft don't survive a switch.
+- `SceneOption.project` is now `film`.
+- The picker follows T3 Code's structure (`ModelPicker.svelte`): a rail of providers with Recent, models, efforts, and a permissions menu. `AgentStatus.models` carries per-model efforts, a default model and a default effort. Codex reports all three. Claude reports models and efforts through the SDK's `supportedModels()`, asked once per ten minutes with no turn and no login, and falls back to the old list if that fails. Claude reports no default effort, so the picker marks medium, the one it starts on.
+- The thread panel's padding and empty states are tidied.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -810,7 +867,7 @@ How each acceptance criterion was verified:
    Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
 2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
 3. Try the integrated AI: in the viewer, select something, pick Claude or Codex in the agent panel's composer, and ask for a change.
-4. Try compositions: Open the sample project in the app (or convert Bears' story from Films), open `film`, double-click a clip, and make a composition that places `film`.
+4. Try compositions: Open the sample project in the app (or convert Bears' story from Older films), open `film`, double-click a clip, and make a composition that places `film`.
 5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
 6. **Try 0.4.0.** [v0.4.0](https://github.com/emrosas/frame-studio/releases/tag/v0.4.0) adds the project switcher (M13) and compositions (M14): one project on screen at a time, compositions that arrange scenes on tracks, "Used in" on scenes, and Convert to a project for older films.
 7. **M15, the timeline as an editor** (ADR 0012, ADR 0013): tracks and clips you drag, trim and cut on the timeline, sound files on tracks. Then M16, stills.
@@ -825,6 +882,15 @@ How each acceptance criterion was verified:
 - Only a test enforces the rule that a scene file is named after its id. The viewer now opens a scene by file name too, and gives a shared id to the file named after it, but it does not flag a mismatch. Should the viewer or validator flag one? MCP `get_scene(id)` in M5 will need to map an id to a file.
 
 ## Known issues
+
+- Moving a clip so an override slides off the composition's end deletes the override, and Command-Z can't bring it back: the undo history ends there, with the clip left moved (`tools/studio/server.ts`, `src/viewer/undo.ts`).
+- Command-Z in the packaged app relies on the page handling the key before the Edit menu. Untested: the browser tests send keys to the page directly.
+
+- Safe-zone guides are approximations, not measured from each app.
+- A composition's check reads its own markers, not those inside its clips.
+- `check` has no progress over MCP, only in the viewer.
+- A video clip past its file's end holds the last frame.
+- Scrubbing video in the viewer shows the nearest decoded frame until the exact one arrives. Exports never do.
 
 - Question cards work for agents the studio runs. An external agent over MCP asks in its own interface.
 

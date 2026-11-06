@@ -23,6 +23,12 @@ export interface LayerSpec {
   tracks?: Track[];
   overrides?: Override[];
   mask?: MaskSpec;
+  /** A picture clip in a composition (ADR 0014): an image or video in media/, shown as source seconds [`in`, `out`) from `start`. Params are SCENE_LAYER_PARAMS. */
+  file?: string;
+  /** How a picture sits on the stage: `cover` fills it, `contain` shows all of it. Default cover. */
+  fit?: 'cover' | 'contain';
+  /** How much the scene's camera moves this layer: 0 stays put (a HUD), 1 is the world, in between is far away. Default 1, and 0 for the background. */
+  depth?: number;
 }
 export interface Layer extends LayerSpec { id: string }
 /** A named character of a project (ADR 0007): a rig and the params that make it that character. */
@@ -49,7 +55,17 @@ export interface AudioCue {
   params?: Params;
   tracks?: Track[];
 }
-export interface Scene { id: string; fps: number; duration: number; size: [number, number]; seed: number; background?: LayerSpec; layers: Layer[]; audio?: AudioCue[] }
+/**
+ * A pixel stage (ADR 0014): the scene draws at size / scale and shows with square pixels. Coordinates and
+ * Stage are the small stage's. `palette` snaps every pixel to these "#rrggbb" colours, `dither` (0 to 1) adds
+ * ordered dither between them.
+ */
+export interface PixelStage { scale: number; palette?: string[]; dither?: number }
+/** A scene's camera: an offset from the stage's centre in stage pixels and a zoom, with tracks on x, y and zoom. Layers follow it by their depth. */
+export interface Camera { x?: number; y?: number; zoom?: number; tracks?: Track[] }
+/** A named moment on the timeline: a beat, a hit, a sync point. It draws nothing. */
+export interface Marker { t: number; label: string }
+export interface Scene { id: string; fps: number; duration: number; size: [number, number]; seed: number; background?: LayerSpec; layers: Layer[]; audio?: AudioCue[]; pixel?: PixelStage; camera?: Camera; markers?: Marker[] }
 export const BACKGROUND_ID = 'background';   // the background layer's id; user layers may not use it
 export interface Rng { next(): number; range(min: number, max: number): number; int(minInclusive: number, maxExclusive: number): number; pick<T>(items: readonly T[]): T; fork(key: string): Rng }
 export type ParamSpec =
@@ -59,7 +75,7 @@ export type ParamSpec =
   | { type: 'enum'; default: string; options: readonly string[]; description?: string }
   | { type: 'boolean'; default: boolean; description?: string };
 export type ParamSchema = Record<string, ParamSpec>;
-export interface Stage { width: number; height: number }   // scene size in scene pixels
+export interface Stage { width: number; height: number }   // the stage in scene pixels: the scene's size, or size / pixel.scale on a pixel stage
 /** A context a rig can draw on: the visible canvas, or an offscreen one (hit-test probe, selection mask). */
 export type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 /**
@@ -84,8 +100,11 @@ export type RigRegistry = ReadonlyMap<string, Rig>;
  * engine never makes a canvas itself; the viewer, the render page and the embed each provide these.
  */
 export interface Surfaces {
-  /** A transparent context with `like`'s pixel size and current transform. */
-  create(like: Ctx2D): Ctx2D;
+  /**
+   * A transparent context with `like`'s pixel size and current transform. With `size`, that size and no
+   * transform instead, on the CPU in every host, so a pixel stage's readback gives the same pixels everywhere.
+   */
+  create(like: Ctx2D, size?: readonly [number, number]): Ctx2D;
   /** Hands a context from create back, so it can be reused. */
   release(surface: Ctx2D): void;
 }
@@ -98,4 +117,9 @@ export interface World {
   scenes?: ReadonlyMap<string, Scene>;
   cast?: Cast;
   surfaces?: Surfaces;
+  pictures?: Pictures;
 }
+/** A decoded image or video frame. */
+export interface Picture { image: CanvasImageSource; width: number; height: number }
+/** Decoded picture files from the host (ADR 0014), ready before render() asks. Null draws nothing. */
+export interface Pictures { at(file: string, t: number): Picture | null }

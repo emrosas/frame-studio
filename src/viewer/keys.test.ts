@@ -54,6 +54,19 @@ describe('keyAction', () => {
     expect(keyAction(press('Escape', { ctrlKey: true }), 12)).toBeNull();
   });
 
+  it('maps the selection keys', () => {
+    expect(keyAction(press('x'), 12)).toEqual({ type: 'markSpan' });
+    expect(keyAction(press('Enter'), 12)).toEqual({ type: 'compose' });
+    expect(keyAction(press('Enter', { shiftKey: true }), 12)).toBeNull();
+  });
+
+  it('maps undo and redo, on Command and on Control', () => {
+    expect(keyAction(press('z', { metaKey: true }), 12)).toEqual({ type: 'undo' });
+    expect(keyAction(press('z', { ctrlKey: true }), 12)).toEqual({ type: 'undo' });
+    expect(keyAction(press('z', { metaKey: true, shiftKey: true }), 12)).toEqual({ type: 'redo' });
+    expect(keyAction(press('z'), 12)).toBeNull();
+  });
+
   it('leaves modified and unknown keys alone', () => {
     expect(keyAction(press('ArrowLeft', { metaKey: true }), 12)).toBeNull();
     expect(keyAction(press('r', { ctrlKey: true }), 12)).toBeNull();

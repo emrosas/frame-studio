@@ -13,7 +13,7 @@ import { isMediaPath } from '../../src/engine/validate.ts';
 import type { StudioFolder } from './folder.ts';
 import { HttpError } from './http.ts';
 
-/** Sound file types the studio takes, by extension, with what to serve them as. */
+/** Sound, image and video file types the studio takes, by extension, with what to serve them as (ADR 0012, 0014). */
 export const MEDIA_TYPES: Readonly<Record<string, string>> = {
   '.mp3': 'audio/mpeg',
   '.wav': 'audio/wav',
@@ -22,9 +22,17 @@ export const MEDIA_TYPES: Readonly<Record<string, string>> = {
   '.flac': 'audio/flac',
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
+  '.mp4': 'video/mp4',
+  '.m4v': 'video/mp4',
+  '.mov': 'video/quicktime',
+  '.webm': 'video/webm',
 };
 
-/** Largest sound file an upload or an import takes. */
+/** Largest media file an upload or an import takes. */
 export const MAX_MEDIA_BYTES = 1024 * 1024 * 1024;
 
 export interface MediaFile {

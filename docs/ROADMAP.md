@@ -239,6 +239,10 @@ Acceptance:
 5. `project.json` gives new scenes and compositions their format, and a cast change there reaches every scene that uses the member.
 6. Every earlier test passes.
 
+## M14.5: Shorts (ADR 0014)
+
+Built from the research on Science in 8bit and HyperFrames: pixel stages, the camera, markers, the check tool, picture clips in compositions, the project library, and the timeline dock. Dragging and trimming clips came with the dock; the rest of M15 stands.
+
 ## M15: The timeline as an editor
 
 A simple video editor's timeline for compositions (ADR 0012, ADR 0013).
@@ -249,6 +253,13 @@ A simple video editor's timeline for compositions (ADR 0012, ADR 0013).
 - Undo and redo for the timeline's edits.
 - Read-only while an agent works on the composition.
 
+Next pass, each needing an ADR:
+
+- Keyframe editing: drag and delete key ticks in time. Values stay the agent's.
+- Canvas drag: writes x/y on the rule param when untracked, a key at the playhead when tracked, an override when a range is set.
+
+Refused: multi-select and marquee. A selection is one target (ADR 0003), and every tool and the agent's prompt rely on that.
+
 ## M16: Stills
 
 - PNG and JPG export of a frame, from the viewer and the tools.
@@ -257,7 +268,8 @@ A simple video editor's timeline for compositions (ADR 0012, ADR 0013).
 ## Later
 
 - Retiming shots (speed, freeze, reverse), selecting inside a shot from its parent, and a library of transitions (ADR 0007, out of scope for M9).
-- Keyframe editing in the timeline; rig-controls panel generated from param schemas.
+- A rig-controls panel generated from param schemas.
 - Retiming shots (speed, freeze, reverse).
-- Camera layer and scene transitions.
+- A library of scene transitions.
+- Picture clips in the HTML embed, if a decoder-free way shows up (ADR 0014).
 - Hosted service with prompt-crafting and style-steering UI.

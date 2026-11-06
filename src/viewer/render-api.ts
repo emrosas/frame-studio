@@ -1,6 +1,8 @@
 // The render page's window.studio (render.html). Types only, so the Node
 // render tools can import them without pulling in browser code.
 
+import type { CheckReport } from '../export/check.ts';
+
 export type ExportTarget = 'mp4' | 'gif';
 
 export interface RenderSceneInfo {
@@ -58,6 +60,8 @@ export interface RenderStudioApi {
   /** Keys of every scene in the studio folder. */
   readonly scenes: readonly string[];
   readonly canvas: HTMLCanvasElement;
+  /** Lets go of decoded picture clips, when the worker drops this page's scene. */
+  dispose(): void;
   /**
    * A frame number ("47") or timecode ("00:03:11") as a frame of this scene.
    * Throws when out of range. With end set, frameCount is allowed too, for the
@@ -65,7 +69,7 @@ export interface RenderStudioApi {
    */
   resolveFrame(text: string, end?: boolean): number;
   /** Draws frame n synchronously at scene size. Returns n. */
-  renderFrame(frame: number): number;
+  renderFrame(frame: number): Promise<number>;
   /** SHA-256, as hex, of the scene's rendered audio (float32 samples, channel after channel). Null for a silent scene. */
   audioHash(): Promise<string | null>;
   /** Samples [from, to) of one channel of the scene's rendered audio, for tests. Empty for a silent scene. Keep ranges short. */
@@ -85,7 +89,7 @@ export interface RenderStudioApi {
    */
   writePng(frame: number, sinkId: string, options?: { maxWidth?: number }): Promise<number>;
   /** The layer, and with parts the part, at scene pixel (x, y) on frame n. */
-  hitTest(frame: number, x: number, y: number, options?: { parts?: boolean }): RenderHit;
+  hitTest(frame: number, x: number, y: number, options?: { parts?: boolean }): Promise<RenderHit>;
   /**
    * Encodes frames [from, to) and streams the file to the sink. Defaults to
    * the whole scene. MP4s carry the scene's audio for that range unless
@@ -96,6 +100,11 @@ export interface RenderStudioApi {
     sinkId: string,
     options?: { from?: number; to?: number; silent?: boolean; audioCodec?: 'aac' | 'opus' },
   ): Promise<RenderExportResult>;
+  /**
+   * Measures frames [from, to), drawn small, and the scene's rendered audio: every check in src/export/check.ts.
+   * Defaults to the whole scene. With loop, the seam between the last and first frames is judged too.
+   */
+  check(options?: { from?: number; to?: number; loop?: boolean }): Promise<CheckReport>;
   /** Draws every Nth frame of [from, to) into one grid and writes it as PNG to the sink. */
   contactSheet(sinkId: string, options?: { from?: number; to?: number; every?: number; columns?: number }): Promise<ContactSheetResult>;
 }

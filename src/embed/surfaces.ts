@@ -12,12 +12,16 @@ import type { Ctx2D, Surfaces } from '../engine/types';
  */
 export function createSurfaces(options: CanvasRenderingContext2DSettings = {}): Surfaces {
   const pool: OffscreenCanvasRenderingContext2D[] = [];
+  const stagePool: OffscreenCanvasRenderingContext2D[] = [];
+  const stages = new WeakSet<OffscreenCanvasRenderingContext2D>();
   return {
-    create(like: Ctx2D): Ctx2D {
-      const { width, height } = like.canvas;
-      let ctx = pool.pop();
+    create(like: Ctx2D, size?: readonly [number, number]): Ctx2D {
+      const [width, height] = size ?? [like.canvas.width, like.canvas.height];
+      const from = size ? stagePool : pool;
+      let ctx = from.pop();
       if (!ctx) {
-        const made = new OffscreenCanvas(width, height).getContext('2d', options);
+        const settings = size ? { willReadFrequently: true, colorSpace: 'srgb' as const } : options;
+        const made = new OffscreenCanvas(width, height).getContext('2d', settings);
         if (!made) throw new Error('This browser did not provide an offscreen 2D context for compositing.');
         ctx = made;
       }
@@ -30,11 +34,14 @@ export function createSurfaces(options: CanvasRenderingContext2DSettings = {}): 
       } else {
         canvas.width = width; // resetting the size clears pixels and state where reset() is missing
       }
-      ctx.setTransform(like.getTransform());
+      if (size) stages.add(ctx);
+      if (size) ctx.setTransform(1, 0, 0, 1, 0, 0);
+      else ctx.setTransform(like.getTransform());
       return ctx as unknown as Ctx2D;
     },
     release(surface: Ctx2D): void {
-      pool.push(surface as unknown as OffscreenCanvasRenderingContext2D);
+      const ctx = surface as unknown as OffscreenCanvasRenderingContext2D;
+      (stages.has(ctx) ? stagePool : pool).push(ctx);
     },
   };
 }
