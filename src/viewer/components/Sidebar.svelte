@@ -218,7 +218,7 @@
       {/each}
     {:else}
       {#each groups as group (group.path)}
-        <ProjectGroup {group} {ui} {actions} filtering={query.trim() !== ''} {folds} dots={dots[group.path] ?? {}} onfold={fold} onnote={(next) => (note = next)} onforget={() => void refresh()} />
+        <ProjectGroup group={{ ...group, status: allThreads.find((g) => g.path === group.path)?.status ?? group.status }} {ui} {actions} filtering={query.trim() !== ''} {folds} dots={dots[group.path] ?? {}} onfold={fold} onnote={(next) => (note = next)} onforget={() => void refresh()} />
       {:else}
         <p class="side-empty">No matches.</p>
       {/each}

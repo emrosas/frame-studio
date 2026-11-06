@@ -155,3 +155,15 @@ describe('dots on Footage rows', () => {
     expect(Object.values(sceneDots([thread(2, { turn: 'failed' })], () => true)).map((d) => d.kind)).toEqual(['failed']);
   });
 });
+
+describe('the project dot', () => {
+  it('counts only the turns you have not seen', () => {
+    const live = [thread(1), thread(2)];
+    const folder = { path: '/a', name: 'A' };
+    const seen = { [seenKey('/a', 1)]: thread(1).at };
+    const [group] = threadGroups({ entries: [], live, folder, folds: {}, seen, query: '' });
+    expect(group.status?.label).toBe('1 your turn');
+    const [quiet] = threadGroups({ entries: [], live: [thread(1)], folder, folds: {}, seen, query: '' });
+    expect(quiet.status).toBeNull();
+  });
+});

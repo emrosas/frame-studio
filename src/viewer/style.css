@@ -1724,6 +1724,7 @@ kbd {
 /* Reaches inward, since a short fade's two diamonds cover the very end of the bar. */
 .bar-edge {
   position: absolute;
+  z-index: 2;
   top: 0;
   bottom: 0;
   width: min(16px, 30%);
@@ -2596,7 +2597,7 @@ button.check-result:hover {
 
 /* A narrow card gives up the scene's name first, then the model's. */
 .thread-scene {
-  flex: 1 1 0;
+  flex: 0 1 auto;
   min-width: 56px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2604,7 +2605,6 @@ button.check-result:hover {
 
 .thread-model {
   flex: 0 1 auto;
-  max-width: 50%;
   display: inline-flex;
   align-items: center;
   gap: 2px;

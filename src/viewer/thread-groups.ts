@@ -118,7 +118,7 @@ export function threadGroups(input: {
       current,
       missing,
       open: !missing && (query !== '' || (input.folds[path] ?? current)),
-      status: groupStatus({ working: count('working'), input: count('input'), yours: count('your_turn') }),
+      status: groupStatus({ working: count('working'), input: count('input'), yours: all.filter((t) => t.status === 'your_turn' && !isSeen(input.seen, path, t)).length }),
       threads,
       done: shown.filter(finished),
       doneOpen: query !== '' || (input.folds[`${path}#done`] ?? false),

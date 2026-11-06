@@ -220,7 +220,8 @@
     const pair = edge === 'start' ? bar.start : edge === 'end' ? bar.end : undefined;
     const target: KeyTarget = pair ? { kind: 'edge', layerId: row.id, pair } : { kind: 'bar', layerId: row.id };
     const edges = edge === 'start' ? [bar.from] : edge === 'end' ? [bar.to] : [bar.from, bar.to];
-    const targets = snapTargets(ui.layers.flatMap((r) => (r.id === row.id ? [] : r.keys)));
+    // Markers and the range only: at this scale every other layer's keys would catch the drag at random.
+    const targets = [...ui.markers.map((m) => m.frame), ...(range ? [range.from, range.to] : [])];
     const perFrame = perFramePx();
     const from = boundaryAt(e.clientX);
     dragKeys(e, target, (x) => snapDelta(edges, boundaryAt(x) - from, targets, perFrame), () => actions.selectLayer(row.id));
@@ -391,6 +392,7 @@
                 title={marker.label}
                 onpointerdown={(e) => e.stopPropagation()}
                 onclick={(e) => {
+                  ui.selectedKey = null;
                   actions.scrub(marker.frame);
                   e.currentTarget.blur();
                 }}><span class="marker-label">{marker.label}</span></button

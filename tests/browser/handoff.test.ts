@@ -206,4 +206,13 @@ describe('following a thread', () => {
     await expect.poll(() => sidebar().getByRole('article').count()).toBe(0);
     expect(await agent.list()).toEqual([]);
   });
+
+  it('takes a thread on the whole scene as no range, so a canvas drag after it writes a key', async () => {
+    const total = await page.evaluate(() => (window as unknown as { studio: { frameCount: number } }).studio.frameCount);
+    const made = await agent.create({ selection: { sceneId: ID, from: 0, to: total }, frame: 0, prompt: 'whole scene', references: [] });
+    await request(made.id).getByRole('button').click();
+    await expectText(thread(), 'whole scene');
+    expect(await page.evaluate(() => (window as unknown as { studio: { range: unknown } }).studio.range)).toBeNull();
+    await agent.cancel(made.id);
+  });
 });

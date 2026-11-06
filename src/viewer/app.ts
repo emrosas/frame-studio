@@ -858,6 +858,8 @@ export class App {
       this.say(problem);
       return;
     }
+    // Back past the start would land it on 0, changing a fade that starts before the scene.
+    if (frames < 0 && key.frame <= 0) return;
     const { layer, frame } = moveTarget(current, { kind: 'key', ...key }, key.frame + frames, scene.fps, this.total);
     if (frame === null || frame === key.frame) return;
     if (this.nudge) clearTimeout(this.nudge.timer);
@@ -1953,7 +1955,9 @@ export class App {
     const open = this.requests.find((r) => r.id === this.ui.studio.open);
     if (open?.sceneId === key) return;
     const live = this.requests.filter((r) => r.sceneId === key && r.status !== 'settled' && r.status !== 'cancelled').at(-1);
-    this.openThread(live?.id ?? null);
+    // The conversation only: you picked the scene, so its playhead and selection stay yours.
+    this.ui.studio.open = live?.id ?? null;
+    if (live) void this.loadEvents(live.id);
   }
 
   private openThread(id: number | null): void {
@@ -2066,8 +2070,12 @@ export class App {
     this.layerId = missing ? null : (sel.layerId ?? null);
     this.partId = this.layerId !== null && sel.partId !== undefined && parts?.includes(sel.partId) ? sel.partId : null;
     this.selectionPoint = null;
-    this.range = rangeError(sel.from, sel.to, this.total) === null ? { from: sel.from, to: sel.to } : null;
-    this.clock.seek(play && this.range ? this.range.from : currentTurn(request).ask.frame);
+    // A thread stores what it covered, which with no range set is the whole scene or clip. That's no range: restoring one would turn the next canvas drag into an override.
+    this.range = null;
+    const natural = this.selectedSpan();
+    const chosen = rangeError(sel.from, sel.to, this.total) === null && (sel.from !== natural.from || sel.to !== natural.to);
+    this.range = chosen ? { from: sel.from, to: sel.to } : null;
+    this.clock.seek(play ? sel.from : currentTurn(request).ask.frame);
     this.selectionChanged();
     if (missing) this.notice = `Layer "${sel.layerId}" is no longer in the scene.`;
     this.canvasDirty = true;
