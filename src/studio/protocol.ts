@@ -531,6 +531,23 @@ export interface ClipEdit {
   out: number | null;
 }
 
+/** The fields of a layer or clip a hand edit may change (ADR 0015). */
+export const LAYER_EDIT_FIELDS = ['params', 'tracks', 'overrides', 'mask', 'start', 'in', 'out'];
+
+/** A hand edit of one layer or clip: each field in `set` is replaced whole, and null removes it (ADR 0015). */
+export interface LayerEdit {
+  /** The scene or composition, as the library keys it, so "<project>/<scene>" for an old film's. */
+  scene: string;
+  layer: string;
+  set: Record<string, unknown>;
+}
+
+/** The layer's JSON in the file on either side of an edit, without `id`, for undo. */
+export interface LayerChange {
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+}
+
 /** The format a new scene or composition gets when neither it nor project.json says. */
 export const DEFAULT_FORMAT = { fps: 24, size: [1920, 1080] as [number, number] };
 
@@ -623,6 +640,16 @@ export function checkClipEdit(input: unknown): string | null {
   if (!seconds(input.in)) return 'in must be seconds, 0 or more';
   if (input.out !== null && !(seconds(input.out) && (input.out as number) > (input.in as number))) return 'out must be seconds after in, or null for the end';
   return null;
+}
+
+/** Why `input` is not a well-formed LayerEdit, or null when it is. What it does to the scene is the validator's to say. */
+export function checkLayerEdit(input: unknown): string | null {
+  if (!isObject(input)) return 'a layer edit must be a JSON object';
+  if (typeof input.scene !== 'string' || input.scene === '') return 'scene must be a scene id';
+  if (typeof input.layer !== 'string' || input.layer === '') return 'layer must be a layer id';
+  if (!isObject(input.set)) return 'set must be an object of fields to change';
+  const unknown = Object.keys(input.set).find((field) => !LAYER_EDIT_FIELDS.includes(field));
+  return unknown === undefined ? null : `set can't change "${unknown}"; it takes ${LAYER_EDIT_FIELDS.join(', ')}`;
 }
 
 const QUESTION_ANSWER_LIMIT = 2000;

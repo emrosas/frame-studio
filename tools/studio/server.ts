@@ -14,6 +14,7 @@ import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node
 import type { ViteDevServer } from 'vite';
 import {
   checkClipEdit,
+  checkLayerEdit,
   checkNewComposition,
   checkNewRequest,
   checkNewScene,
@@ -30,6 +31,8 @@ import {
   type ApprovalDecision,
   type ClipEdit,
   type CurrentSelection,
+  type LayerChange,
+  type LayerEdit,
   type NewComposition,
   type NewRequest,
   type NewScene,
@@ -43,7 +46,7 @@ import { listMedia, mediaInfo, saveMedia, serveMedia } from './media.ts';
 import { listRenders, serveRender } from './renders.ts';
 import { Thumbs } from './thumbs.ts';
 import { createSerial } from '../mcp/tools.ts';
-import type { Workspace } from '../mcp/workspace.ts';
+import { withoutId, type Workspace } from '../mcp/workspace.ts';
 import { entryPath, loadModules, readSceneFiles, sceneLibrary, writeFileAtomic } from '../scene-files.ts';
 import { runCheck } from './check.ts';
 import { STUDIO_INSTRUCTIONS } from './agents/instructions.ts';
@@ -384,13 +387,14 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     }
   }
 
-  /** Sets a clip's start and trim, leaving out what is the default, through the same validation as update_scene. */
-  async function moveClip(id: string, edit: ClipEdit) {
+  /** Sets a clip's start and trim, leaving out what is the default, through the same validation as update_scene. Returns the clip on either side, for undo. */
+  async function moveClip(id: string, edit: ClipEdit): Promise<LayerChange> {
     const w = await ws();
     const { scene } = await w.getScene(id);
     const { tracks } = scene as { tracks?: { id: string; clips: Record<string, unknown>[] }[] };
     const clip = tracks?.flatMap((t) => t.clips).find((c) => c.id === edit.clip);
     if (!tracks || !clip) throw new Error(`Composition "${id}" has no clip "${edit.clip}".`);
+    const before = structuredClone(clip);
     // Keys and overrides are in composition time, so a fade goes where its clip goes.
     const moved = edit.start - (typeof clip.start === 'number' ? clip.start : 0) - (edit.in - (typeof clip.in === 'number' ? clip.in : 0));
     if (moved !== 0) {
@@ -417,7 +421,13 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     // A picture clip always says where it ends; the validator doesn't read files.
     if (edit.out !== null) clip.out = edit.out;
     else if (clip.file === undefined) delete clip.out;
-    return w.updateScene(id, { tracks });
+    await w.updateScene(id, { tracks });
+    return { before: withoutId(before), after: withoutId(clip) };
+  }
+
+  /** Whether an agent has a turn running on this scene or composition. Hand edits wait for it (ADR 0015). */
+  async function agentWorks(id: string): Promise<boolean> {
+    return (await queue.list()).some((r) => r.sceneId === id && r.status === 'working');
   }
 
   const checks = new Map<string, AbortController>();
@@ -621,8 +631,16 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       const input = await json<ClipEdit>(req);
       const problem = checkClipEdit(input);
       if (problem) throw new HttpError(400, problem);
-      if ((await queue.list()).some((r) => r.sceneId === id && r.status === 'working')) throw new HttpError(409, 'An agent is working on this composition, so its clips stay put until it finishes.');
+      if (await agentWorks(id)) throw new HttpError(409, 'An agent is working on this composition, so its clips stay put until it finishes.');
       return send(res, 200, await created(() => moveClip(id, input)));
+    }
+    // A hand edit of a layer from the timeline or the canvas, or undoing one (ADR 0015). The same lock as a clip's.
+    if (req.method === 'POST' && path === '/layers') {
+      const input = await json<LayerEdit>(req);
+      const problem = checkLayerEdit(input);
+      if (problem) throw new HttpError(400, problem);
+      if (await agentWorks(input.scene)) throw new HttpError(409, 'An agent is working on this scene, so it stays put until the agent finishes.');
+      return send(res, 200, await created(() => ws().then((w) => w.editLayer(input.scene, input.layer, input.set))));
     }
     if (req.method === 'POST' && path === '/sounds') {
       // Add at playhead: a cue playing a sound file, from the viewer's Media list (ADR 0012).

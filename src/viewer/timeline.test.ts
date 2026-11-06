@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dragClip, dragSpan, formatClock, labelFits, markerLabels, rulerTicks, snapFrame } from './timeline';
+import { dragClip, dragSpan, formatClock, labelFits, markerLabels, rulerTicks, snapDelta, snapFrame, visibleSpans } from './timeline';
 
 describe('formatClock', () => {
   it('reads minutes, seconds and hundredths', () => {
@@ -125,5 +125,54 @@ describe('markerLabels', () => {
 
   it('hides sync labels only against other sync points', () => {
     expect(markerLabels([{ frame: 0, label: 'chunk lands!' }, { frame: 20, label: 'crystal locks!' }], 400, px)).toEqual([false, true]);
+  });
+});
+
+describe('snapDelta', () => {
+  it('lands the nearest edge on a target', () => {
+    expect(snapDelta([10, 30], 4, [15], 2)).toBe(5);
+    expect(snapDelta([10, 30], 4, [16, 33], 2)).toBe(3);
+  });
+
+  it('keeps the delta with nothing near', () => {
+    expect(snapDelta([10, 30], 4, [100], 2)).toBe(4);
+  });
+});
+
+describe('visibleSpans', () => {
+  const opacity = (...keys: [number, number][]) => ({ tracks: [{ param: 'opacity', keys: keys.map(([t, v]) => ({ t, v })) }] });
+
+  it('is empty with no opacity track', () => {
+    expect(visibleSpans({}, 12, 48)).toEqual([]);
+    expect(visibleSpans({ tracks: [{ param: 'x', keys: [{ t: 0, v: 1 }] }] }, 12, 48)).toEqual([]);
+  });
+
+  it('covers the frames above zero, with the keys of each fade', () => {
+    const spans = visibleSpans(opacity([1, 0], [1.5, 1], [3, 1], [3.5, 0]), 12, 48);
+    expect(spans).toEqual([{ from: 13, to: 42, start: [0, 1], end: [2, 3] }]);
+  });
+
+  it('handles keys between frames, as the lakes film has them', () => {
+    const spans = visibleSpans(opacity([3.45, 0], [3.6, 1], [8.3, 1], [8.45, 0]), 24, 240);
+    expect(spans).toEqual([{ from: 83, to: 203, start: [0, 1], end: [2, 3] }]);
+  });
+
+  it('gives several spans', () => {
+    const spans = visibleSpans(opacity([0, 0], [0.5, 1], [1, 0], [2, 0], [2.5, 1], [3, 0]), 12, 48);
+    expect(spans.map((s) => [s.from, s.to])).toEqual([[1, 12], [25, 36]]);
+    expect(spans[1].start).toEqual([3, 4]);
+  });
+
+  it('has no fade at an end that reaches the edge of the scene', () => {
+    expect(visibleSpans(opacity([0, 1], [4, 1]), 12, 48)).toEqual([{ from: 0, to: 48 }]);
+  });
+
+  it('is nothing for a layer that never shows', () => {
+    expect(visibleSpans(opacity([0, 0], [4, 0]), 12, 48)).toEqual([]);
+  });
+
+  it('holds on stepFps as the layer does', () => {
+    const spans = visibleSpans({ ...opacity([1, 0], [1.25, 1]), stepFps: 4 }, 12, 48);
+    expect(spans[0].from).toBe(15);
   });
 });

@@ -1,6 +1,6 @@
 # 0013: A project is a folder; scenes draw and compositions arrange
 
-Status: accepted, 2026-10-02, amended 2026-11-06 (projects in the sidebar). Replaces ADR 0007's projects inside a studio folder, and ADR 0008's one folder per app window.
+Status: accepted, 2026-10-02, amended 2026-11-06 (projects in the sidebar, hand edits). Replaces ADR 0007's projects inside a studio folder, and ADR 0008's one folder per app window.
 
 ## Context
 
@@ -33,7 +33,7 @@ The viewer shows a whole studio folder at once: loose scenes, every project in `
 
 - The app runs a studio server per open project rather than one. Background projects cost a server and a hidden render window each, so at most two stay warm, for ten minutes, past any that agents are using.
 - Projects can't share a rig or a sound file except by copying, until a shared library is worth having.
-- The timeline editor (M15) edits compositions only, and the canvas stays the way to edit scenes, so each screen has one job.
+- The timeline editor (M15) edits compositions, and the canvas stays the way to edit scenes, so each screen has one job. ADR 0015 adds a scene's key times to the timeline.
 - Agents work in one project, as threads always did; an agent in another project keeps going while you look elsewhere.
 - A window can't show one project's page with another's data, so a switch is one page load. The window's background matches the page, and the stage shows "Opening <name>" until the new page draws.
 - The order of work: the switcher and background projects first (M13; the switcher gave way to the sidebar's groups), then the project format and compositions with the conversion (M14), the timeline editor (M15) and stills (M16).

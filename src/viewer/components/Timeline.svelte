@@ -1,9 +1,9 @@
 <!--
   The timeline: headers on the left, a ruler with seconds, markers and the frame
   range pinned on top, and rows that scroll under it. A scene has a row per
-  layer, top of the stack first and the background last, with its key times as
-  ticks and its overrides as tinted spans, read-only. A composition has rows of
-  clips, one per overlap, and sound takes the rows under either.
+  layer, top of the stack first and the background last: a bar for when it is on
+  screen, its keys as diamonds, its overrides as tinted spans. A composition has
+  rows of clips, one per overlap, and sound takes the rows under either.
 
   Press the ruler to scrub. The in and out handles drag on the ruler, and
   dragging both back to the ends clears the range. A click on a row or a band
@@ -12,6 +12,15 @@
   With a row focused, Up and Down move between rows, and every other key stays
   the viewer's: a row is not a button, so Space still plays.
 
+  On a scene the keys edit by hand (ADR 0015). The selected row opens one lane
+  per animated param. A diamond drags to move its keys in time, on the row every
+  param's at that time, on a lane that param's. A click selects it for Delete
+  and the arrows, and a right-click offers Delete key. A bar drags to shift the
+  layer's keys and overrides, and a bar's end moves that fade's two keys. A row
+  with no opacity track shows a quiet bar and still drags out a range. Edits show
+  at once and save through the server's checked edit, and they stay locked while
+  an agent works there.
+
   On a composition a clip drags to move and its edges drag to trim, snapping to
   frames. It saves through the server's checked edit, Command-Z takes it back,
   and it stays locked while an agent works there. Sound stays read-only. The
@@ -19,9 +28,11 @@
   accessibility tree.
 -->
 <script lang="ts">
-  import { dragClip, dragSpan, labelFits, markerLabels, rulerTicks, snapFrame, type ClipHandle, type ClipPlace } from '../timeline';
+  import type { KeyMark, KeyTarget, SelectedKey } from '../keyframes';
+  import { dragClip, dragSpan, formatClock, labelFits, markerLabels, rulerTicks, snapDelta, snapFrame, type ClipHandle, type ClipPlace, type VisibleSpan } from '../timeline';
   import { spanLabel, type FrameRange } from '../selection';
   import type { LayerRow, ShotBand, SoundBand as SoundBandData, ViewerActions, ViewerUi } from '../ui.svelte';
+  import Popover from './Popover.svelte';
   import SoundBand from './SoundBand.svelte';
 
   let { ui, actions }: { ui: ViewerUi; actions: ViewerActions } = $props();
@@ -57,16 +68,18 @@
     if (!row) return;
     const inner = scroller.getBoundingClientRect();
     const box = row.getBoundingClientRect();
+    // Its lanes come along, as far as there's room.
+    const lanes = row.nextElementSibling?.classList.contains('tl-lanes') ? row.nextElementSibling.getBoundingClientRect().bottom : box.bottom;
     if (box.top < inner.top) scroller.scrollTop -= inner.top - box.top;
-    else if (box.bottom > inner.bottom) scroller.scrollTop += box.bottom - inner.bottom;
+    else if (lanes > inner.bottom) scroller.scrollTop += Math.min(lanes - inner.bottom, box.top - inner.top);
     // Up and Down carry on from here, unless the prompt or a field has the keys.
     const focused = document.activeElement;
     if (row.classList.contains('tl-row') && (focused === document.body || focused?.classList.contains('tl-row'))) row.focus({ preventScroll: true });
   });
 
-  /** Follows one pointer until it lifts, from its element. */
-  function follow(e: PointerEvent, move: (e: PointerEvent) => void, end: (e: PointerEvent | null) => void): void {
-    const el = e.currentTarget as HTMLElement;
+  /** Follows one pointer until it lifts, from its element, or from `on` when a redraw might take its element away. */
+  function follow(e: PointerEvent, move: (e: PointerEvent) => void, end: (e: PointerEvent | null) => void, on?: HTMLElement | null): void {
+    const el = on ?? (e.currentTarget as HTMLElement);
     el.setPointerCapture(e.pointerId);
     const up = (ev: PointerEvent) => {
       el.removeEventListener('pointermove', move);
@@ -149,6 +162,11 @@
 
   function pressRow(e: PointerEvent, row: LayerRow): void {
     const target = e.target as HTMLElement;
+    const bar = target.closest<HTMLElement>('[data-bar]');
+    if (bar && e.button === 0 && ui.keyEdit === 'on') {
+      startBar(e, row, row.bars[Number(bar.dataset.bar)], target.dataset.edge as 'start' | 'end' | undefined);
+      return;
+    }
     const inLane = target.closest('.row-lane') !== null;
     const override = target.closest<HTMLElement>('[data-from]');
     const span: FrameRange | undefined = override ? { from: Number(override.dataset.from), to: Number(override.dataset.to) } : undefined;
@@ -159,6 +177,72 @@
     }
     startSpan(e, row.id, [...row.keys, ...row.overrides.flatMap((o) => [o.from, o.to])], select);
   }
+
+  // ---- keys ----
+
+  /** The diamond a right-click is on. */
+  let keyMenu = $state<{ x: number; y: number; key: SelectedKey } | null>(null);
+
+  const perFramePx = () => (ruler ? ruler.getBoundingClientRect().width / total : 0);
+  const canEditKeys = $derived(ui.keyEdit === 'on');
+
+  /** Runs a drag of keys from past the 3 px threshold. A press that never gets there is `click`. */
+  function dragKeys(e: PointerEvent, target: KeyTarget, to: (x: number) => number, click: () => void): void {
+    const startX = e.clientX;
+    let state: 'waiting' | 'dragging' | 'refused' = 'waiting';
+    follow(
+      e,
+      (ev) => {
+        if (state === 'waiting' && Math.abs(ev.clientX - startX) >= 3) state = actions.startKeyDrag(target) ? 'dragging' : 'refused';
+        if (state === 'dragging') actions.dragKeys(to(ev.clientX));
+      },
+      (ev) => {
+        if (state === 'dragging') actions.endKeyDrag(ev !== null);
+        else if (state === 'waiting' && ev) click();
+      },
+      // A diamond can merge into its neighbour on the way, and take its element with it.
+      scroller,
+    );
+  }
+
+  function pressKey(e: PointerEvent, layerId: string, param: string | null, mark: KeyMark): void {
+    e.stopPropagation();
+    if (e.button !== 0 || !ui.timeline) return;
+    const key = { layerId, param, frame: mark.frame };
+    const offset = mark.at - boundaryAt(e.clientX);
+    const targets = snapTargets(ui.layers.flatMap((r) => r.keys).filter((f) => f !== mark.frame));
+    const perFrame = perFramePx();
+    dragKeys(e, { kind: 'key', ...key }, (x) => snapFrame(boundaryAt(x) + offset, targets, perFrame), () => actions.selectKey(key));
+  }
+
+  function startBar(e: PointerEvent, row: LayerRow, bar: VisibleSpan, edge: 'start' | 'end' | undefined): void {
+    const pair = edge === 'start' ? bar.start : edge === 'end' ? bar.end : undefined;
+    const target: KeyTarget = pair ? { kind: 'edge', layerId: row.id, pair } : { kind: 'bar', layerId: row.id };
+    const edges = edge === 'start' ? [bar.from] : edge === 'end' ? [bar.to] : [bar.from, bar.to];
+    const targets = snapTargets(ui.layers.flatMap((r) => (r.id === row.id ? [] : r.keys)));
+    const perFrame = perFramePx();
+    const from = boundaryAt(e.clientX);
+    dragKeys(e, target, (x) => snapDelta(edges, boundaryAt(x) - from, targets, perFrame), () => actions.selectLayer(row.id));
+  }
+
+  function openKeyMenu(e: MouseEvent, layerId: string, param: string | null, mark: KeyMark): void {
+    if (!canEditKeys) return;
+    const key = { layerId, param, frame: mark.frame };
+    actions.selectKey(key);
+    keyMenu = { x: Math.min(e.clientX + 8, window.innerWidth - 148), y: Math.min(e.clientY, window.innerHeight - 44), key };
+  }
+
+  function keyTitle(mark: KeyMark): string {
+    const when = `${mark.params.join(', ')} at ${formatClock(mark.at, fps)}.`;
+    return canEditKeys ? `${when} Drag to move, click then Delete to remove.` : ui.keyEdit === 'locked' ? `${when} An agent is working here, so keys stay put.` : when;
+  }
+
+  function barTitle(bar: VisibleSpan): string {
+    const when = `On screen ${spanLabel(bar, fps)}.`;
+    return canEditKeys ? `${when} Drag to shift the layer's keys and overrides, drag an end to move that fade.` : when;
+  }
+
+  const isSelectedKey = (layerId: string, param: string | null, mark: KeyMark) => ui.selectedKey?.layerId === layerId && ui.selectedKey.param === param && ui.selectedKey.frame === mark.frame;
 
   /** Up and Down move through the rows. Everything else is the viewer's. */
   function rowKeys(e: KeyboardEvent): void {
@@ -265,6 +349,22 @@
     startSpan(e, null, [], () => {});
   }
 </script>
+
+{#snippet diamond(layerId: string, param: string | null, mark: KeyMark)}
+  <button
+    type="button"
+    class="key-mark"
+    class:is-selected={isSelectedKey(layerId, param, mark)}
+    class:is-fixed={!canEditKeys}
+    tabindex="-1"
+    aria-label={keyTitle(mark)}
+    title={keyTitle(mark)}
+    style="left: {percent(mark.at)}%"
+    onmousedown={(e) => e.preventDefault()}
+    onpointerdown={(e) => pressKey(e, layerId, param, mark)}
+    oncontextmenu={(e) => openKeyMenu(e, layerId, param, mark)}
+  ></button>
+{/snippet}
 
 {#snippet heads(name: string, lanes: number)}
   <div class="tl-heads" aria-hidden="true">
@@ -386,17 +486,40 @@
           >
             <span class="row-head" title={row.id}>{row.id}</span>
             <span class="row-lane">
+              {#if !row.faded}
+                <span class="row-bar is-quiet" style="left: 0; right: 0"></span>
+              {/if}
+              {#each row.bars as bar, b (b)}
+                <span class="row-bar" class:is-editable={canEditKeys} data-bar={b} title={barTitle(bar)} style="left: {percent(bar.from)}%; right: {100 - percent(bar.to)}%">
+                  {#if canEditKeys && bar.start}<span class="bar-edge is-start" data-edge="start"></span>{/if}
+                  {#if canEditKeys && bar.end}<span class="bar-edge is-end" data-edge="end"></span>{/if}
+                </span>
+              {/each}
               {#each row.overrides as o (o.from)}
                 <span class="row-override" data-from={o.from} data-to={o.to} title="An override, {spanLabel(o, fps)}. Click, then X to mark it." style="left: {percent(o.from)}%; right: {100 - percent(o.to)}%"></span>
               {/each}
-              {#each row.keys as frame (frame)}
-                <i class="row-key" style="left: {percent(frame)}%"></i>
+              {#each row.marks as mark, m (m)}
+                {@render diamond(row.id, null, mark)}
               {/each}
               {#if selected && range}
                 <span class="row-range" style="left: {percent(range.from)}%; right: {100 - percent(range.to)}%"></span>
               {/if}
             </span>
           </div>
+          {#if selected && ui.keyEdit !== 'off' && row.lanes.length > 0}
+            <div class="tl-lanes" role="group" aria-label="Keys of {row.id}">
+              {#each row.lanes as lane (lane.param)}
+                <div class="key-lane" data-lane={lane.param}>
+                  <span class="lane-head" title={lane.param}>{lane.param}</span>
+                  <span class="lane-keys">
+                    {#each lane.keys as mark, m (m)}
+                      {@render diamond(row.id, lane.param, mark)}
+                    {/each}
+                  </span>
+                </div>
+              {/each}
+            </div>
+          {/if}
         {/each}
       </div>
     {/if}
@@ -413,6 +536,22 @@
       </div>
     {/if}
   </div>
+
+  {#if keyMenu}
+    <Popover label="Key" role="menu" class="stack-menu" style="left: {keyMenu.x}px; top: {keyMenu.y}px; width: 140px" onclose={() => (keyMenu = null)}>
+      <div class="menu-list">
+        <button
+          type="button"
+          role="menuitem"
+          class="menu-item"
+          onclick={() => {
+            if (keyMenu) actions.deleteKey(keyMenu.key);
+            keyMenu = null;
+          }}>Delete key</button
+        >
+      </div>
+    </Popover>
+  {/if}
 
   <div class="tl-overlay" aria-hidden="true">
     {#if range}

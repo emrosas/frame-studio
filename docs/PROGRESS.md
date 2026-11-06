@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-11-06, after the projects sidebar and the model picker.
+Last updated 2026-11-06, after keyframe editing and canvas drag.
 
 ## Done
 
@@ -856,6 +856,14 @@ ADR 0013 is amended: many projects listed, one on screen.
 - The picker follows T3 Code's structure (`ModelPicker.svelte`): a rail of providers with Recent, models, efforts, and a permissions menu. `AgentStatus.models` carries per-model efforts, a default model and a default effort. Codex reports all three. Claude reports models and efforts through the SDK's `supportedModels()`, asked once per ten minutes with no turn and no login, and falls back to the old list if that fails. Claude reports no default effort, so the picker marks medium, the one it starts on.
 - The thread panel's padding and empty states are tidied.
 
+### Keyframe editing and canvas drag (ADR 0015)
+
+- A row shows a bar for when its layer is on screen, worked out from its opacity track, with keys as 9 px diamonds. A row with no opacity track has a quiet bar and still drags out a range. The lakes film's pairs of lines were fades, and now read as a bar's two ends.
+- The selected row opens a 20 px lane per animated param. Diamonds drag, snapping to frames, markers and other keys, and stop short of a neighbour of the same param. A click selects one for Delete, Left and Right, and a right-click offers Delete key. A bar drags to shift the layer's timing, and a bar's end moves that fade.
+- A press on the canvas drags a layer through fit, pixel scale, camera zoom and depth (`src/viewer/drag.ts`), writing params, a key or an override by ADR 0015's rule, with Shift to lock an axis, Escape to cancel, and hairlines at the stage's centre.
+- Everything saves through `POST /layers` and stays locked while an agent works. Command-Z is one stack over keys, drags and clips, holding each layer's JSON, which fixed the override a clip move used to lose for good.
+- `cameraView` is exported from the engine, which is the only engine change.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -883,7 +891,6 @@ ADR 0013 is amended: many projects listed, one on screen.
 
 ## Known issues
 
-- Moving a clip so an override slides off the composition's end deletes the override, and Command-Z can't bring it back: the undo history ends there, with the clip left moved (`tools/studio/server.ts`, `src/viewer/undo.ts`).
 - Command-Z in the packaged app relies on the page handling the key before the Edit menu. Untested: the browser tests send keys to the page directly.
 
 - Safe-zone guides are approximations, not measured from each app.

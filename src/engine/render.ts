@@ -120,7 +120,7 @@ function drawStageLayer(ctx: Ctx2D, scene: Scene, layer: Layer, frame: number, r
 }
 
 /** What the camera does to one layer on one frame, or null when it does nothing. */
-interface CameraView { x: number; y: number; zoom: number }
+export interface CameraView { x: number; y: number; zoom: number }
 
 /**
  * The camera at this frame, scaled by the layer's depth. A pixel stage moves
@@ -128,7 +128,7 @@ interface CameraView { x: number; y: number; zoom: number }
  * depths step at different rates, which is what parallax looks like there.
  * The camera runs on output time, so a stepFps layer still glides.
  */
-function cameraView(scene: Scene, layer: Layer, frame: number): CameraView | null {
+export function cameraView(scene: Scene, layer: Layer, frame: number): CameraView | null {
   const camera = scene.camera;
   const depth = layer.depth ?? (layer.id === BACKGROUND_ID ? 0 : 1);
   if (!camera || depth === 0) return null;

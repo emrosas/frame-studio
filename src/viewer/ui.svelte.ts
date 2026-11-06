@@ -5,9 +5,10 @@
 import type { CheckReport } from '../export/check';
 import type { AgentId, AgentStatus, ApprovalDecision, NewScene, NewVideo, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { OpenTarget, ProjectEntry, UpdateState } from './desktop';
+import type { KeyLane, KeyMark, KeyTarget, SelectedKey } from './keyframes';
 import { readPref } from './prefs';
 import type { FrameRange } from './selection';
-import type { ClipPlace } from './timeline';
+import type { ClipPlace, VisibleSpan } from './timeline';
 import type { RequestAction } from './studio-client';
 
 export interface SceneOption {
@@ -95,11 +96,19 @@ export interface SoundBand {
   file?: { path: string; from: number; to: number };
 }
 
-/** A layer's row on the timeline: its key times and overrides, in frames, read-only. */
+/** A layer's row on the timeline, in frames: its bar, its keys and its overrides. */
 export interface LayerRow {
   id: string;
+  /** Its key frames inside the scene, for snapping and X. */
   keys: readonly number[];
   overrides: readonly FrameRange[];
+  /** It has an opacity track, so `bars` says when it shows. Without one the whole row is its bar. */
+  faded: boolean;
+  bars: readonly VisibleSpan[];
+  /** The row's diamonds: every param's keys, by frame. */
+  marks: readonly KeyMark[];
+  /** One lane per animated param, shown when the row is selected. */
+  lanes: readonly KeyLane[];
 }
 
 /** The menu a right-click on the canvas opens: the layers under the pointer, top first. */
@@ -214,6 +223,16 @@ export interface ViewerActions {
   dragRange(range: FrameRange | null): void;
   /** Moves or trims a clip of the composition on screen. Says why not in the selection bar. Resolves to whether it saved. */
   moveClip(layerId: string, place: ClipPlace): Promise<boolean>;
+  /** Starts a drag of keys or a bar. False when they can't move, and the selection bar says why. */
+  startKeyDrag(target: KeyTarget): boolean;
+  /** Shows the drag: a diamond's frame, or the frames a bar or fade moved. */
+  dragKeys(to: number): void;
+  /** Ends the drag, saving it or putting it back. */
+  endKeyDrag(commit: boolean): void;
+  /** Selects a diamond and its layer. */
+  selectKey(key: SelectedKey | null): void;
+  /** Removes a diamond's keys. */
+  deleteKey(key: SelectedKey): void;
   /** Applies ui.layout.safeZones. */
   syncGuides(): void;
   /** Shows a file from out/ in Finder (the app only). */
@@ -416,6 +435,10 @@ export class ViewerUi {
   hoverLayer = $state<string | null>(null);
   /** The sound cue clicked last, until the selection moves on. */
   cue = $state<string | null>(null);
+  /** The diamond selected on the timeline. */
+  selectedKey = $state.raw<SelectedKey | null>(null);
+  /** Whether keys can be edited: on, locked while an agent works on the scene, or off where the timeline shows clips. */
+  keyEdit = $state<'on' | 'locked' | 'off'>('off');
   /** The rows of the scene on screen, top of the stack first, then the background. */
   layers = $state.raw<LayerRow[]>([]);
   /** The right-click menu, when it's open. */

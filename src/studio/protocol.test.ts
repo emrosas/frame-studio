@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   canRevert,
   checkAnswers,
+  checkLayerEdit,
   checkNewComposition,
   checkNewRequest,
   checkNewScene,
@@ -307,5 +308,20 @@ describe('answers to a question card', () => {
     expect(checkAnswers(questions, { font: [' '], extras: ['A rule'] })).toMatch(/non-empty/);
     expect(checkAnswers(questions, { font: ['Fraunces'], extras: ['A rule'], size: ['big'] })).toMatch(/no question "size"/);
     expect(checkAnswers(questions, null)).toMatch(/must be an object/);
+  });
+});
+
+describe('checkLayerEdit', () => {
+  it('takes a scene, a layer and fields to set', () => {
+    expect(checkLayerEdit({ scene: 'film/shot', layer: 'ball', set: { params: { x: 1 }, tracks: null } })).toBeNull();
+  });
+
+  it('refuses anything else', () => {
+    expect(checkLayerEdit(null)).toMatch(/JSON object/);
+    expect(checkLayerEdit({ layer: 'a', set: {} })).toMatch(/scene/);
+    expect(checkLayerEdit({ scene: 'a', set: {} })).toMatch(/layer/);
+    expect(checkLayerEdit({ scene: 'a', layer: 'b', set: [] })).toMatch(/set/);
+    expect(checkLayerEdit({ scene: 'a', layer: 'b', set: { rig: 'star' } })).toMatch(/can't change "rig"/);
+    expect(checkLayerEdit({ scene: 'a', layer: 'b', set: { id: 'c' } })).toMatch(/can't change "id"/);
   });
 });

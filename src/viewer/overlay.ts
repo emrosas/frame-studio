@@ -29,6 +29,8 @@ export interface OverlayInput {
   fit: Fit;
   selected: { layerId: string; partId: string | null } | null;
   hover: string | null;
+  /** The stage's centre lines a drag has snapped to. */
+  guides?: { x: boolean; y: boolean } | null;
 }
 
 interface Mask {
@@ -99,7 +101,8 @@ export class SelectionOverlay {
     const hov = input.hover !== null && input.hover !== input.selected?.layerId ? layers.get(input.hover) : undefined;
     const selKey = ready && sel ? maskKey(scene, sel, frame, input.selected?.partId ?? null, version) : null;
     const hovKey = ready && hov ? maskKey(scene, hov, frame, null, version) : null;
-    const key = JSON.stringify([selKey, hovKey, fit.backingWidth, fit.backingHeight, fit.cssWidth, fit.cssHeight]);
+    const guides = input.guides ?? null;
+    const key = JSON.stringify([selKey, hovKey, fit.backingWidth, fit.backingHeight, fit.cssWidth, fit.cssHeight, guides]);
     if (key === this.lastKey) return;
     this.lastKey = key;
 
@@ -128,8 +131,18 @@ export class SelectionOverlay {
         this.placeTag(this.selectedTag, layerLabel(sel.id, input.selected.partId), mask, fit);
       }
     }
+    if (guides) this.drawGuides(guides);
     // Two tags in one spot read as one label: the one being pointed at wins.
     if (!this.hoverTag.hidden && !this.selectedTag.hidden && overlaps(this.hoverTag.getBoundingClientRect(), this.selectedTag.getBoundingClientRect())) this.selectedTag.hidden = true;
+  }
+
+  /** Hairlines through the middle of the stage, on this canvas, never the scene's. */
+  private drawGuides(guides: { x: boolean; y: boolean }): void {
+    const { ctx, canvas } = this;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = getComputedStyle(canvas).getPropertyValue('--accent').trim() || '#007aff';
+    if (guides.x) ctx.fillRect(Math.floor(canvas.width / 2), 0, 1, canvas.height);
+    if (guides.y) ctx.fillRect(0, Math.floor(canvas.height / 2), canvas.width, 1);
   }
 
   private fadeIn(shown: string): void {

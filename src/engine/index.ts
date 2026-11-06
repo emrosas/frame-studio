@@ -13,7 +13,7 @@ export { activeOverride } from './overrides';
 export { createRegistry, defaultParams, baseRigId, variantsOf, rigIdsUsed, isRig } from './registry';
 export { clampFrame, PlaybackClock, playbackFrame, playbackPosition, wrapFrame, type LoopRange, type PlaybackAnchor, type Timeline } from './playback';
 export { sceneLayers, resolveLayer, type ResolvedLayer } from './resolve';
-export { render, drawLayer, assertFrame, resetContextState } from './render';
+export { render, drawLayer, assertFrame, resetContextState, cameraView, type CameraView } from './render';
 export { quantize, stageSize } from './pixel';
 export { isImageFile, isPictureFile, isVideoFile, picturesAt, picturesUsed, pictureTime, type PictureRequest } from './picture';
 export { PASS_THROUGH, onlyParts } from './kit';

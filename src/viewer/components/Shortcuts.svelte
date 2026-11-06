@@ -17,7 +17,11 @@
     { keys: ['Esc'], what: 'Clear the layer, then the range' },
     { keys: ['Return'], what: 'Go to the prompt' },
     { keys: ['@'], what: 'Pick a layer, in the prompt' },
-    { keys: ['⌘', 'Z'], what: 'Undo a clip edit' },
+    { keys: ['Drag'], what: 'Move what is under the pointer on the canvas' },
+    { keys: ['Shift', 'Drag'], what: 'Move along one axis' },
+    { keys: ['Delete'], what: 'Remove the selected key' },
+    { keys: ['←', '→'], what: 'Nudge the selected key a frame; Shift for ten' },
+    { keys: ['⌘', 'Z'], what: 'Undo a key, clip or canvas edit' },
   ]);
 </script>
 

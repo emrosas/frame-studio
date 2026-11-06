@@ -21,10 +21,29 @@ import { runCheck } from '../studio/check.ts';
 import type { CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
-import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, projectOf, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
+import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, projectOf, type LayerChange, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
 import type { StudioQueue } from '../studio/queue.ts';
+
+type RawLayer = Record<string, unknown>;
+interface RawScene {
+  background?: unknown;
+  layers?: RawLayer[];
+  tracks?: { clips: RawLayer[] }[];
+}
+
+/** A layer of a scene file, its background, or a composition's clip. */
+export function rawLayer(scene: RawScene, id: string): RawLayer | undefined {
+  if (scene.tracks) return scene.tracks.flatMap((t) => t.clips).find((c) => c.id === id);
+  if (id === 'background') return typeof scene.background === 'object' && scene.background !== null ? (scene.background as RawLayer) : undefined;
+  return scene.layers?.find((l) => l.id === id);
+}
+
+export function withoutId(layer: RawLayer): RawLayer {
+  const { id: _id, ...rest } = layer;
+  return rest;
+}
 
 /** What the workspace works with: the studio server's folder, code, render worker and queue. */
 export interface WorkspaceContext {
@@ -435,6 +454,26 @@ export class Workspace {
     await this.checkEdit(modules, entry, next, 'That patch');
     await this.writeScene(path, next, modules);
     return { file: this.show(path), scene: next };
+  }
+
+  /**
+   * A hand edit from the viewer (ADR 0015): replaces whole fields of one layer, or clip, or the background,
+   * and null removes a field. Checked like update_scene. Returns the layer on either side, without its id.
+   */
+  async editLayer(key: string, layerId: string, set: Record<string, unknown>): Promise<LayerChange> {
+    const { modules, entry } = await this.entry(key);
+    const path = entryPath(entry, this.folder);
+    const next = JSON.parse(await readFile(path, 'utf8')) as RawScene;
+    const layer = rawLayer(next, layerId);
+    if (!layer) throw new Error(`"${key}" has no layer "${layerId}".`);
+    const before = structuredClone(layer);
+    for (const [field, value] of Object.entries(set)) {
+      if (value === null) delete layer[field];
+      else layer[field] = value;
+    }
+    await this.checkEdit(modules, entry, next, 'That edit');
+    await this.writeScene(path, next, modules);
+    return { before: withoutId(before), after: withoutId(layer) };
   }
 
   /** A scene with nothing in it yet: paper, no layers, and a seed of its own. */

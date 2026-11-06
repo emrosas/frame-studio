@@ -1,6 +1,10 @@
 // What the timeline dock works out: the clock's text, the ruler's ticks, where
-// a dragged clip lands, and what a drag on a row snaps to. Pure, so it is unit
-// tested without a browser.
+// a dragged clip lands, what a drag on a row snaps to, and when a layer is on
+// screen. Pure, so it is unit tested without a browser.
+
+import { quantizeTime } from '../engine/time';
+import { evaluateTrack } from '../engine/tracks';
+import type { Key, Layer } from '../engine/types';
 
 /** A frame as a clock reads it, "0:01.00": minutes, seconds, hundredths. MM:SS:FF stays in the engine's timecode. */
 export function formatClock(frame: number, fps: number): string {
@@ -120,4 +124,61 @@ export function markerLabels(markers: { frame: number; label: string }[], total:
     if (shown[i]) last = i;
   });
   return shown;
+}
+
+/** Keeps `delta`, unless it would land one of `edges` on a target within SNAP_PX: then the nearest such landing. */
+export function snapDelta(edges: readonly number[], delta: number, targets: readonly number[], pxPerFrame: number): number {
+  let best = delta;
+  let gap = Infinity;
+  for (const edge of edges) {
+    const at = edge + delta;
+    const landed = snapFrame(at, targets, pxPerFrame);
+    if (landed !== at && Math.abs(landed - at) < gap) {
+      gap = Math.abs(landed - at);
+      best = landed - edge;
+    }
+  }
+  return best;
+}
+
+/** Part of a row's bar: where a layer shows. `start` and `end` are the indices of the fade's two keys on the opacity track, where the bar's end has one. */
+export interface VisibleSpan {
+  from: number;
+  to: number;
+  start?: readonly [number, number];
+  end?: readonly [number, number];
+}
+
+const opacityOf = (key: Key | undefined) => (key && typeof key.v === 'number' ? key.v : 0);
+
+/** The two keys of the fade that lands on `frame`, the first of which is at or above zero as `rising` says, or undefined. */
+function fadeAt(keys: readonly Key[], frame: number, fps: number, rising: boolean): readonly [number, number] | undefined {
+  let last = -1;
+  keys.forEach((key, i) => {
+    if (key.t * fps <= frame + 1e-9) last = i;
+  });
+  const isFade = (i: number) => i >= 0 && i + 1 < keys.length && opacityOf(keys[i]) > 0 !== rising && opacityOf(keys[i + 1]) > 0 === rising;
+  if (isFade(last)) return [last, last + 1];
+  return isFade(last - 1) ? [last - 1, last] : undefined;
+}
+
+/** The frames a layer is on screen, from its opacity track and the engine's evaluation of it. None without a track: the row then shows no fades. */
+export function visibleSpans(layer: Pick<Layer, 'tracks' | 'stepFps'>, fps: number, total: number): VisibleSpan[] {
+  const track = layer.tracks?.find((t) => t.param === 'opacity');
+  if (!track || track.keys.length === 0) return [];
+  const spans: VisibleSpan[] = [];
+  let open = -1;
+  for (let frame = 0; frame <= total; frame++) {
+    const on = frame < total && Number(evaluateTrack(track, quantizeTime(frame, fps, layer.stepFps))) > 0;
+    if (on && open < 0) open = frame;
+    if (!on && open >= 0) {
+      spans.push({ from: open, to: frame });
+      open = -1;
+    }
+  }
+  return spans.map((span) => {
+    const start = span.from > 0 ? fadeAt(track.keys, span.from, fps, true) : undefined;
+    const end = span.to < total ? fadeAt(track.keys, span.to, fps, false) : undefined;
+    return { ...span, ...(start ? { start } : {}), ...(end ? { end } : {}) };
+  });
 }

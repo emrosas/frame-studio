@@ -15,6 +15,8 @@ import {
   type AgentStatus,
   type ApprovalDecision,
   type ClipEdit,
+  type LayerChange,
+  type LayerEdit,
   type CurrentSelection,
   type NewRequest,
   type NewScene,
@@ -135,9 +137,14 @@ export class StudioClient {
     return (await call<{ id: string }>('/videos', jsonBody(video))).id;
   }
 
-  /** Moves or trims a clip, through the checked edit path. */
-  async moveClip(composition: string, edit: ClipEdit): Promise<void> {
-    await call(`/compositions/${encodeURIComponent(composition)}/clip`, jsonBody(edit));
+  /** Moves or trims a clip, through the checked edit path. Resolves to the clip on either side, for undo. */
+  moveClip(composition: string, edit: ClipEdit): Promise<LayerChange> {
+    return call<LayerChange>(`/compositions/${encodeURIComponent(composition)}/clip`, jsonBody(edit));
+  }
+
+  /** A hand edit of one layer or clip, through the same check (ADR 0015). */
+  editLayer(edit: LayerEdit): Promise<LayerChange> {
+    return call<LayerChange>('/layers', jsonBody(edit));
   }
 
   /** Each scene's poster file, or null while it renders; those arrive through onThumb. */

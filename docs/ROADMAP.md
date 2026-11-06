@@ -253,10 +253,11 @@ A simple video editor's timeline for compositions (ADR 0012, ADR 0013).
 - Undo and redo for the timeline's edits.
 - Read-only while an agent works on the composition.
 
-Next pass, each needing an ADR:
+Built ahead of the rest (ADR 0015):
 
-- Keyframe editing: drag and delete key ticks in time. Values stay the agent's.
-- Canvas drag: writes x/y on the rule param when untracked, a key at the playhead when tracked, an override when a range is set.
+- Keyframe editing: rows with bars and diamonds, a lane per param on the selected row, dragging, nudging and deleting keys. Values stay the agent's.
+- Canvas drag: writes x and y on the param when untracked, a key at the playhead when tracked, an override when a range is set.
+- One undo stack over key edits, canvas drags and clips.
 
 Refused: multi-select and marquee. A selection is one target (ADR 0003), and every tool and the agent's prompt rely on that.
 

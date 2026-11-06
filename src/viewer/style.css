@@ -42,6 +42,9 @@
 
   --fill: color-mix(in srgb, var(--text) 6%, transparent);
   --fill-strong: color-mix(in srgb, var(--text) 11%, transparent);
+  --bar: color-mix(in srgb, var(--text) 30%, transparent);
+  --bar-quiet: color-mix(in srgb, var(--text) 9%, transparent);
+  --override: color-mix(in srgb, var(--accent) 22%, transparent);
   --shadow-pop: 0 0 0 0.5px rgba(0, 0, 0, 0.12), 0 12px 32px rgba(0, 0, 0, 0.16);
   --material: color-mix(in srgb, var(--surface) 78%, transparent);
 
@@ -992,6 +995,14 @@ kbd {
   cursor: pointer;
 }
 
+.stage-canvas.is-movable {
+  cursor: grab;
+}
+
+.stage-canvas.is-dragging {
+  cursor: grabbing;
+}
+
 /* The canvas, the highlight overlay and the id tags share one box. */
 .stage-frame {
   position: relative;
@@ -1624,17 +1635,48 @@ kbd {
   touch-action: none;
 }
 
-.row-key {
+/* When the layer is on screen: graphite, or the accent on the selected row. */
+.row-bar {
   position: absolute;
-  top: 8px;
-  bottom: 8px;
-  width: 1px;
-  background: var(--text-3);
+  top: 6px;
+  bottom: 6px;
+  border-radius: 3px;
+  background: var(--bar);
+}
+
+.row-bar.is-editable {
+  cursor: grab;
+}
+
+/* No opacity track: on all along, and the row stays free for dragging out a range. */
+.row-bar.is-quiet {
+  background: var(--bar-quiet);
   pointer-events: none;
 }
 
-.tl-row.is-selected .row-key {
-  background: var(--accent);
+.tl-row.is-selected .row-bar {
+  background: color-mix(in srgb, var(--accent) 62%, transparent);
+}
+
+.tl-row.is-selected .row-bar.is-quiet {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+/* Reaches inward, since a short fade's two diamonds cover the very end of the bar. */
+.bar-edge {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: min(16px, 30%);
+  cursor: ew-resize;
+}
+
+.bar-edge.is-start {
+  left: -2px;
+}
+
+.bar-edge.is-end {
+  right: -2px;
 }
 
 .row-override {
@@ -1642,7 +1684,78 @@ kbd {
   top: 4px;
   bottom: 4px;
   border-radius: var(--r-s);
-  background: var(--fill-strong);
+  background: var(--override);
+}
+
+/* A key: 9 px across, a square on its corner. The button around it is the bigger target. */
+.key-mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  width: 13px;
+  margin-left: -6.5px;
+  padding: 0;
+  border: none;
+  background: none;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.key-mark.is-fixed {
+  cursor: default;
+}
+
+.key-mark::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 6.4px;
+  height: 6.4px;
+  margin: -3.2px;
+  border-radius: 1px;
+  background: var(--text);
+  box-shadow: 0 0 0 1px var(--surface);
+  transform: rotate(45deg);
+}
+
+.key-mark.is-selected {
+  z-index: 2;
+}
+
+.key-mark.is-selected::before {
+  box-shadow:
+    0 0 0 1px var(--surface),
+    0 0 0 2.5px var(--accent);
+}
+
+/* Logic's automation lanes: one per animated param, under the selected row. */
+.key-lane {
+  display: grid;
+  grid-template-columns: var(--head) minmax(0, 1fr);
+  height: 20px;
+  border-bottom: 0.5px solid var(--hairline);
+  background: color-mix(in srgb, var(--accent) 4%, transparent);
+}
+
+.lane-head {
+  display: block;
+  padding: 0 8px 0 20px;
+  overflow: hidden;
+  border-right: 0.5px solid var(--hairline);
+  color: var(--text-2);
+  font-size: 11px;
+  line-height: 20px;
+  letter-spacing: var(--track-11);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lane-keys {
+  position: relative;
+  display: block;
+  margin-right: var(--end);
 }
 
 /* Bands: clips and shots, then sound, in rows of their own. */

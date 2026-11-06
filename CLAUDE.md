@@ -108,7 +108,7 @@ Rules:
 
 ## Scene format (JSON)
 
-Scenes are data, so the agent, the selection UI, and any future timeline editor all edit the same thing.
+Scenes are data, so the agent, the selection UI, and the timeline all edit the same thing.
 
 ```json
 {
@@ -171,6 +171,10 @@ Engine support required from the start:
 - It uses **per-layer alpha probes**, not a flat-colour ID pass. Canvas 2D antialiases every path, so an edge pixel blends two ID colours into a colour that belongs to no layer. Instead, each layer is drawn alone, top first, into the probe with the pixel translated to (0, 0), and only its alpha is read. The layer with the largest share of the visible pixel wins. Parts work the same way inside the winning layer, cut at each `kit.part` boundary. The probe runs the same `drawLayer` code as the visible render, so the two can never drift. Research: `.scratch/frame-studio/research/id-pass-antialiasing.md`.
 - Layer-level selection is required. Part-level is a nice-to-have.
 
+## Hand edits (ADR 0015)
+
+The timeline edits a scene's key times, and a press on the canvas drags a layer. Hand edits change when and where; values, drawing and easing stay the agent's. A drag shows through a patched copy of the scene in the viewer, and `render()` never hears about it. A canvas drag writes params when untracked, a key at the playhead when tracked, and an override when a range is set around the playhead (`src/viewer/drag.ts`). Everything saves through the server's checked edit, stays locked while an agent works on the scene, and shares one Command-Z stack with clip moves.
+
 ## Reference images
 
 Users can attach reference images to a prompt. References are **input to the agent only**: the agent looks at the image and writes drawing code from it. They are never embedded in a scene or any export, so outputs stay asset-free. Store them in `references/` and pass them to the agent by path.
@@ -232,7 +236,7 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 ## Later (don't build yet)
 
 - The app signed and notarized, with electron-updater in place of the unsigned updater (ADR 0009), and Windows and Linux builds (ADR 0008 left them for later). The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
-- Timeline editor for keys and timing; rig-controls panel generated from param schemas.
+- A rig-controls panel generated from param schemas.
 - Scene transitions as a library, multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.
 

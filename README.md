@@ -154,7 +154,7 @@ npm run test:browser                              # viewer, renders, exports, em
 
 - The app is macOS on Apple Silicon only. It has no Apple Developer ID signature or notarization, so macOS blocks the first launch until you allow it.
 - Nothing proves who built an update beyond HTTPS to GitHub and a checksum published on the same release. Each update downloads the whole app, about 124 MB.
-- There's no timeline editor yet. Timing lives in the scene JSON, which you or the agent edit.
+- The timeline moves clips and key times, and the canvas drags layers. Everything else about timing lives in the scene JSON, which you or the agent edit.
 - Agent access rules keep a well-behaved agent on track, but they aren't a sandbox. Rig code an agent writes runs in the studio server and the viewer.
 
 ## License

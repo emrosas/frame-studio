@@ -11,6 +11,11 @@ const press = (key: string, mods: Partial<{ shiftKey: boolean; altKey: boolean; 
 });
 
 describe('keyAction', () => {
+  it('takes Delete and Backspace for the selected key', () => {
+    expect(keyAction(press('Delete'), 12)).toEqual({ type: 'delete' });
+    expect(keyAction(press('Backspace'), 12)).toEqual({ type: 'delete' });
+  });
+
   it('maps the shortcuts', () => {
     expect(keyAction(press(' '), 12)).toEqual({ type: 'toggle' });
     expect(keyAction(press('ArrowLeft'), 12)).toEqual({ type: 'step', delta: -1 });
