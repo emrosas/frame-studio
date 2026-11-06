@@ -216,7 +216,10 @@ async function runTurn(input: TurnInput, cb: TurnCallbacks, abort: AbortControll
     if ('session_id' in message && message.session_id) cb.session(message.session_id);
     switch (message.type) {
       case 'system':
-        if (message.subtype === 'init') billed = message.apiKeySource !== 'none';
+        if (message.subtype === 'init') {
+          billed = message.apiKeySource !== 'none';
+          cb.model?.(message.model);
+        }
         break;
       case 'stream_event': {
         if (message.parent_tool_use_id) break;

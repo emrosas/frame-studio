@@ -30,7 +30,7 @@ export function threadBadge(thread: Pick<ThreadSummary, 'status' | 'turn'>, seen
   const kind = ((): BadgeKind => {
     if (thread.status !== 'your_turn') return thread.status;
     if (thread.turn === 'failed' || thread.turn === 'interrupted') return thread.turn;
-    return thread.turn === 'done' && seen ? 'done' : 'your_turn';
+    return seen ? 'done' : 'your_turn';
   })();
   return { kind, label: STATUS_LABELS[kind] };
 }
@@ -49,8 +49,11 @@ export function ago(iso: string, now: number): string {
 
 /** The name of the model a thread's newest turn ran on: its agent's label, or the id itself if the agent no longer lists it. Null when the turn named none. */
 export function modelLabel(agents: readonly AgentStatus[], agent: AgentId, model: string | null): string | null {
-  if (model === null) return null;
-  return agents.find((a) => a.id === agent)?.models.find((m) => m.id === model)?.label ?? model;
+  // The agent's own default says nothing about what ran.
+  if (model === null || model === 'default') return null;
+  const family = /^claude-([a-z]+)-(\d+)(?:-(\d+))?/.exec(model);
+  const named = family ? `${family[1][0].toUpperCase()}${family[1].slice(1)} ${family[2]}${family[3] ? `.${family[3]}` : ''}` : model;
+  return agents.find((a) => a.id === agent)?.models.find((m) => m.id === model)?.label ?? named;
 }
 
 const finished = (t: ThreadSummary) => t.status === 'settled' || t.status === 'cancelled';
@@ -58,7 +61,7 @@ const newestFirst = (a: ThreadSummary, b: ThreadSummary) => Date.parse(b.at) - D
 
 /** A scene's most pressing thread that's working or waiting, as a Footage row shows it, by scene key. */
 export function sceneDots(threads: readonly ThreadSummary[], seen: (t: ThreadSummary) => boolean): Record<string, ThreadBadge> {
-  const rank: Partial<Record<BadgeKind, number>> = { input: 4, stalled: 3, your_turn: 2, working: 1, pending: 0 };
+  const rank: Partial<Record<BadgeKind, number>> = { input: 4, stalled: 3, failed: 2, interrupted: 2, your_turn: 2, working: 1, pending: 0 };
   const dots: Record<string, ThreadBadge> = {};
   for (const thread of threads) {
     const badge = threadBadge(thread, seen(thread));

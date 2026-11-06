@@ -28,7 +28,8 @@ export function dragScale(scene: Scene, layer: Layer, frame: number, cssWidth: n
   return {
     fit: cssWidth / scene.size[0],
     pixel: scene.pixel?.scale ?? 1,
-    zoom: cameraView(scene, layer, frame)?.zoom ?? 1,
+    // A clip of a scene or a picture isn't drawn through the camera.
+    zoom: layer.scene !== undefined || layer.file !== undefined ? 1 : (cameraView(scene, layer, frame)?.zoom ?? 1),
     whole: scene.pixel !== undefined,
   };
 }
@@ -97,7 +98,7 @@ export interface DragMoment {
 
 export type PositionWrite = { ok: true; layer: Layer } | { ok: false; error: string };
 
-/** The tracks with a key at the time, updated in its frame or inserted with the ease of the key before it. */
+/** The tracks with a key at the time, updated in its frame or inserted. A key's ease shapes the way into it, so the new key takes the one the move already had. */
 function withKey(tracks: readonly Track[], param: string, t: number, v: number, fps: number): Track[] {
   return tracks.map((track) => {
     if (track.param !== param) return track;
@@ -106,7 +107,7 @@ function withKey(tracks: readonly Track[], param: string, t: number, v: number, 
     if (same >= 0) return { ...track, keys: track.keys.map((key, i) => (i === same ? { ...key, v } : key)) };
     const at = track.keys.findIndex((key) => key.t > t);
     const end = at < 0 ? track.keys.length : at;
-    const ease = track.keys[end - 1]?.ease;
+    const ease = track.keys[end]?.ease ?? track.keys[end - 1]?.ease;
     return { ...track, keys: [...track.keys.slice(0, end), { t, v, ...(ease !== undefined ? { ease } : {}) }, ...track.keys.slice(end)] };
   });
 }
@@ -124,7 +125,10 @@ export function writePosition(layer: Layer, to: Position, from: Position, moment
     if (!exact && overrides.some((o) => o.from < range.to && o.to > range.from)) {
       return { ok: false, error: `"${layer.id}" has an override crossing ${spanLabel(range, fps)}. Set the range to match it, or clear the range.` };
     }
-    const position = { x: to.x, y: to.y };
+    // Only what moved: a held axis would stop its own animation across the range.
+    const position: Partial<Position> = {};
+    for (const axis of ['x', 'y'] as const) if (to[axis] !== from[axis]) position[axis] = to[axis];
+    if (Object.keys(position).length === 0) return { ok: true, layer };
     const next = exact ? overrides.map((o) => (o === exact ? { ...o, params: { ...o.params, ...position } } : o)) : [...overrides, { ...range, params: position }];
     return { ok: true, layer: { ...layer, overrides: [...next].sort((a, b) => a.from - b.from) } };
   }

@@ -112,7 +112,7 @@ const tidy = (t: number) => Math.round(t * 1e6) / 1e6;
 /** `t` moved by whole frames. A key on a frame stays exactly on one. */
 function shifted(t: number, frames: number, fps: number): number {
   const at = t * fps + frames;
-  return Math.abs(at - Math.round(at)) < 1e-3 ? keyTime(Math.round(at), fps) : tidy(t + frames / fps);
+  return at >= 0 && Math.abs(at - Math.round(at)) < 1e-3 ? keyTime(Math.round(at), fps) : tidy(t + frames / fps);
 }
 
 /** How many whole frames some keys can move together, either way. Keys already outside the scene don't hold the others back. */

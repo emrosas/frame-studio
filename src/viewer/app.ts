@@ -341,6 +341,8 @@ export class App {
         this.pauseInternal();
         this.scrubbing = true;
         this.hoverLayer = null;
+        // The arrows go back to the playhead.
+        this.ui.selectedKey = null;
       },
       scrub: (f) => this.seekInternal(f, false),
       scrubEnd: () => {
@@ -353,7 +355,10 @@ export class App {
         const next = findEntry(this.library, key);
         // The scene already behind the library opens as it was left.
         if (next && next === this.entry && this.ui.home) this.setHome(false);
-        else if (next) this.userSelect(next);
+        else if (next) {
+          this.userSelect(next);
+          this.followThreads(next.key);
+        }
       },
       importMedia: (files) =>
         attempt(async () => {
@@ -1941,6 +1946,14 @@ export class App {
       next = [...have, ...fresh].sort((a, b) => a.seq - b.seq);
     }
     this.ui.turnEvents = { ...this.ui.turnEvents, [key]: next };
+  }
+
+  /** Picking a scene brings up its conversation: the newest one still open, or none, never another scene's. */
+  private followThreads(key: string): void {
+    const open = this.requests.find((r) => r.id === this.ui.studio.open);
+    if (open?.sceneId === key) return;
+    const live = this.requests.filter((r) => r.sceneId === key && r.status !== 'settled' && r.status !== 'cancelled').at(-1);
+    this.openThread(live?.id ?? null);
   }
 
   private openThread(id: number | null): void {

@@ -326,6 +326,7 @@ export class AgentRunner {
           decide: (action) => this.decide(thread, settings, running, action),
           ask: (questions) => this.ask(running, questions),
           session: (id) => void queue.setSession(thread.id, id).catch(() => {}),
+          model: (id) => void queue.setRanModel(thread.id, id).catch(() => {}),
         },
       );
       running.handle = handle;

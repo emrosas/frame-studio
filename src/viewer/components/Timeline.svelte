@@ -163,7 +163,8 @@
   function pressRow(e: PointerEvent, row: LayerRow): void {
     const target = e.target as HTMLElement;
     const bar = target.closest<HTMLElement>('[data-bar]');
-    if (bar && e.button === 0 && ui.keyEdit === 'on') {
+    // A bar retimes only once its row is selected, so a press on any other row still selects or drags out a range.
+    if (bar && e.button === 0 && ui.keyEdit === 'on' && ui.layerId === row.id) {
       startBar(e, row, row.bars[Number(bar.dataset.bar)], target.dataset.edge as 'start' | 'end' | undefined);
       return;
     }

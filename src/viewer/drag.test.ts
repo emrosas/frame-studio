@@ -146,6 +146,22 @@ describe('writePosition', () => {
     expect(next.params).toEqual(from);
   });
 
+  it('writes only the axis that moved into a range, so the other keeps animating', () => {
+    const next = writePosition(dot(), { x: 150, y: 200 }, { x: 100, y: 200 }, moment({ range: { from: 12, to: 36 } }));
+    expect(next.ok && next.layer.overrides).toEqual([{ from: 12, to: 36, params: { x: 150 } }]);
+  });
+
+  it("gives an inserted key the ease of the move it lands in, since a key's ease shapes the way into it", () => {
+    const tracks = [{ param: 'x', keys: [{ t: 0, v: 0 }, { t: 4, v: 10, ease: 'inOutCubic' as const }] }];
+    const next = write(dot({ tracks }), moment({ frame: 24 }));
+    expect(next.tracks?.[0].keys[1]).toMatchObject({ t: 2, ease: 'inOutCubic' });
+  });
+
+  it('ignores the camera for a clip, which is not drawn through it', () => {
+    const zoomed = scene({ camera: { x: 0, y: 0, zoom: 2 } });
+    expect(dragScale(zoomed, { id: 'c', scene: 'shot' }, 0, 960).zoom).toBe(1);
+  });
+
   it('keeps overrides in order', () => {
     const overrides = [{ from: 40, to: 44 }];
     expect(write(dot({ overrides }), moment({ range: { from: 12, to: 36 } })).overrides?.map((o) => o.from)).toEqual([12, 40]);

@@ -73,6 +73,8 @@ export interface Turn {
   status: TurnStatus;
   /** For agents in the studio. */
   settings?: TurnSettings;
+  /** The model the agent reported running, which a default doesn't say. */
+  ranModel?: string;
   claimedAt?: string;
   /** Which session claimed it: an MCP server's process id, or the studio server's. */
   claimedBy?: string;
@@ -379,7 +381,7 @@ export function threadSummary(request: StudioRequest, now: number, options: { li
     turn: dead ? 'interrupted' : turn.status,
     sceneId: request.sceneId,
     agent: request.agent,
-    model: turn.settings?.model ?? null,
+    model: turn.ranModel ?? turn.settings?.model ?? null,
     at: turn.completedAt ?? turn.claimedAt ?? turn.ask.at,
     poster: options.poster ?? null,
   };

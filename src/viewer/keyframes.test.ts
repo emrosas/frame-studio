@@ -123,6 +123,10 @@ describe('moving a diamond', () => {
 });
 
 describe('shifting a layer', () => {
+  it('leaves a key before the scene there, shifted by frames', () => {
+    expect(times(shiftLayer(layer(track('opacity', -0.1, 0.05)), -1, FPS), 'opacity')?.[0]).toBeLessThan(-0.1);
+  });
+
   const l: Layer = { ...layer(track('x', 1, 2), track('opacity', 0.5, 3)), overrides: [{ from: 18, to: 30 }] };
 
   it("moves all its keys and overrides, and a mask's keys", () => {

@@ -2596,14 +2596,15 @@ button.check-result:hover {
 
 /* A narrow card gives up the scene's name first, then the model's. */
 .thread-scene {
-  flex: 0 100 auto;
-  min-width: 44px;
+  flex: 1 1 0;
+  min-width: 56px;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .thread-model {
   flex: 0 1 auto;
+  max-width: 50%;
   display: inline-flex;
   align-items: center;
   gap: 2px;

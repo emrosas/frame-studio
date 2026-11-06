@@ -209,6 +209,15 @@ describe('editing keys on the timeline', () => {
     write('scenes/keys.json', { ...keysScene, layers: [mover, { ...ball, overrides: [{ from: 20, to: 24, params: { fill: '#000000' } }] }] });
     await open('keys', 48);
     const px = await perFrame(48);
+    // A bar on a row that isn't selected doesn't retime: the press selects, and a drag marks a range.
+    const idle = (await page.locator('.tl-row[data-layer="ball"] .row-bar').first().boundingBox())!;
+    await drag({ x: idle.x + px * 2, y: idle.y + idle.height / 2 }, { x: idle.x + px * 8, y: idle.y + idle.height / 2 });
+    await page.waitForTimeout(400);
+    expect(inFile('ball').tracks[0].keys[0].t).toBe(1);
+    await page.locator('.tl-row[data-layer="ball"] .row-head').click();
+    await page.keyboard.press('Escape');
+    await page.locator('.tl-row[data-layer="ball"] .row-head').click();
+
     const bar = (await page.locator('.tl-row[data-layer="ball"] .row-bar').first().boundingBox())!;
     const y = bar.y + bar.height / 2;
     const body = bar.x + px * 2;

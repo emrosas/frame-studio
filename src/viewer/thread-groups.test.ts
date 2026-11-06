@@ -101,9 +101,10 @@ describe('what a card says', () => {
     }
   });
 
-  it('leaves a stopped or reverted turn as your turn: there was nothing to call done', () => {
-    expect(threadBadge(thread(1, { turn: 'stopped' }), true).kind).toBe('your_turn');
-    expect(threadBadge(thread(1, { turn: 'reverted' }), true).kind).toBe('your_turn');
+  it('treats a stopped or reverted turn like a finished one: Your turn until seen', () => {
+    expect(threadBadge(thread(1, { turn: 'stopped' }), false).kind).toBe('your_turn');
+    expect(threadBadge(thread(1, { turn: 'stopped' }), true).kind).toBe('done');
+    expect(threadBadge(thread(1, { turn: 'reverted' }), true).kind).toBe('done');
   });
 
   it('uses the shared words for the rest', () => {
@@ -136,6 +137,7 @@ describe('what a card says', () => {
     expect(modelLabel(agents, 'claude', 'claude-opus-5-5')).toBe('Opus 5.5');
     expect(modelLabel(agents, 'claude', 'retired-model')).toBe('retired-model');
     expect(modelLabel(agents, 'claude', null)).toBeNull();
+    expect(modelLabel(agents, 'claude', 'default')).toBeNull();
   });
 });
 
@@ -148,7 +150,8 @@ describe('dots on Footage rows', () => {
     expect(dots.c.kind).toBe('pending');
   });
 
-  it('leaves out what is done or failed', () => {
-    expect(sceneDots([thread(1), thread(2, { turn: 'failed' }), thread(3, { status: 'settled' })], () => true)).toEqual({});
+  it('leaves out what is done, and keeps a failed turn in sight', () => {
+    expect(sceneDots([thread(1), thread(3, { status: 'settled' })], () => true)).toEqual({});
+    expect(Object.values(sceneDots([thread(2, { turn: 'failed' })], () => true)).map((d) => d.kind)).toEqual(['failed']);
   });
 });
