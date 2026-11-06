@@ -13,17 +13,18 @@
     canRevert,
     clipboardLine,
     currentTurn,
-    displayStatus,
     firstRevertableTurn,
     isReferencePath,
     type RequestSelection,
     type StudioRequest,
     type Turn,
+    threadSummary,
     type TurnSettings,
   } from '../../studio/protocol';
   import { readDraft, writeDraft } from '../prefs';
   import { clockTime, selectionLabel } from '../selection';
-  import { describeUsage, foldTurn, groupSteps, STATUS_LABELS } from '../transcript';
+  import { threadBadge } from '../thread-groups';
+  import { describeUsage, foldTurn, groupSteps } from '../transcript';
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
@@ -61,7 +62,9 @@
     ...(initial?.effort ? { effort: initial.effort } : {}),
   });
 
-  const shown = $derived(displayStatus(thread, ui.studio.now));
+  const summary = $derived(threadSummary(thread, ui.studio.now));
+  // You're here, so it's your turn: the same words its card shows while it's open.
+  const badge = $derived(threadBadge(summary, false));
   // The question card the working turn waits on (ADR 0011), shown above the actions.
   const asking = $derived(thread.status === 'working' ? foldTurn(ui.turnEvents[`${thread.id}:${thread.turns.length - 1}`] ?? []).asking : null);
   const external = $derived(thread.agent === 'external');
@@ -166,8 +169,13 @@
 
 <section class="thread" aria-label="Request {thread.id}">
   <header class="panel-head">
-    <span class="thread-status" role="status" aria-label="Request status" title="#{thread.id} · {agentLabel}"><span class="status-dot is-{shown}" aria-hidden="true"></span>{STATUS_LABELS[shown]}</span>
+    <h2 class="panel-title thread-head-title" title={thread.turns[0].ask.prompt}>{summary.title}</h2>
+    <span class="thread-status" role="status" aria-label="Request status" title="#{thread.id} · {agentLabel}"><span class="status-dot is-{badge.kind}" aria-hidden="true"></span>{badge.label}</span>
+    <div class="actions">
+      <button type="button" class="icon-btn" aria-label="New thread" title="New thread" onclick={() => actions.openThread(null)}><Icon name="plus" /></button>
+    </div>
   </header>
+  {#if ui.studio.error}<p class="panel-note is-error thread-error">{ui.studio.error}</p>{/if}
 
   <div class="panel-body" bind:this={body} onscroll={onScroll} onwheel={(e) => e.deltaY < 0 && (pinned = false)}>
     <ol class="turns" bind:this={list}>
@@ -273,7 +281,7 @@
     <div class="thread-actions">
       {#if thread.status === 'working'}
         {#if external}
-          {#if shown === 'stalled'}<button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'requeue'))}>Requeue</button>{/if}
+          {#if summary.status === 'stalled'}<button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'requeue'))}>Requeue</button>{/if}
           <button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>
         {:else}
           <button type="button" class="btn is-small is-danger" onclick={async () => (stopFailed = !(await run(() => actions.requestAction(thread.id, 'stop'))))}>

@@ -27,6 +27,7 @@ const entry = (path: string, more: Partial<ProjectEntry> = {}): ProjectEntry => 
   videos: [],
   scenes: [],
   films: [],
+  threads: [],
   ...more,
 });
 

@@ -1,6 +1,7 @@
 # Progress
 
 Last updated 2026-11-06, after keyframe editing and canvas drag.
+Last updated 2026-11-06, after thread cards and the Footage / Threads switch.
 
 ## Done
 
@@ -863,6 +864,22 @@ ADR 0013 is amended: many projects listed, one on screen.
 - A press on the canvas drags a layer through fit, pixel scale, camera zoom and depth (`src/viewer/drag.ts`), writing params, a key or an override by ADR 0015's rule, with Shift to lock an axis, Escape to cancel, and hairlines at the stage's centre.
 - Everything saves through `POST /layers` and stays locked while an agent works. Command-Z is one stack over keys, drags and clips, holding each layer's JSON, which fixed the override a clip move used to lose for good.
 - `cameraView` is exported from the engine, which is the only engine change.
+### Thread cards and the Footage / Threads switch
+
+You pointed out that the thread list shared a column with the chat, so it disappeared as a thread grew, and that it read as a plain list. ADR 0006 and ADR 0013 are amended.
+
+- The sidebar has a switch under the logo, Footage and Threads, on Command-1 and 2, kept in `ui.layout`. Threads carries an orange count of what waits on you.
+- Threads lists every project's threads under the same headers and folds as Footage (`src/viewer/thread-groups.ts`, `ThreadGroup.svelte`, with the header now `ProjectHead.svelte`), newest activity first, with settled and cancelled ones under a Done fold. Command-F searches titles.
+- `ThreadCard.svelte`: the scene's poster with a status badge, the first prompt, scene, model and time, and the status in words. The model is the one the newest turn named, and is left out when it named none.
+- The app reads other projects' threads from disk into `ProjectEntry.threads` with no server. `threadSummary` in `src/studio/protocol.ts` makes the same summary from the live queue. A turn left working with no server there reads as Interrupted.
+- A card in another project passes `thread` in `OpenTarget`, and the page opens it once the queue arrives, in the one load a project switch already takes.
+- The right panel is only the conversation: title, status and +. The old list, All and its layout fields are gone. Clear settled moved to the Done fold.
+- Footage rows show a dot when their scene has a thread working or waiting.
+- Colours changed: Needs you is orange, not blue, and Stalled is red.
+
+One decision the spec left open. On disk a finished turn is just `your_turn`, so Your turn and Done can't both come from the files. The viewer keeps which finished turns you've seen in a pref (`frame-studio:threads-seen`): orange until you've opened it, green once you've moved on, and only unseen ones count toward the badge. Failed and interrupted turns stay red either way. If the council wants Done to mean something else, `threadBadge` and `needsYou` are the only places to change, and the project headers still count every `your_turn` from the files.
+
+How it was checked: typecheck clean, 1444 unit tests and 163 browser tests (8 skipped: the packaged app's, which need `npm run desktop:build`). New unit tests cover the grouping, the card's words and the disk summary. An Electron test writes threads into another project's folder, lists them with no server there, filters them, clicks a card and lands on that scene and thread in one page load. Screenshots in Electron in light and dark, at 1440 and 1024 wide, caught the model name being squeezed before the scene's. The test "works a thread" failed once at a load average near 27, on a read of the queue right after the page showed the text; it passed on every rerun.
 
 ## Next
 

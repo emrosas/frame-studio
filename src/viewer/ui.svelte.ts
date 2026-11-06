@@ -288,7 +288,7 @@ export interface ViewerActions {
   /** Answers an approval card. Returns an error message, or null. */
   respond(id: number, approval: string, decision: ApprovalDecision): Promise<string | null>;
   clearFinished(): Promise<void>;
-  /** Shows a thread in the panel, loading its turns' events; null goes back to the list. */
+  /** Shows a thread in the panel, loading its turns' events; null goes to a new thread. */
   openThread(id: number | null): void;
   /** Brings back a request's selection on the canvas. */
   restoreRequest(id: number): void;
@@ -303,9 +303,9 @@ export interface ViewerActions {
   openFolder(): void;
   /** The recent projects with what they hold and their threads' status (ADR 0013); empty in a browser. */
   projects(): Promise<ProjectEntry[]>;
-  /** Shows the stage as opening `name`, then switches the app to that recent project, on `target` when given. Returns why it failed, or null. */
   /** Takes a recent project off the list. The folder is left alone. */
   forgetProject(path: string): Promise<void>;
+  /** Shows the stage as opening `name`, then switches the app to that recent project, on `target` when given. Returns why it failed, or null. */
   openProject(path: string, name: string, target?: OpenTarget): Promise<string | null>;
   /** Makes a new project, asking for its name and place, and switches to it. Returns why it failed, or null. */
   newProject(): Promise<string | null>;
@@ -352,14 +352,12 @@ export interface Layout {
   /** How the clock reads: "0:01.00" or MM:SS:FF. */
   clock: 'time' | 'timecode';
   safeZones: boolean;
-  /** The thread list in the agent panel is open. */
-  threads: boolean;
-  /** The thread list shows every scene's threads, not only this scene's. */
-  allThreads: boolean;
+  /** What the sidebar lists. */
+  side: 'footage' | 'threads';
 }
 
 function savedLayout(): Layout {
-  const fallback: Layout = { sidebar: true, panel: true, dock: null, clock: 'time', safeZones: false, threads: true, allThreads: false };
+  const fallback: Layout = { sidebar: true, panel: true, dock: null, clock: 'time', safeZones: false, side: 'footage' };
   try {
     const saved = JSON.parse(readPref(LAYOUT_KEY) ?? '{}') as Partial<Layout>;
     return {
@@ -368,12 +366,22 @@ function savedLayout(): Layout {
       dock: typeof saved.dock === 'number' ? saved.dock : null,
       clock: saved.clock === 'timecode' ? 'timecode' : 'time',
       safeZones: saved.safeZones === true,
-      threads: saved.threads !== false,
-      allThreads: saved.allThreads === true,
+      side: saved.side === 'threads' ? 'threads' : 'footage',
     };
   } catch {
     // storage unavailable or unreadable
     return fallback;
+  }
+}
+
+/** Which finished turns you've looked at: the time of the newest turn seen, by thread (`seenKey`). */
+export const SEEN_KEY = 'frame-studio:threads-seen';
+
+function savedSeen(): Record<string, string> {
+  try {
+    return JSON.parse(readPref(SEEN_KEY) ?? '{}') as Record<string, string>;
+  } catch {
+    return {};
   }
 }
 
@@ -416,8 +424,8 @@ export class ViewerUi {
   header = $state<SceneHeader | null>(null);
   /** The studio folder: its path, and whether the app can switch it. */
   folder = $state<{ path: string; canSwitch: boolean } | null>(null);
-  /** The project the app is switching to, while the stage waits: its name, and the row picked. */
-  switching = $state<{ name: string; key: string | null; path: string } | null>(null);
+  /** The project the app is switching to, while the stage waits: its name, and the row or thread picked. */
+  switching = $state<{ name: string; key: string | null; path: string; thread: number | null } | null>(null);
   /** The app's update, when it has one to offer or is installing it; null in a browser. */
   update = $state<UpdateState | null>(null);
   /** The frame range band on the scrubber. */
@@ -457,6 +465,8 @@ export class ViewerUi {
    * opened. Raw, and replaced rather than changed, since a long turn has thousands of events.
    */
   turnEvents = $state.raw<Record<string, TurnEvent[]>>({});
+  /** Finished turns you've looked at (SEEN_KEY). Raw, and replaced when one is added. */
+  threadsSeen = $state.raw(savedSeen());
   /** A request that just finished, with View to see it. */
   toast = $state<Toast | null>(null);
 }

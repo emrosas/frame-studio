@@ -162,6 +162,8 @@ export interface AppOptions {
   autoplay: boolean;
   /** ?layer=&part=&from=&to= from the URL, checked against the scene once it is valid. */
   selection?: SelectionParams;
+  /** ?thread= from a thread card in another project: the thread to open. */
+  thread?: number | null;
 }
 
 /** sessionStorage key: play state carried across Vite's full-reload fallback. */
@@ -310,6 +312,8 @@ export class App {
   private selectionPoint: Point | null = null;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
   private requests: StudioRequest[] = [];
+  /** The thread to open when the queue arrives. */
+  private askedThread: number | null = null;
   /** Turns whose saved events were fetched, "id:turn". */
   private readonly loadedTurns = new Set<string>();
 
@@ -321,6 +325,7 @@ export class App {
     this.library = library;
     this.ui = ui;
     this.pendingFrameParam = options.frame;
+    this.askedThread = options.thread ?? null;
     const sel = options.selection;
     this.pendingSelection = sel && (sel.layer ?? sel.part ?? sel.from ?? sel.to) !== null ? sel : null;
 
@@ -480,7 +485,7 @@ export class App {
       projects: async () => (await desktop()?.projects().catch(() => [])) ?? [],
       openProject: async (path, name, target) => {
         this.pauseInternal();
-        this.ui.switching = { name, key: target?.scene ?? null, path };
+        this.ui.switching = { name, key: target?.scene ?? null, path, thread: target?.thread ?? null };
         const problem = (await desktop()?.openProject(path, target).catch((err: unknown) => errorText(err).message)) ?? null;
         // On success the page goes; on failure, or a project that's refused, the stage comes back.
         if (problem) this.ui.switching = null;
@@ -1861,6 +1866,12 @@ export class App {
       // A clip's bands lock while an agent works on its composition.
       this.uiDirty = true;
       this.schedule();
+      // A project opened from a thread card lands on that thread, once its list is here.
+      if (this.askedThread !== null) {
+        const id = this.askedThread;
+        this.askedThread = null;
+        if (requests.some((r) => r.id === id)) this.openThread(id);
+      }
       // A thread that got a new turn while open needs that turn's events.
       if (this.ui.studio.open !== null) void this.loadEvents(this.ui.studio.open);
     };

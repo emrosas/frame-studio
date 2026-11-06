@@ -5,7 +5,7 @@
 
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { DEFAULT_FORMAT, displayStatus, normalizeRequest } from '../src/studio/protocol.ts';
+import { DEFAULT_FORMAT, displayStatus, normalizeRequest, threadSummary, type StudioRequest, type ThreadSummary } from '../src/studio/protocol.ts';
 
 /** A project's threads that need a look: working, waiting on the user's input, or the user's turn. */
 export interface ProjectStatus {
@@ -47,6 +47,8 @@ export interface ProjectEntry extends ProjectStatus {
   videos: ProjectItem[];
   scenes: ProjectItem[];
   films: ProjectFilm[];
+  /** Its threads, read from disk, in no order. */
+  threads: ThreadSummary[];
 }
 
 /** Parsed files, by path, so listing every few seconds only reads what changed. */
@@ -148,32 +150,48 @@ export function warmProjects(left: ReadonlyMap<string, number>, now: number, ms 
   return new Set(recent.slice(0, WARM_COUNT).map(([folder]) => folder));
 }
 
-/**
- * Counts a project's threads from .frame-studio/requests/. A folder without
- * threads has none. A studio agent only works while its server runs, so with
- * none running a turn left working on disk says nothing about now.
- */
+/** The threads in a project's .frame-studio/requests/. A file being written, or not a thread, is skipped. */
+async function readThreads(dir: string): Promise<StudioRequest[]> {
+  const requests = join(dir, '.frame-studio', 'requests');
+  const names = (await readdir(requests).catch(() => [] as string[])).filter((n) => /^\d+\.json$/.test(n));
+  const read = await Promise.all(
+    names.map(async (n) => {
+      try {
+        return normalizeRequest(await readJson(join(requests, n)));
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return read.filter((r) => r !== null);
+}
+
+/** A studio agent only works while its server runs, so with none running a turn left working on disk says nothing about now. */
+const isLive = (thread: StudioRequest, running: boolean) => running || thread.agent === 'external';
+
+/** Counts a project's threads. A folder without threads has none. */
 export async function projectStatus(dir: string, running = true, now = Date.now()): Promise<ProjectStatus> {
   const out: ProjectStatus = { working: 0, input: 0, yours: 0 };
-  const requests = join(dir, '.frame-studio', 'requests');
-  const names = await readdir(requests).catch(() => [] as string[]);
-  await Promise.all(
-    names
-      .filter((n) => /^\d+\.json$/.test(n))
-      .map(async (n) => {
-        try {
-          const thread = normalizeRequest(JSON.parse(await readFile(join(requests, n), 'utf8')));
-          const shown = displayStatus(thread, now);
-          const live = running || thread.agent === 'external';
-          if (thread.status === 'your_turn') out.yours++;
-          else if (live && shown === 'input') out.input++;
-          else if (live && shown === 'working') out.working++;
-        } catch {
-          // A file being written, or not a thread: skip it.
-        }
-      }),
-  );
+  for (const thread of await readThreads(dir)) {
+    const shown = displayStatus(thread, now);
+    const live = isLive(thread, running);
+    if (thread.status === 'your_turn') out.yours++;
+    else if (live && shown === 'input') out.input++;
+    else if (live && shown === 'working') out.working++;
+  }
   return out;
+}
+
+/** A project's threads as cards show them, with their scenes' posters from `posters`, by scene key. */
+export async function projectThreads(dir: string, running = true, posters: ReadonlyMap<string, string | null> = new Map(), now = Date.now()): Promise<ThreadSummary[]> {
+  return (await readThreads(dir)).flatMap((thread) => {
+    try {
+      return [threadSummary(thread, now, { live: isLive(thread, running), poster: posters.get(thread.sceneId) ?? null })];
+    } catch {
+      // Not the shape of a thread: the list goes on without it.
+      return [];
+    }
+  });
 }
 
 /** True while an agent the studio runs has a thread there working or waiting to start, so its server must keep running. */
@@ -199,13 +217,17 @@ export async function listProjects(recent: readonly string[], current: string | 
         (s) => s.isDirectory(),
         () => false,
       );
+      const running = open.has(path);
+      const contents = exists ? await projectContents(path) : { videos: [], scenes: [], films: [] };
+      const items = [...contents.videos, ...contents.scenes, ...contents.films.flatMap((f) => f.items)];
       return {
         path,
         name: basename(path),
         current: path === current,
-        open: open.has(path),
-        ...(exists ? await projectStatus(path, open.has(path)) : { working: 0, input: 0, yours: 0, missing: true }),
-        ...(exists ? await projectContents(path) : { videos: [], scenes: [], films: [] }),
+        open: running,
+        ...(exists ? await projectStatus(path, running) : { working: 0, input: 0, yours: 0, missing: true }),
+        ...contents,
+        threads: exists ? await projectThreads(path, running, new Map(items.map((i) => [i.key, i.poster]))) : [],
       };
     }),
   );

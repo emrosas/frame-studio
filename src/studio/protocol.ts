@@ -343,6 +343,48 @@ export function displayStatus(request: StudioRequest, now: number): DisplayStatu
   return request.status;
 }
 
+/** A thread as the sidebar's cards show it, the same whether it came from the live queue or off another project's disk. */
+export interface ThreadSummary {
+  id: number;
+  /** The first prompt, on one line. */
+  title: string;
+  status: DisplayStatus;
+  /** How its newest turn stands, which tells a failure from a turn that went well. */
+  turn: TurnStatus;
+  sceneId: string;
+  agent: AgentId;
+  /** The model id its newest turn ran on. Null when the turn didn't name one, as an external agent's doesn't. */
+  model: string | null;
+  /** When it last moved, and what a finished turn is marked seen by. */
+  at: string;
+  /** The poster of its scene: a file under .frame-studio/thumbs/. */
+  poster: string | null;
+}
+
+/** Longer prompts cut here. A card shows two lines, and the app hands every project's list to each page. */
+const TITLE_CHARS = 160;
+
+/**
+ * The summary of a thread. `live` is false when nothing runs the thread's agent: a turn left working
+ * on disk then counts as interrupted, which is what a server finds when it starts there.
+ */
+export function threadSummary(request: StudioRequest, now: number, options: { live?: boolean; poster?: string | null } = {}): ThreadSummary {
+  const turn = currentTurn(request);
+  const shown = displayStatus(request, now);
+  const dead = options.live === false && (shown === 'working' || shown === 'input');
+  return {
+    id: request.id,
+    title: request.turns[0].ask.prompt.replace(/\s+/g, ' ').trim().slice(0, TITLE_CHARS),
+    status: dead ? 'your_turn' : shown,
+    turn: dead ? 'interrupted' : turn.status,
+    sceneId: request.sceneId,
+    agent: request.agent,
+    model: turn.settings?.model ?? null,
+    at: turn.completedAt ?? turn.claimedAt ?? turn.ask.at,
+    poster: options.poster ?? null,
+  };
+}
+
 /** "layer pip › mouth", "layer pip", or "all layers" for a whole-range selection. */
 export function describeTarget(selection: RequestSelection): string {
   if (selection.layerId === undefined) return 'all layers';

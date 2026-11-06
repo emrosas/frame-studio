@@ -99,13 +99,17 @@ ui.folder = { path: paired.folder, canSwitch: desktop() !== null };
 if (desktop() && /Mac/.test(navigator.platform)) document.documentElement.classList.add('is-desktop-mac');
 const actions = {} as ViewerActions;
 // The sidebar's + on a project that wasn't on screen comes back here to finish.
-const asked = new URLSearchParams(location.search).get('new');
+const query = new URLSearchParams(location.search);
+const asked = query.get('new');
 if (asked === 'video') ui.newRequest = { kind: 'video' };
 else if (asked === 'scene') ui.newRequest = { kind: 'scene', project: null };
-if (asked !== null) {
+// So does a thread card of a project that wasn't on screen.
+const thread = /^\d+$/.test(query.get('thread') ?? '') ? Number(query.get('thread')) : null;
+if (asked !== null || query.has('thread')) {
   // Once: a reload shouldn't open it again.
   const here = new URL(location.href);
   here.searchParams.delete('new');
+  here.searchParams.delete('thread');
   history.replaceState(history.state, '', here);
 }
 mount(Viewer, { target: root, props: { ui, actions } });
@@ -119,6 +123,7 @@ const app = new App(
     frame: url.frame,
     autoplay: takeResumeFlag(),
     selection: { layer: url.layer, part: url.part, from: url.from, to: url.to },
+    thread,
   },
   ui,
 );
