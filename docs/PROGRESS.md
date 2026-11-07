@@ -1,6 +1,6 @@
 # Progress
 
-Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards and the Footage / Threads switch.
+Last updated 2026-11-06, after word timing, captions, the voice row and word anchors (ADR 0016).
 
 ## Done
 
@@ -880,6 +880,19 @@ One decision the spec left open. On disk a finished turn is just `your_turn`, so
 
 How it was checked: typecheck clean, 1444 unit tests and 163 browser tests (8 skipped: the packaged app's, which need `npm run desktop:build`). New unit tests cover the grouping, the card's words and the disk summary. An Electron test writes threads into another project's folder, lists them with no server there, filters them, clicks a card and lands on that scene and thread in one page load. Screenshots in Electron in light and dark, at 1440 and 1024 wide, caught the model name being squeezed before the scene's. The test "works a thread" failed once at a load average near 27, on a read of the queue right after the page showed the text; it passed on every rerun.
 
+### M14.6: Voice (ADR 0016)
+
+Captions keep time on their own now, and a key or marker can land on a spoken word.
+
+- Data. `AudioCue` has `words`, `script` and `lang`, in seconds into the file. `src/engine/speech.ts` has `cueWords`, `kit.speech` and the `anchorWords` pass, which runs in the library. The validator checks word order, ranges and ids.
+- The `captions` rig, in `word-highlight`, `pop-in` and `line`, in any typeface or the pixel font. Layout is `src/rigs/type/caption-layout.ts`, shared with the check tool. The safe-area numbers moved to `src/engine/safe-area.ts`. The pixel font gained Á É Í Ó Ú Ñ Ü ¿ ¡: an accented capital loses a row so a clear row sits under its accent, and `pixel-text` opens its line gap by one only when a line has an accent, so no existing scene moved.
+- The timing job in `tools/voice/`: whisper.cpp 1.9.5, model small q5, pinned by sha256. The render worker decodes to 16 kHz mono. The job runs from `align_voice` and from `POST /voice`, with a card for the download.
+- Measured against the samples in `out/voice-test`, every word of both ElevenLabs takes lands within 150 ms of faster-whisper small. `tests/browser/voice.test.ts` asserts that through the real binary. It skips where the binary, model or samples are missing, so a clean checkout or CI doesn't run it.
+- The kokoro Spanish reference merges "¿Por qué" into one word, so its word count differs from the script's. The script alignment gets it right, and the test asserts that instead of timing.
+- The packaged app builds whisper-cli into `Resources/bin/`, about 8 MB. It links only system libraries and carries the app's ad hoc signature, and `tests/browser/packaged.test.ts` times a voice through it with `align_voice`.
+- The voice row, with `src/viewer/voice.ts` for the arithmetic. Word labels take turns on two tiers, because at 65 px a second a word is narrower than its text.
+- The HTML embed test compares a cut typeface with a whole one, pixel for pixel. It caught captions measuring a space from a letter the cut had dropped, so `charactersOf` now always keeps a space.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -910,6 +923,9 @@ How it was checked: typecheck clean, 1444 unit tests and 163 browser tests (8 sk
 - Command-Z in the packaged app relies on the page handling the key before the Edit menu. Untested: the browser tests send keys to the page directly.
 
 - Safe-zone guides are approximations, not measured from each app.
+- Voice rows are read-only on a composition, as its keys are. Timing is scenes only in the viewer; `align_voice` takes either.
+- `voice.test.ts` needs the pinned whisper-cli, the model and sample voices outside the repo, and skips without them.
+- whisper-cli's first run on a machine takes about 18 s while Metal compiles.
 - A composition's check reads its own markers, not those inside its clips.
 - `check` has no progress over MCP, only in the viewer.
 - A video clip past its file's end holds the last frame.

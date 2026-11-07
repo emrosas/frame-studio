@@ -21,6 +21,7 @@ import {
   checkNewVideo,
   checkRetry,
   CHECK_EVENT,
+  VOICE_EVENT,
   EXPORT_EVENT,
   LIBRARY_EVENT,
   MAX_REFERENCE_BYTES,
@@ -48,6 +49,7 @@ import { Thumbs } from './thumbs.ts';
 import { createSerial } from '../mcp/tools.ts';
 import { withoutId, type Workspace } from '../mcp/workspace.ts';
 import { entryPath, loadModules, readSceneFiles, sceneLibrary, writeFileAtomic } from '../scene-files.ts';
+import { voiceStatus } from '../voice/align.ts';
 import { runCheck } from './check.ts';
 import { STUDIO_INSTRUCTIONS } from './agents/instructions.ts';
 import { createProviders } from './agents/providers.ts';
@@ -432,6 +434,8 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
 
   const checks = new Map<string, AbortController>();
   let checkCount = 0;
+  const voices = new Map<string, AbortController>();
+  let voiceCount = 0;
 
   // ---- static files for the viewer ----
 
@@ -641,6 +645,27 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       if (problem) throw new HttpError(400, problem);
       if (await agentWorks(input.scene)) throw new HttpError(409, 'An agent is working on this scene, so it stays put until the agent finishes.');
       return send(res, 200, await created(() => ws().then((w) => w.editLayer(input.scene, input.layer, input.set))));
+    }
+    // Timing a voice (ADR 0016): the same job as align_voice, and the model it may need first.
+    if (req.method === 'GET' && path === '/voice') return send(res, 200, await voiceStatus(folder.builtins));
+    if (req.method === 'POST' && path === '/voice') {
+      const input = await json<{ scene?: unknown; cue?: unknown; script?: unknown }>(req);
+      const { scene, cue, script } = input ?? {};
+      if (typeof scene !== 'string' || typeof cue !== 'string' || (script !== undefined && typeof script !== 'string')) throw new HttpError(400, 'Send { scene, cue, script? }.');
+      if (await agentWorks(scene)) throw new HttpError(409, 'An agent is working on this scene, so it stays put until the agent finishes.');
+      const id = `voice-${++voiceCount}`;
+      const abort = new AbortController();
+      voices.set(id, abort);
+      ws()
+        .then((w) => w.alignVoice(scene, cue, { script, signal: abort.signal, onProgress: (p) => events.send(VOICE_EVENT, { id, ...p }) }))
+        .then((result) => events.send(VOICE_EVENT, { id, words: result.words }))
+        .catch((err: unknown) => events.send(VOICE_EVENT, { id, error: abort.signal.aborted ? 'Cancelled.' : err instanceof Error ? err.message : String(err) }))
+        .finally(() => voices.delete(id));
+      return send(res, 202, { id });
+    }
+    if (req.method === 'POST' && parts[0] === 'voice' && parts[2] === 'cancel') {
+      voices.get(parts[1])?.abort();
+      return send(res, 200, { ok: true });
     }
     if (req.method === 'POST' && path === '/sounds') {
       // Add at playhead: a cue playing a sound file, from the viewer's Media list (ADR 0012).

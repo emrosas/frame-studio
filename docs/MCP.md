@@ -48,6 +48,7 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `list_media()` | The sound files in `media/` (ADR 0012), each with its path for a cue, size and, from its header, duration in seconds, channels and sample rate. A cue plays one with `{ "id", "file", "start", "end", "in"?, "fadeIn"?, "fadeOut"?, "tracks"? }`; `docs/SCENES.md`, "Sound files". |
 | `import_media(path)` | Copies a sound file from a path on this computer into `media/`, named after it and numbered if taken, and returns its path and duration. Agents in the studio ask first for a file outside the studio folder. |
 | `list_generators()` | Each audio generator's param schema, for the scene's `audio` cues. |
+| `align_voice(sceneId, cueId, script?)` | Times the words of a sound file cue and writes them into the cue as `words: [{ id, text, start, end, p? }]`, seconds into the file (ADR 0016). Give `script` when you know what's said: words and punctuation then come from it, timing from the sound, and the cue keeps it for next time. The language is the cue's `lang`, else `project.json`'s, else detected. Timing again after a re-record keeps the ids of the words the takes share. Returns `{ file, cue, words, language, script, orphans }`, where `orphans` lists anchors left without a word. The first run downloads a 190 MB model and needs `whisper-cli` (`npm run voice:setup`; the app ships it). |
 | `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` (`out/<project>/<scene>/` in an old film) and returns a preview up to `maxWidth` wide (1280 by default). |
 | `render_contact_sheet(sceneId, from?, to?, every?, columns?)` | A labelled grid of every Nth frame, returned as an image and written to `out/<scene>/`. |
 | `check(sceneId, from?, to?, loop?)` | Measures a scene or composition, for what an agent can't watch or hear. Renders every frame of `[from, to)` at reduced size in the render worker, reads the rendered audio, and returns `{ ok, scene, from, to, checks: [{ id, status, message, frames?, value? }], file }`. `status` is `pass`, `warn` or `fail`, `ok` is false when any check failed, and `frames` are `[from, to)` ranges. The report is saved to `.frame-studio/checks/<id>.json`, and the viewer's Check video button runs the same job. The checks are listed below. |
@@ -80,7 +81,12 @@ Frames are measured at 320 pixels on the long side. Sound checks read the same r
 | `loudness` | Integrated LUFS by BS.1770-4: K-weighting, with the absolute and relative gates. | Warns outside -18 to -12 LUFS. |
 | `true-peak` | dBTP, approximated by 4x oversampling. | Warns above -1 dBTP. |
 | `dropouts` | Silence under -60 dBFS between two sounds. | Warns on over 1 s. |
-| `markers` | Markers whose label ends in `!`, like `hit!`, against sounds that start in the audio buffer. | Fails when no sound starts within 2 frames, and names the nearest. |
+| `markers` | Markers whose label ends in `!`, like `hit!`, against sounds that start in the audio buffer. Markers on a word go to `word-sync` instead. | Fails when no sound starts within 2 frames, and names the nearest. |
+
+| `word-sync` | Keys and markers anchored to a word (ADR 0016), by the frame each shows on. | Fails when one lands over 2 frames from its word, as a `stepFps` layer can hold it. Warns when the word's timing was a guess (`p` under 0.5). |
+| `word-orphans` | Anchors whose word is gone, re-recorded away or trimmed off. | Warns on any, with the time each keeps. |
+| `caption-speed` | Characters a second for each page of `captions`, spaces included. | Warns over 20 in English and other languages, over 17 in Spanish. |
+| `caption-safe` | Each page's box against the safe area. | Warns when a page leaves it. Fails when captions read a cue with no words. |
 
 A composition is checked as it plays, against its own `markers`. Markers inside the scenes it places aren't read.
 
@@ -115,6 +121,8 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 3. `apply_to_selection` for a change over some frames, or `update_scene` for a change to the whole scene. Sound is `update_scene` on the scene's `audio` cues, with generators from `list_generators`. The agent can't hear it, so place cues by frame: a cue starts on the frame its `start` falls in.
 4. `render_frame` or `render_contact_sheet` again to check it. Frames outside the edited range are untouched.
 5. `check`, and fix what fails. Warnings are judgment calls.
+
+To follow a voice: `align_voice` with the script, a `captions` layer on the cue, then `update_scene` to put `"word": "voice#w12"` beside the `t` of any key or marker that should land on a word. Words are in `get_scene`, under the cue.
 6. `export` when it looks right.
 
 ## Notes

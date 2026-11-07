@@ -16,12 +16,13 @@ import { sky } from './pixel/sky';
 import { sprite } from './pixel/sprite';
 import { star } from './star';
 import { studyRigs } from './studies';
+import { captions } from './type/captions';
 import { text } from './type/text';
 
-export { arrow, bear, bearArm, bearBandaged, bearBlush, circle, drift, fill, paper, pixelText, rect, ridge, sky, sprite, star, text };
+export { arrow, bear, bearArm, bearBandaged, bearBlush, captions, circle, drift, fill, paper, pixelText, rect, ridge, sky, sprite, star, text };
 
 /** Every rig the studio ships. Add new rigs (and variants) here. */
-export const allRigs: readonly Rig[] = [paper, fill, circle, rect, star, text, bear, bearArm, bearBandaged, bearBlush, pixelText, sprite, sky, ridge, drift, arrow, ...studyRigs];
+export const allRigs: readonly Rig[] = [paper, fill, circle, rect, star, text, captions, bear, bearArm, bearBandaged, bearBlush, pixelText, sprite, sky, ridge, drift, arrow, ...studyRigs];
 
 export function createDefaultRegistry(): RigRegistry {
   return createRegistry(allRigs);

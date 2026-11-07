@@ -93,6 +93,8 @@ tools/
               the request queue on disk, and agents/, the agents it runs
               itself (M8). bin.ts runs it standalone; connect.ts finds or
               starts one for a folder.
+  voice/      Word timing (ADR 0016): whisper-cli, its model, script alignment,
+              and npm run voice:setup.
   desktop/    npm run desktop and desktop:build: run and package the app.
   dev.ts      npm run dev: the studio server on the repo with Vite inside.
 out/          Renders and exports (gitignored).
@@ -146,13 +148,14 @@ Scenes are data, so the agent, the selection UI, and the timeline all edit the s
 - **Pixel stages (ADR 0014).** `pixel: { scale, palette?, dither? }`: rigs draw on `size / scale`, and `render()` snaps to the palette with ordered dither and blows up square pixels. Coordinates are the small stage's. Use the `pixel-text`, `sprite`, `sky`, `ridge`, `drift` and `arrow` rigs.
 - **The camera (ADR 0014).** `camera: { x, y, zoom, tracks }`, with `depth` on layers: 0 stays put, 1 is the world, between is further away.
 - **Markers (ADR 0014).** `markers: [{ t, label }]` on scenes and compositions. A label ending in `!` is a sync point the check tool tests.
+- **Words (ADR 0016).** A file cue owns `words: [{ id, text, start, end, p? }]` in seconds into the file, with `script?` and `lang?`. A key or marker takes `word: "voice#w12"` beside its `t`; `anchorWords` overwrites `t` from it in the library, which every host loads through. An orphan keeps its last `t`, and the check tool reports it. `media/<file>.words.json` is Whisper's cache; nothing renders from it.
 - **The cast.** `project.json` holds named characters (rig plus params) that layers use with `"cast": "bruno"` and can override.
 - **Old films (M9, ADR 0007)** in `projects/<id>/` still work: scenes sharing one fps and size that place each other as scene layers, with qualified ids, `<project>/<scene>`. The viewer converts one into a project folder of its own on request.
 - Validate scenes on load and surface clear errors in the viewer.
 
 ## Rigs
 
-A rig is `{ id, params: schema, parts?: string[], draw(ctx, params, t, rng, stage, kit) }`. `stage` is `{ width, height }` in scene pixels; rigs never read `ctx.canvas`. A rig that declares `parts` wraps every paint call in `kit.part(id, () => ...)`, so hit testing and selection masks can draw or read one part alone. `docs/SCENES.md` has the authoring guide for scenes and rigs, including the four rig rules that keep parts independent.
+A rig is `{ id, params: schema, parts?: string[], draw(ctx, params, t, rng, stage, kit) }`. `stage` is `{ width, height }` in scene pixels; rigs never read `ctx.canvas`. A rig that declares `parts` wraps every paint call in `kit.part(id, () => ...)`, so hit testing and selection masks can draw or read one part alone. `kit.speech(cueId)` gives a rig a cue's words in scene time (ADR 0016). `docs/SCENES.md` has the authoring guide for scenes and rigs, including the four rig rules that keep parts independent.
 - `params` declares each parameter's type, default, and range. This schema drives the MCP `list_rigs` output and any future rig-controls UI, so keep it accurate.
 - `t` is the layer's quantized local time, for internal cycles like wing flaps and blinks.
 - Build rigs from small reusable parts (body, eye, limb) so characters stay consistent across shots. Consistency across shots is the hardest problem in this project: prefer shared parts over per-scene redrawing.
@@ -173,7 +176,7 @@ Engine support required from the start:
 
 ## Hand edits (ADR 0015)
 
-The timeline edits a scene's key times, and a press on the canvas drags a layer. Hand edits change when and where; values, drawing and easing stay the agent's. A drag shows through a patched copy of the scene in the viewer, and `render()` never hears about it. A canvas drag writes params when untracked, a key at the playhead when tracked, and an override when a range is set around the playhead (`src/viewer/drag.ts`). Everything saves through the server's checked edit, stays locked while an agent works on the scene, and shares one Command-Z stack with clip moves.
+The timeline edits a scene's key times, and a press on the canvas drags a layer. Hand edits change when and where; values, drawing and easing stay the agent's. A drag shows through a patched copy of the scene in the viewer, and `render()` never hears about it. A canvas drag writes params when untracked, a key at the playhead when tracked, and an override when a range is set around the playhead (`src/viewer/drag.ts`). Everything saves through the server's checked edit, stays locked while an agent works on the scene, and shares one Command-Z stack with clip moves. A spoken word's text and timing are hand-editable too (ADR 0016), and dragging a key anchored to a word detaches it.
 
 ## Reference images
 
@@ -197,6 +200,7 @@ Users can attach reference images to a prompt. References are **input to the age
 - The page that draws the frames also encodes them. MP4 is H.264 through WebCodecs `VideoEncoder` at scene fps, muxed with Mediabunny. GIF is gifenc with our own palette code. The CLI, Electron and the web app run the same export code and differ only in where the bytes go (ticket 14, `.scratch/frame-studio/research/export-encoding.md`).
 - MP4s are tagged BT.709 primaries, sRGB transfer and BT.709 matrix at full range, in both the SPS VUI and `colr`. WebCodecs only writes that for I420 frames that carry the colour space, so the exporter converts each frame itself (ticket 15, `src/export/color.ts`).
 - No shipped build bundles ffmpeg. It is a dev-only tool for checking exported files: frame count, duration, frame rate, colour.
+- The timing job (ADR 0016, `tools/voice/`) runs `whisper-cli` at a pinned version, built by `npm run voice:setup` for the repo and by `tools/desktop/package.ts` for the app. Its model downloads on first use to `~/.frame-studio/models/`, and the render worker decodes the sound for it.
 
 ## MCP server (the agent's API)
 
@@ -207,6 +211,7 @@ Users can attach reference images to a prompt. References are **input to the age
 - `list_rigs()`: each rig's param schema, parts, and variants, with `project` on a project's own rig
 - `list_generators()`: each audio generator's param schema
 - `list_media()`, `import_media(path)`: the sound files in `media/` with their lengths, and copying one in (ADR 0012)
+- `align_voice(sceneId, cueId, script?)`: times a sound cue's words and writes them into the cue; with a script, words and punctuation come from it (ADR 0016)
 - `render_frame(sceneId, frame | timecode)`: returns a PNG so the agent can see its work
 - `render_contact_sheet(sceneId, from, to, every)`: a grid of frames for reviewing motion
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
@@ -228,6 +233,7 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 
 - TypeScript 6, strict mode. Vite for the viewer, with Svelte 5 for its UI (ADR 0002). Vitest for tests. `npm run typecheck` runs tsc for app and Node code and svelte-check for components. TypeScript 7 has no JavaScript API, which svelte-check needs, so the repo stays on 6.
 - `npm test` is the unit suite. `npm run test:browser` runs Playwright against the viewer, the render worker, the embed, the handoff, the MCP shim, the app from source, and the packaged app when `npm run desktop:build` has built it.
+- `npm run voice:setup` builds the pinned whisper-cli. Without it the timing tests skip.
 - `npm run dev` runs the studio server on the repo and prints the viewer's paired URL. `npm run desktop` runs the app from the repo; `npm run desktop:build` packages it for macOS arm64 and checks the result. `npm run desktop:release` builds a release for the app's updater (ADR 0009, `docs/RELEASING.md`).
 - After changing drawing code, verify visually with `render_frame` or a contact sheet rather than assuming it looks right.
 - Maintain `docs/PROGRESS.md`: done, next, open questions, known issues. Read it at the start of each session and update it at the end.

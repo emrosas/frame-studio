@@ -218,6 +218,17 @@ export const EXPORT_EVENT = 'frame-studio:export';
 
 /** Pushed as a viewer check goes: progress, then the report, or an error. */
 export const CHECK_EVENT = 'frame-studio:check';
+/** Pushed as a timing job goes (ADR 0016): progress, then done with its word count, or an error. */
+export const VOICE_EVENT = 'frame-studio:voice';
+/** What a timing job needs (ADR 0016). */
+export interface VoiceStatus {
+  binary: boolean;
+  model: boolean;
+  modelBytes: number;
+  modelName: string;
+}
+export type VoiceEvent = { id: string } & ({ stage: string; done: number; total: number } | { words: number } | { error: string });
+
 /** A poster finished in the background: its scene key and file name under .frame-studio/thumbs/. */
 export const THUMB_EVENT = 'frame-studio:thumb';
 
@@ -578,6 +589,16 @@ export interface ClipEdit {
 /** The fields of a layer or clip a hand edit may change (ADR 0015). */
 export const LAYER_EDIT_FIELDS = ['params', 'tracks', 'overrides', 'mask', 'start', 'in', 'out'];
 
+/**
+ * What else takes a hand edit, by the id it goes under in place of a layer's (ADR 0016): a cue's words as
+ * "audio/<cue>", and the markers as "markers/". Layer ids can't hold a "/", so these never meet one.
+ */
+export const cueTarget = (cueId: string): string => `audio/${cueId}`;
+export const MARKERS_TARGET = 'markers/';
+export const isLayerTarget = (id: string): boolean => !id.includes('/');
+/** The fields a target's edit may change. */
+export const editFields = (target: string): readonly string[] => (target === MARKERS_TARGET ? ['markers'] : target.startsWith('audio/') ? ['words'] : LAYER_EDIT_FIELDS);
+
 /** A hand edit of one layer or clip: each field in `set` is replaced whole, and null removes it (ADR 0015). */
 export interface LayerEdit {
   /** The scene or composition, as the library keys it, so "<project>/<scene>" for an old film's. */
@@ -692,8 +713,9 @@ export function checkLayerEdit(input: unknown): string | null {
   if (typeof input.scene !== 'string' || input.scene === '') return 'scene must be a scene id';
   if (typeof input.layer !== 'string' || input.layer === '') return 'layer must be a layer id';
   if (!isObject(input.set)) return 'set must be an object of fields to change';
-  const unknown = Object.keys(input.set).find((field) => !LAYER_EDIT_FIELDS.includes(field));
-  return unknown === undefined ? null : `set can't change "${unknown}"; it takes ${LAYER_EDIT_FIELDS.join(', ')}`;
+  const fields = editFields(input.layer);
+  const unknown = Object.keys(input.set).find((field) => !fields.includes(field));
+  return unknown === undefined ? null : `set can't change "${unknown}"; it takes ${fields.join(', ')}`;
 }
 
 const QUESTION_ANSWER_LIMIT = 2000;

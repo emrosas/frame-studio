@@ -105,6 +105,8 @@ export interface RenderStudioApi {
    * Defaults to the whole scene. With loop, the seam between the last and first frames is judged too.
    */
   check(options?: { from?: number; to?: number; loop?: boolean }): Promise<CheckReport>;
+  /** Decodes a sound file from media/ to 16 kHz mono and writes it to the sink as a WAV, for the timing job (ADR 0016). Returns the seconds. */
+  writeSpeech(file: string, sinkId: string): Promise<number>;
   /** Draws every Nth frame of [from, to) into one grid and writes it as PNG to the sink. */
   contactSheet(sinkId: string, options?: { from?: number; to?: number; every?: number; columns?: number }): Promise<ContactSheetResult>;
 }

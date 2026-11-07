@@ -34,6 +34,7 @@ import type { Action, AgentProvider, TurnHandle, TurnOutcome } from './types.ts'
 /** Studio tools that write a scene, by the argument that names it. */
 const SCENE_WRITERS: Record<string, (args: Record<string, unknown>) => unknown> = {
   update_scene: (a) => a.id,
+  align_voice: (a) => a.sceneId,
   apply_to_selection: (a) => (a.selection as { sceneId?: unknown } | undefined)?.sceneId,
 };
 /** Studio tools that write an M9 project's project.json, by the argument that names it. Without one, the folder's: no project to wait on. */

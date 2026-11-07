@@ -67,6 +67,9 @@ describe('determinism', () => {
   });
 });
 
+/** Words for a rig that reads speech. */
+const SPOKEN = [{ id: 'w0', text: 'Hola', start: 0, end: 1 }, { id: 'w1', text: 'mundo.', start: 1, end: 2 }];
+
 /** Every param at its schema minimum, or maximum. Booleans go false for min and true for max. */
 function extremeParams(rig: Rig, end: 'min' | 'max'): Params {
   const out: Params = {};
@@ -101,7 +104,7 @@ function smokeDraw(rig: Rig, params: Params, t: number) {
       return Reflect.get(target, prop, receiver);
     },
   });
-  rig.draw(ctx, { ...defaultParams(rig), ...params }, t, createRng(42, 'smoke'), STAGE, PASS_THROUGH);
+  rig.draw(ctx, { ...defaultParams(rig), ...params }, t, createRng(42, 'smoke'), STAGE, { ...PASS_THROUGH, speech: () => SPOKEN });
   return { log: rec.log, saveDepth: rec.saveDepth() };
 }
 

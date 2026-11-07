@@ -25,10 +25,12 @@ export interface FolderProjectFile {
   name?: string;
   fps?: number;
   size?: [number, number];
+  /** The language spoken, for timing a voice whose cue doesn't say (ADR 0016). */
+  lang?: string;
   cast?: Cast;
 }
 
-const FOLDER_PROJECT_FIELDS = new Set(['name', 'fps', 'size', 'cast']);
+const FOLDER_PROJECT_FIELDS = new Set(['name', 'fps', 'size', 'lang', 'cast']);
 
 /** Checks a project folder's project.json: every field optional; the cast as an M9 project's. */
 export function validateFolderProject(input: unknown, registry?: RigRegistry): { ok: true; project: FolderProjectFile } | { ok: false; errors: string[] } {
@@ -42,6 +44,7 @@ export function validateFolderProject(input: unknown, registry?: RigRegistry): {
   if (size !== undefined && !(Array.isArray(size) && size.length === 2 && size.every((n) => typeof n === 'number' && Number.isInteger(n) && n > 0))) {
     err('size', `must be [width, height] in pixels, the size new scenes and compositions start with, got ${show(size)}`);
   }
+  if (input.lang !== undefined && !(typeof input.lang === 'string' && /^[a-z]{2,3}$/.test(input.lang))) err('lang', `must be a language code like "en" or "es", got ${show(input.lang)}`);
   if (input.cast !== undefined) {
     if (!isObject(input.cast)) err('cast', `must map names to { "rig": "...", "params": {...} }, got ${show(input.cast)}`);
     else for (const [name, member] of Object.entries(input.cast)) checkMember(name, member, registry, err);

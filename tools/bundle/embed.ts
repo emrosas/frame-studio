@@ -26,6 +26,7 @@ import { loadModules, sceneLibrary } from '../scene-files.ts';
 import type { CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import { collectStrings, typefacesFor } from '../type/subset.ts';
+import { CAPTION_FACE } from '../../src/rigs/type/caption-face.ts';
 
 export interface EmbedBuild {
   html: string;
@@ -151,19 +152,23 @@ function stripDescriptionsPlugin(folder: StudioFolder): Plugin {
 }
 
 const FACES = 'rigs/type/faces/index.ts';
+/** The rigs that draw typefaces from a scene's strings: the text rig, and captions, whose words are strings of the scene too (ADR 0016). */
+const TYPE_RIGS = ['rigs/type/text.ts', 'rigs/type/captions.ts'];
 
 /**
  * Swaps the built-in typeface index for one with only the typefaces and
- * characters in `data`'s strings, when the text rig is bundled. A rig of the
+ * characters in `data`'s strings, when a type rig is bundled. A rig of the
  * folder's that imports the type modules itself may draw text from its own
  * code, which the scene's strings don't show, so then the typefaces go in whole.
  */
 async function typefacePlugin(files: readonly string[], folder: StudioFolder, code: CodeHost, data: unknown): Promise<Plugin | null> {
-  const textRig = join(folder.builtins, 'rigs/type/text.ts');
-  if (!files.includes(textRig)) return null;
-  for (const file of files) if (file !== textRig && /rigs\/type\//.test(await readFile(file, 'utf8'))) return null;
+  const typeRigs = TYPE_RIGS.map((rig) => join(folder.builtins, rig));
+  if (!files.some((file) => typeRigs.includes(file))) return null;
+  for (const file of files) if (!typeRigs.includes(file) && /rigs\/type\//.test(await readFile(file, 'utf8'))) return null;
   const all = (await code.importBuiltin(FACES)).typefaces as readonly Typeface[];
-  const source = `export const typefaces = ${JSON.stringify(typefacesFor(all, collectStrings(data))).replace(/</g, '\\u003c')};`;
+  const strings = collectStrings(data);
+  if (files.includes(typeRigs[1])) strings.add(CAPTION_FACE);
+  const source = `export const typefaces = ${JSON.stringify(typefacesFor(all, strings)).replace(/</g, '\\u003c')};`;
   const path = join(folder.builtins, FACES);
   return { name: 'frame-studio-typefaces', load: (id) => (id === path ? source : null) };
 }
@@ -269,15 +274,14 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
   // A silent export drops the cues, the placed scenes' too, so the embed carries no audio code at all.
   // Without media, the sound files' cues go too (ADR 0012), and the build says which files it left out.
   const leftOut = new Set<string>();
+  // Captions don't need the sound, so a dropped cue's words stay behind as `spoken` (ADR 0016).
   const quiet = (s: Scene): Scene => {
-    if (options.silent) return { ...s, audio: undefined };
-    if (options.media) return s;
-    const kept = (s.audio ?? []).filter((cue) => {
-      if (typeof cue.file !== 'string') return true;
-      leftOut.add(cue.file);
-      return false;
-    });
-    return s.audio ? { ...s, audio: kept.length > 0 ? kept : undefined } : s;
+    if (options.media && !options.silent) return s;
+    const dropped = (s.audio ?? []).filter((cue) => options.silent || typeof cue.file === 'string');
+    if (!options.silent) for (const cue of dropped) leftOut.add(cue.file!);
+    const spoken = dropped.flatMap((cue) => (cue.words ? [{ id: cue.id, start: cue.start, end: cue.end, ...(cue.in !== undefined ? { in: cue.in } : {}), words: cue.words }] : []));
+    const kept = (s.audio ?? []).filter((cue) => !dropped.includes(cue));
+    return s.audio ? { ...s, audio: kept.length > 0 ? kept : undefined, ...(spoken.length > 0 ? { spoken } : {}) } : s;
   };
   const scene = quiet(entry.scene);
   const placed = new Map([...placedScenes(entry.scene, entry.world)].map(([id, s]) => [id, quiet(s)] as const));

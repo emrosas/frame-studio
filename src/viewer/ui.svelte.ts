@@ -10,6 +10,8 @@ import { readPref } from './prefs';
 import type { FrameRange } from './selection';
 import type { ClipPlace, VisibleSpan } from './timeline';
 import type { RequestAction } from './studio-client';
+import type { VoiceLine } from './voice';
+import type { SpokenWord } from '../engine/types';
 
 export interface SceneOption {
   key: string;
@@ -64,6 +66,10 @@ export interface SceneHeader {
 export interface MarkerTick {
   frame: number;
   label: string;
+  /** Its place in the scene's markers. */
+  index?: number;
+  /** It lands on a spoken word (ADR 0016). */
+  anchored?: boolean;
 }
 
 /** A file in out/, for the library's Renders. */
@@ -94,7 +100,15 @@ export interface SoundBand {
   lane: number;
   /** For a sound file: the file, and the seconds of it the cue plays, for its waveform. */
   file?: { path: string; from: number; to: number };
+  /** A sound file with no words yet can be timed (ADR 0016). */
+  canTime?: boolean;
 }
+
+/** A timing job on screen (ADR 0016): asking to fetch the model first, working, or why it stopped. */
+export type VoiceJob =
+  | { status: 'ask'; cue: string; bytes: number; name: string }
+  | { status: 'working'; cue: string; id: string | null; stage: string; done: number; total: number }
+  | { status: 'error'; cue: string; message: string };
 
 /** A layer's row on the timeline, in frames: its bar, its keys and its overrides. */
 export interface LayerRow {
@@ -211,6 +225,18 @@ export interface ViewerActions {
   importMedia(files: File[]): Promise<string | null>;
   /** Places a sound file at the playhead of the scene on screen. Returns an error message, or null. */
   placeSound(file: string): Promise<string | null>;
+  /** Times a sound cue's words, asking first if that means a download (ADR 0016). */
+  timeVoice(cueId: string): void;
+  /** Yes to the download the card asks about. */
+  confirmVoice(): void;
+  /** Stops a timing job, or puts the card away. */
+  cancelVoice(): void;
+  /** Saves a cue's words after a drag or a text edit. Resolves false if it was refused. */
+  saveWords(cueId: string, words: readonly SpokenWord[]): Promise<boolean>;
+  /** Ties the selected key or marker to a spoken word. */
+  anchorToWord(cueId: string, wordId: string): void;
+  /** Marks a marker as what Delete, Anchor and the arrows would act on. */
+  selectMarker(index: number | null): void;
   /** The loudest sample in each of `buckets` slices of seconds [from, to) of a file the scene plays, for its waveform. */
   waveform(file: string, from: number, to: number, buckets: number): Promise<Float32Array | null>;
   /** Creates an empty scene and shows it. Returns an error message, or null. */
@@ -447,6 +473,11 @@ export class ViewerUi {
   selectedKey = $state.raw<SelectedKey | null>(null);
   /** Whether keys can be edited: on, locked while an agent works on the scene, or off where the timeline shows clips. */
   keyEdit = $state<'on' | 'locked' | 'off'>('off');
+  /** The sound cues with words, as voice rows under the layers (ADR 0016). */
+  voices = $state<readonly VoiceLine[]>([]);
+  voiceJob = $state<VoiceJob | null>(null);
+  /** Which marker is selected, by its place in `markers`. */
+  selectedMarker = $state<number | null>(null);
   /** The rows of the scene on screen, top of the stack first, then the background. */
   layers = $state.raw<LayerRow[]>([]);
   /** The right-click menu, when it's open. */

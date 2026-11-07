@@ -172,6 +172,7 @@ function partAt(probe: Ctx2D, pixel: ProbePixel, scene: Scene, layer: Layer, fra
         current = outer;
       }
     },
+    speech: () => [],
   };
   pixel.clear();
   drawLayer(probe, scene, layer, frame, registry, kit, world);

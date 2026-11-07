@@ -243,6 +243,17 @@ Acceptance:
 
 Built from the research on Science in 8bit and HyperFrames: pixel stages, the camera, markers, the check tool, picture clips in compositions, the project library, and the timeline dock. Dragging and trimming clips came with the dock; the rest of M15 stands.
 
+## M14.6: Voice (ADR 0016)
+
+Captions that keep time on their own, and animation that follows spoken words, in English and Spanish.
+
+- Word timing: `align_voice` and a Timing button, with whisper.cpp, offline after the first download. A known script supplies the words.
+- A `captions` rig, with `kit.speech` for any rig that wants a cue's words.
+- A voice row on the timeline: waveform, word chips, retiming and text edits on the one undo stack.
+- Word anchors on keys and markers, kept through a re-record, and the check tool's word checks.
+
+Generating the voice itself is separate work (provider keys and Generate Voice).
+
 ## M15: The timeline as an editor
 
 A simple video editor's timeline for compositions (ADR 0012, ADR 0013).

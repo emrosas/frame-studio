@@ -1,7 +1,13 @@
 export type ParamValue = number | string | boolean;
 export type Params = Record<string, ParamValue>;
 export type EasingName = 'linear' | 'inQuad' | 'outQuad' | 'inOutQuad' | 'inCubic' | 'outCubic' | 'inOutCubic' | 'inQuart' | 'outQuart' | 'inOutQuart' | 'inSine' | 'outSine' | 'inOutSine' | 'inExpo' | 'outExpo' | 'inOutExpo' | 'inBack' | 'outBack' | 'inOutBack';
-export interface Key { t: number; v: ParamValue; ease?: EasingName }      // t in seconds; ease shapes the segment ARRIVING at this key; default linear
+export interface Key {
+  t: number;              // seconds
+  v: ParamValue;
+  ease?: EasingName;      // shapes the segment ARRIVING at this key; default linear
+  /** A spoken word this key lands on, "cueId#wordId" (ADR 0016). anchorWords overwrites t from it. */
+  word?: string;
+}
 export interface Track { param: string; keys: Key[] }
 export interface Override { from: number; to: number; rig?: string; params?: Params }   // output frames, [from, to)
 /** A layer's mask (ADR 0007): a rig drawn with the layer's time; the layer shows only where it draws. */
@@ -34,6 +40,16 @@ export interface Layer extends LayerSpec { id: string }
 /** A named character of a project (ADR 0007): a rig and the params that make it that character. */
 export interface CastEntry { rig: string; params?: Params }
 export type Cast = Readonly<Record<string, CastEntry>>;
+/** A spoken word on a cue (ADR 0016). start and end are seconds into the sound file, so moving or trimming the cue carries it. */
+export interface SpokenWord {
+  id: string;
+  /** The word as it should read, punctuation included. */
+  text: string;
+  start: number;
+  end: number;
+  /** How sure the timing job was, 0 to 1. */
+  p?: number;
+}
 /**
  * A sound cue from `start` to `end` in scene seconds, snapped to frames: a generator's sound, or a sound
  * file from the studio folder's media/ (ADR 0012). Its tracks animate only volume (cue.ts).
@@ -54,6 +70,12 @@ export interface AudioCue {
   /** For a generator: its params. */
   params?: Params;
   tracks?: Track[];
+  /** For a file: its words in order, in seconds into the file (ADR 0016). align_voice writes them. */
+  words?: SpokenWord[];
+  /** For a file: what the voice says. Words and punctuation come from this, timing from the sound. */
+  script?: string;
+  /** For a file: the language spoken, like "es". */
+  lang?: string;
 }
 /**
  * A pixel stage (ADR 0014): the scene draws at size / scale and shows with square pixels. Coordinates and
@@ -63,9 +85,23 @@ export interface AudioCue {
 export interface PixelStage { scale: number; palette?: string[]; dither?: number }
 /** A scene's camera: an offset from the stage's centre in stage pixels and a zoom, with tracks on x, y and zoom. Layers follow it by their depth. */
 export interface Camera { x?: number; y?: number; zoom?: number; tracks?: Track[] }
-/** A named moment on the timeline: a beat, a hit, a sync point. It draws nothing. */
-export interface Marker { t: number; label: string }
-export interface Scene { id: string; fps: number; duration: number; size: [number, number]; seed: number; background?: LayerSpec; layers: Layer[]; audio?: AudioCue[]; pixel?: PixelStage; camera?: Camera; markers?: Marker[] }
+/** A named moment on the timeline: a beat, a hit, a sync point. It draws nothing. `word` ties it to a spoken word, like a key's. */
+export interface Marker { t: number; label: string; word?: string }
+export interface Scene {
+  id: string;
+  fps: number;
+  duration: number;
+  size: [number, number];
+  seed: number;
+  background?: LayerSpec;
+  layers: Layer[];
+  audio?: AudioCue[];
+  pixel?: PixelStage;
+  camera?: Camera;
+  markers?: Marker[];
+  /** Only in an embed: cues left out of its sound, kept so captions still read their words. Never in a file. */
+  spoken?: Pick<AudioCue, 'id' | 'start' | 'end' | 'in' | 'words'>[];
+}
 export const BACKGROUND_ID = 'background';   // the background layer's id; user layers may not use it
 export interface Rng { next(): number; range(min: number, max: number): number; int(minInclusive: number, maxExclusive: number): number; pick<T>(items: readonly T[]): T; fork(key: string): Rng }
 export type ParamSpec =
@@ -86,6 +122,8 @@ export type Ctx2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D
  */
 export interface DrawKit {
   part(id: string, draw: () => void): void;
+  /** The words of a cue in this scene, in scene seconds, trimmed and shifted as the cue plays them. Empty for an unknown cue. */
+  speech(cueId: string): readonly SpokenWord[];
 }
 export interface Rig {
   id: string;              // variants use "base.variant", e.g. "fly.wingTorn"

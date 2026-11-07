@@ -5,6 +5,7 @@ export const PASS_THROUGH: DrawKit = {
   part(_id, draw) {
     draw();
   },
+  speech: () => [],
 };
 
 /**
@@ -17,5 +18,6 @@ export function onlyParts(ids: readonly string[]): DrawKit {
     part(id, draw) {
       if (keep.has(id)) draw();
     },
+    speech: () => [],
   };
 }

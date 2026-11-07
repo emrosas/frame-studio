@@ -301,6 +301,21 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
   );
 
   server.registerTool(
+    'align_voice',
+    {
+      title: 'Time a voice',
+      description:
+        "Finds when each word is said in a sound file cue, and writes the words into the cue: { id, text, start, end, p }, seconds into the file. Give script when you know what's said: words and punctuation then come from it, and only the timing from the sound. A cue with a script keeps it for next time. The language comes from the cue's lang, else project.json's, else it's detected. Timing again after a re-record keeps the ids of the words the takes share, so keys anchored to them follow, and returns any anchor left without a word in orphans. The first run downloads a 190 MB model. Captions read these words (rig captions), and a key or marker takes \"word\": \"cueId#wordId\" beside its t to land on one.",
+      inputSchema: {
+        sceneId,
+        cueId: z.string().describe('The id of a sound file cue in that scene'),
+        script: z.string().optional().describe('What the voice says, punctuation included'),
+      },
+    },
+    tool('align_voice', async (w, { sceneId: id, cueId, script }: { sceneId: string; cueId: string; script?: string }) => text(await w.alignVoice(id, cueId, { script }))),
+  );
+
+  server.registerTool(
     'hit_test',
     {
       title: 'Hit test',

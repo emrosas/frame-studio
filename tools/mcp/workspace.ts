@@ -10,7 +10,7 @@ import { randomInt } from 'node:crypto';
 import { mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
-import type { Layer, Params, Rig, RigRegistry, Scene } from '../../src/engine/types.ts';
+import type { Layer, Params, Rig, RigRegistry, Scene, SpokenWord } from '../../src/engine/types.ts';
 import type { SceneEntry, SceneLibrary } from '../../src/viewer/library.ts';
 import type { CheckReport } from '../../src/export/check.ts';
 import type { ContactSheetResult, RenderExportResult, RenderHit } from '../../src/viewer/render-api.ts';
@@ -21,7 +21,8 @@ import { runCheck } from '../studio/check.ts';
 import type { CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
-import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, projectOf, type LayerChange, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
+import { hear, nextWords, type VoiceProgress } from '../voice/align.ts';
+import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, editFields, isLayerTarget, MARKERS_TARGET, projectOf, type LayerChange, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
 import type { StudioQueue } from '../studio/queue.ts';
@@ -38,6 +39,25 @@ export function rawLayer(scene: RawScene, id: string): RawLayer | undefined {
   if (scene.tracks) return scene.tracks.flatMap((t) => t.clips).find((c) => c.id === id);
   if (id === 'background') return typeof scene.background === 'object' && scene.background !== null ? (scene.background as RawLayer) : undefined;
   return scene.layers?.find((l) => l.id === id);
+}
+
+type RawCue = RawLayer & { id?: string; file?: string; lang?: string; script?: string; words?: unknown[] };
+
+/** What a hand edit lands on (ADR 0016): a layer or clip, a cue, or the scene itself for its markers. */
+function rawTarget(scene: RawScene & { audio?: RawCue[] }, id: string): RawLayer | undefined {
+  if (id === MARKERS_TARGET) return scene as unknown as RawLayer;
+  if (id.startsWith('audio/')) return scene.audio?.find((c) => c.id === id.slice('audio/'.length));
+  return rawLayer(scene, id);
+}
+
+/** Every anchored key and marker in a scene file takes its word's time now, before the words change. */
+function keepAnchorTimes(value: unknown, scene: Scene, wordTime: (scene: Scene, ref: string) => number | null): void {
+  if (Array.isArray(value)) value.forEach((v) => keepAnchorTimes(v, scene, wordTime));
+  else if (typeof value === 'object' && value !== null) {
+    const held = value as Record<string, unknown>;
+    if (typeof held.word === 'string' && typeof held.t === 'number') held.t = wordTime(scene, held.word) ?? held.t;
+    for (const [field, v] of Object.entries(held)) if (field !== 'words') keepAnchorTimes(v, scene, wordTime);
+  }
 }
 
 export function withoutId(layer: RawLayer): RawLayer {
@@ -464,16 +484,59 @@ export class Workspace {
     const { modules, entry } = await this.entry(key);
     const path = entryPath(entry, this.folder);
     const next = JSON.parse(await readFile(path, 'utf8')) as RawScene;
-    const layer = rawLayer(next, layerId);
-    if (!layer) throw new Error(`"${key}" has no layer "${layerId}".`);
-    const before = structuredClone(layer);
+    const layer = rawTarget(next, layerId);
+    if (!layer) throw new Error(`"${key}" has no ${isLayerTarget(layerId) ? 'layer' : 'cue or markers at'} "${layerId}".`);
+    const fields = editFields(layerId);
+    const pick = (raw: RawLayer): RawLayer => (isLayerTarget(layerId) ? withoutId(raw) : Object.fromEntries(fields.flatMap((f) => (raw[f] !== undefined ? [[f, raw[f]]] : []))));
+    const before = structuredClone(pick(layer));
     for (const [field, value] of Object.entries(set)) {
       if (value === null) delete layer[field];
       else layer[field] = value;
     }
     await this.checkEdit(modules, entry, next, 'That edit');
     await this.writeScene(path, next, modules);
-    return { before: withoutId(before), after: withoutId(layer) };
+    return { before, after: pick(layer) };
+  }
+
+  /**
+   * Times a sound cue's words (ADR 0016) and writes them into the scene. With a script, or a script already on
+   * the cue, words and punctuation come from it. A new take keeps the ids of the words it shares with the last,
+   * and every anchored key first takes its word's current time, so one whose word went stays where it was.
+   */
+  async alignVoice(key: string, cueId: string, options: { script?: string; signal?: AbortSignal; onProgress?(progress: VoiceProgress): void } = {}): Promise<{ file: string; cue: string; words: number; language: string | null; script: boolean; orphans: string[] }> {
+    const { modules, entry, lib } = await this.entry(key);
+    const path = entryPath(entry, this.folder);
+    const raw = JSON.parse(await readFile(path, 'utf8')) as RawScene & { audio?: RawCue[] };
+    const cue = raw.audio?.find((c) => c.id === cueId);
+    if (!cue) throw new Error(`"${key}" has no cue "${cueId}"; its cues are ${(raw.audio ?? []).map((c) => c.id).join(', ') || 'none'}.`);
+    if (typeof cue.file !== 'string') throw new Error(`Cue "${cueId}" plays a generator. Only a sound file has words to time.`);
+    const { file } = cue;
+    await this.checkMedia({ audio: [cue] }, 'That cue');
+    const language = cue.lang ?? lib.folder?.project?.lang ?? null;
+    const script = options.script ?? cue.script;
+    const heard = await hear({
+      root: this.folder.root,
+      builtins: this.folder.builtins,
+      file,
+      language,
+      signal: options.signal,
+      onProgress: options.onProgress,
+      decode: async (wav) => {
+        const { files } = await this.validScene(key);
+        const studio = await this.page(key, files);
+        await writeViaSink(studio, wav, (sink) => studio.call('writeSpeech', file, sink));
+      },
+    });
+    options.onProgress?.({ stage: 'write', done: 0, total: 1 });
+    if (entry.scene) keepAnchorTimes(raw, entry.scene, modules.engine.wordTime);
+    cue.words = nextWords(heard.words, script, (cue.words ?? []) as SpokenWord[]);
+    if (script?.trim()) cue.script = script;
+    if (cue.lang === undefined && heard.language) cue.lang = heard.language;
+    await this.checkEdit(modules, entry, raw, 'Those words');
+    await this.writeScene(path, raw, modules);
+    const after = await this.entry(key);
+    const orphans = after.entry.scene ? modules.engine.unanchoredWords(after.entry.scene).map((o) => `${o.where}: ${o.word}`) : [];
+    return { file: this.show(path), cue: cueId, words: cue.words.length, language: heard.language, script: Boolean(script?.trim()), orphans };
   }
 
   /** A scene with nothing in it yet: paper, no layers, and a seed of its own. */

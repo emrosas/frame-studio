@@ -1,6 +1,6 @@
 # 0015: Hand edits on the timeline and the canvas
 
-Status: accepted, 2026-11-06. Changes ADR 0013's "the timeline editor edits compositions only": a scene's keys edit on the timeline too.
+Status: accepted, 2026-11-06. Changes ADR 0013's "the timeline editor edits compositions only": a scene's keys edit on the timeline too. ADR 0016 adds one thing a hand can write: a spoken word's text and timing. Every other value stays the agent's.
 
 ## Context
 

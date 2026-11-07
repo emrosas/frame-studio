@@ -12,7 +12,8 @@
 //   220 MB Claude binary never comes along; plus Rolldown, whose native
 //   binding can't be bundled. viewer/ is the built viewer, builtins/ the
 //   engine, rigs, generators and embed player as source, samples/ what New
-//   studio folder copies, and bin/frame-studio-mcp the MCP command.
+//   studio folder copies, bin/frame-studio-mcp the MCP command, and
+//   bin/whisper-cli the timing job's binary (ADR 0016).
 
 import { spawnSync } from 'node:child_process';
 import { chmod, cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -20,6 +21,7 @@ import { join } from 'node:path';
 import { build as electronBuild } from 'electron-builder';
 import { rolldown } from 'rolldown';
 import { REPO } from '../studio/folder.ts';
+import { buildWhisper } from '../voice/setup.ts';
 import { writeIcon } from './icon.ts';
 
 const STAGE = join(REPO, 'build/desktop');
@@ -72,6 +74,9 @@ await writeFile(join(RES, 'server/package.json'), '{ "type": "module" }\n');
 for (const dep of ['rolldown', '@rolldown/binding-darwin-arm64', '@rolldown/pluginutils', '@oxc-project/types']) {
   await cp(join(REPO, 'node_modules', dep), join(RES, 'server/node_modules', dep), { recursive: true, dereference: true });
 }
+
+step('whisper-cli');
+await buildWhisper(join(RES, 'bin/whisper-cli'));
 
 step('viewer, built-ins, samples');
 await cp(join(REPO, 'dist'), join(RES, 'viewer'), { recursive: true });

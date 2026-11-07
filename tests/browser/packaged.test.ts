@@ -7,10 +7,12 @@
  *   plays a sample drawn by the render worker it ships;
  * - the viewer exports an MP4 into the folder's out/;
  * - its frame-studio-mcp command serves every tool through the running app,
- *   and through a headless server of its own when the app is closed.
+ *   and through a headless server of its own when the app is closed;
+ * - it times a voice with the whisper-cli it ships (ADR 0016), when the model
+ *   and a sample voice are on this machine.
  */
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -44,6 +46,9 @@ async function mcpClient(): Promise<Client> {
   await client.connect(new StdioClientTransport({ command: MCP, args: [], cwd: folder, env: env(), stderr: 'pipe' }));
   return client;
 }
+
+const MODEL = join(homedir(), '.frame-studio/models/ggml-small-q5_1.bin');
+const VOICE = process.env.FRAME_STUDIO_VOICE_SAMPLES ?? '/Users/emireles/git/frame-studio/out/voice-test';
 
 const textOf = (r: CallToolResult) => r.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
 
@@ -85,6 +90,25 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
       const frame = (await client.callTool({ name: 'render_frame', arguments: { sceneId: 'film', frame: 50, maxWidth: 320 } })) as CallToolResult;
       expect(frame.isError).toBeFalsy();
       expect(frame.content.some((c) => c.type === 'image')).toBe(true);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it.skipIf(!existsSync(MODEL) || !existsSync(join(VOICE, 'eleven-es.mp3')))('times a voice with the whisper-cli it ships', async () => {
+    mkdirSync(join(folder, 'media'), { recursive: true });
+    copyFileSync(join(VOICE, 'eleven-es.mp3'), join(folder, 'media/voice.mp3'));
+    mkdirSync(join(home, '.frame-studio/models'), { recursive: true });
+    symlinkSync(MODEL, join(home, '.frame-studio/models/ggml-small-q5_1.bin'));
+    const client = await mcpClient();
+    try {
+      const placed = (await client.callTool({ name: 'update_scene', arguments: { id: 'hello', patch: { audio: [{ id: 'voice', file: 'media/voice.mp3', start: 0, end: 3, lang: 'es' }] } } })) as CallToolResult;
+      expect(placed.isError, textOf(placed)).toBeFalsy();
+      const timed = (await client.callTool({ name: 'align_voice', arguments: { sceneId: 'hello', cueId: 'voice' } }, undefined, { timeout: 150_000 })) as CallToolResult;
+      expect(timed.isError, textOf(timed)).toBeFalsy();
+      expect(JSON.parse(textOf(timed))).toMatchObject({ language: 'es' });
+      const scene = JSON.parse(readFileSync(join(folder, 'scenes/hello.json'), 'utf8')) as { audio: { words: { text: string }[] }[] };
+      expect(scene.audio[0].words.length).toBeGreaterThan(20);
     } finally {
       await client.close();
     }

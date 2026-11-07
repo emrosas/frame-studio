@@ -8,6 +8,9 @@ import { studioEvents } from './studio-events';
 import type { RenderItem } from './ui.svelte';
 import {
   CHECK_EVENT,
+  VOICE_EVENT,
+  type VoiceEvent,
+  type VoiceStatus,
   EXPORT_EVENT,
   QUEUE_EVENT,
   THUMB_EVENT,
@@ -231,6 +234,24 @@ export class StudioClient {
   /** Calls `listener` with every check event: progress, then the report, or an error. */
   onCheck(listener: (event: CheckEvent) => void): () => void {
     return this.on(CHECK_EVENT, listener);
+  }
+
+  /** Whether a timing job can run now, or needs the model first (ADR 0016). */
+  voiceStatus(): Promise<VoiceStatus> {
+    return call<VoiceStatus>('/voice');
+  }
+
+  async startVoice(job: { scene: string; cue: string; script?: string }): Promise<string> {
+    return (await call<{ id: string }>('/voice', jsonBody(job))).id;
+  }
+
+  async cancelVoice(id: string): Promise<void> {
+    await call(`/voice/${encodeURIComponent(id)}/cancel`, jsonBody({}));
+  }
+
+  /** Calls `listener` with every timing event: progress, then the word count, or an error. */
+  onVoice(listener: (event: VoiceEvent) => void): () => void {
+    return this.on(VOICE_EVENT, listener);
   }
 
   /** Copies an image into references/ and returns its repo-relative path. */

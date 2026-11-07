@@ -30,7 +30,10 @@ import { createSurfaces } from '../embed/surfaces';
 import { CanvasView } from './canvas';
 import { PlaybackClock } from './clock';
 import { dragDelta, dragScale, landValue, lockAxis, movable, snapCentre, stageCentre, withinBounds, withLayers, writePosition, type DragMoment, type DragScale, type Movable, type Position } from './drag';
-import { deleteKeys, keyLanes, keyMarks, keysAt, moveTarget, type KeyTarget, type SelectedKey } from './keyframes';
+import { anchorKeys, deleteKeys, keyLanes, keyMarks, keysAt, moveTarget, type KeyTarget, type SelectedKey } from './keyframes';
+import type { VoiceLine } from './voice';
+import { cueTarget, isLayerTarget, MARKERS_TARGET } from '../studio/protocol';
+import { wordRef, wordTime } from '../engine';
 import { formatClock, visibleSpans, type ClipPlace } from './timeline';
 import { ErrorLog, errorText } from './errors';
 import { focusKeepsKey, keyAction } from './keys';
@@ -280,6 +283,8 @@ export class App {
   /** Layers on screen ahead of their files: a drag under way, or a save on its way back. */
   private readonly held = new Map<string, Layer>();
   private heldVersion = 0;
+  /** The scene ui.voices was worked out for. */
+  private voiceScene: Scene | null = null;
   private heldScene: { base: Scene; version: number; scene: Scene } | null = null;
   private keyDrag: { target: KeyTarget; base: Layer; next: Layer } | null = null;
   /** Nudges not saved yet. */
@@ -372,6 +377,15 @@ export class App {
           this.setHome(false);
         }),
       waveform: (file, from, to, buckets) => this.media.peaks(file, from, to, buckets),
+      timeVoice: (cueId) => void this.timeVoice(cueId),
+      confirmVoice: () => void this.startVoice(),
+      cancelVoice: () => this.cancelVoice(),
+      saveWords: (cueId, words) => this.saveTarget(cueTarget(cueId), { words }),
+      anchorToWord: (cueId, wordId) => this.anchorToWord(cueId, wordId),
+      selectMarker: (index) => {
+        this.ui.selectedMarker = index;
+        this.ui.selectedKey = null;
+      },
       createScene: (input) => this.create(() => this.studio.createScene(input)),
       createVideo: (input) => this.create(() => this.studio.createVideo(input)),
       showHome: (on) => {
@@ -387,6 +401,7 @@ export class App {
       dragKeys: (to) => this.dragKeys(to),
       endKeyDrag: (commit) => this.endKeyDrag(commit),
       selectKey: (key) => {
+        this.ui.selectedMarker = null;
         if (key && key.layerId !== this.layerId) this.pick(key.layerId, null);
         this.ui.selectedKey = key;
         this.flushNow();
@@ -674,13 +689,13 @@ export class App {
       const edit = direction === 'undo' ? this.history.undo() : this.history.redo();
       if (!edit) return;
       const [to, from] = direction === 'undo' ? [edit.before, edit.after] : [edit.after, edit.before];
-      const layer = asLayer(edit.layerId, to);
+      const layer = isLayerTarget(edit.layerId) ? asLayer(edit.layerId, to) : null;
       this.ui.selectedKey = null;
-      this.hold(layer);
+      if (layer) this.hold(layer);
       this.history.begin();
       try {
-        await this.studio.editLayer({ scene: key, layer: edit.layerId, set: layerSet(from, to) });
-        this.letGo(layer);
+        await this.studio.editLayer({ scene: key, layer: edit.layerId, set: layerSet(from, to, edit.layerId) });
+        if (layer) this.letGo(layer);
         const spans = edit.spans;
         if (spans) this.rangeFollows(direction === 'undo' ? spans.after : spans.before, direction === 'undo' ? spans.before : spans.after);
       } catch (err) {
@@ -760,6 +775,7 @@ export class App {
     this.held.clear();
     this.heldVersion++;
     this.ui.selectedKey = null;
+    this.ui.selectedMarker = null;
     this.toldFixed.clear();
   }
 
@@ -787,6 +803,83 @@ export class App {
         this.history.end();
       }
     });
+  }
+
+  /** A hand edit of a cue's words or the markers (ADR 0016), through the same checked edit and undo as a layer's. */
+  private saveTarget(target: string, set: Record<string, unknown>): Promise<boolean> {
+    const key = this.entry?.key;
+    if (!key) return Promise.resolve(false);
+    const problem = this.keysRefused();
+    if (problem) {
+      this.say(problem);
+      return Promise.resolve(false);
+    }
+    this.history.begin();
+    return this.inLine(async () => {
+      try {
+        const change = await this.studio.editLayer({ scene: key, layer: target, set });
+        this.history.record(key, { layerId: target, ...change });
+        return true;
+      } catch (err) {
+        this.say(errorText(err).message);
+        return false;
+      } finally {
+        this.history.end();
+      }
+    });
+  }
+
+  /** Ties the selected key or marker to a word. It lands there now, and follows the word from here on. */
+  private anchorToWord(cueId: string, wordId: string): void {
+    const scene = this.validScene();
+    const ref = wordRef(cueId, wordId);
+    const t = scene ? wordTime(scene, ref) : null;
+    if (!scene || t === null) return;
+    const key = this.ui.selectedKey;
+    const marker = this.ui.selectedMarker;
+    if (key) {
+      const base = this.shownLayer(key.layerId);
+      const refs = base ? keysAt(base.tracks, key.frame, scene.fps, key.param) : [];
+      if (!base || refs.length === 0) return;
+      const next = anchorKeys(base, refs, ref, t);
+      this.ui.selectedKey = { ...key, frame: timeToFrame(t, scene.fps) };
+      this.hold(next);
+      void this.saveLayer(base, next);
+    } else if (marker !== null && scene.markers?.[marker]) {
+      void this.saveTarget(MARKERS_TARGET, { markers: scene.markers.map((m, i) => (i === marker ? { ...m, t, word: ref } : m)) });
+    }
+  }
+
+  private async timeVoice(cue: string): Promise<void> {
+    this.ui.voiceJob = { status: 'working', cue, id: null, stage: 'start', done: 0, total: 1 };
+    try {
+      const status = await this.studio.voiceStatus();
+      if (!status.binary) throw new Error('whisper-cli is missing. Run npm run voice:setup in the repo.');
+      if (status.model) await this.startVoice();
+      else this.ui.voiceJob = { status: 'ask', cue, bytes: status.modelBytes, name: status.modelName };
+    } catch (err) {
+      this.ui.voiceJob = { status: 'error', cue, message: errorText(err).message };
+    }
+  }
+
+  private async startVoice(): Promise<void> {
+    const job = this.ui.voiceJob;
+    const scene = this.entry?.key;
+    if (!job || !scene) return;
+    this.ui.voiceJob = { status: 'working', cue: job.cue, id: null, stage: 'start', done: 0, total: 1 };
+    try {
+      const id = await this.studio.startVoice({ scene, cue: job.cue });
+      const now = this.ui.voiceJob;
+      if (now?.status === 'working') this.ui.voiceJob = { ...now, id };
+    } catch (err) {
+      this.ui.voiceJob = { status: 'error', cue: job.cue, message: errorText(err).message };
+    }
+  }
+
+  private cancelVoice(): void {
+    const job = this.ui.voiceJob;
+    if (job?.status === 'working' && job.id) void this.studio.cancelVoice(job.id).catch(() => {});
+    this.ui.voiceJob = null;
   }
 
   /** Why keys can't change here, or null. */
@@ -1067,7 +1160,7 @@ export class App {
           vertical: scene !== null && scene.size[0] * 16 === scene.size[1] * 9,
         }
       : null;
-    this.ui.markers = scene?.markers ? scene.markers.map((m) => ({ frame: Math.min(this.total - 1, timeToFrame(m.t, scene.fps)), label: m.label })).sort((a, b) => a.frame - b.frame) : [];
+    this.ui.markers = scene?.markers ? scene.markers.map((m, index) => ({ frame: Math.min(this.total - 1, timeToFrame(m.t, scene.fps)), label: m.label, index, anchored: m.word !== undefined })).sort((a, b) => a.frame - b.frame) : [];
     document.title = entry ? `${entry.key} · Frame Studio` : 'Frame Studio';
     this.syncUrl();
     this.schedulePublish();
@@ -1912,6 +2005,14 @@ export class App {
       }
       else this.ui.exporting = { ...state, running: { id: event.id, stage: event.stage, done: event.done, total: event.total } };
     });
+    this.studio.onVoice((event) => {
+      const job = this.ui.voiceJob;
+      if (job?.status !== 'working') return;
+      if (job.id !== null && job.id !== event.id) return;
+      if ('error' in event) this.ui.voiceJob = { status: 'error', cue: job.cue, message: event.error };
+      else if ('words' in event) this.ui.voiceJob = null;
+      else this.ui.voiceJob = { ...job, id: event.id, stage: event.stage, done: event.done, total: event.total };
+    });
     this.studio.onCheck((event) => {
       if (this.ui.checking.running?.id !== event.id) return;
       if ('error' in event) this.ui.checking = { running: null, report: null, error: event.error };
@@ -2312,6 +2413,10 @@ export class App {
     ui.keyEdit = !scene || this.entry?.kind === 'composition' ? 'off' : this.agentWorks() ? 'locked' : 'on';
     ui.shots = scene ? this.shotBands() : null;
     ui.sounds = scene ? this.soundBands(scene) : null;
+    if (this.voiceScene !== scene) {
+      this.voiceScene = scene;
+      ui.voices = scene ? this.voiceLines(scene) : [];
+    }
     ui.usesMedia = scene !== null && mediaUsed(scene, this.entry?.world ?? {}).length > 0;
     ui.back = this.shotReturn ? { label: this.shotReturn.key.slice(this.shotReturn.key.indexOf('/') + 1), key: this.shotReturn.key } : null;
     const span = this.selectedSpan();
@@ -2403,7 +2508,8 @@ export class App {
 
   /** The scene's own sound cues for the timeline, each in the lowest lane where it overlaps no other. Null without any. */
   private soundBands(scene: Scene): { bands: SoundBand[]; lanes: number; frameCount: number } | null {
-    const cues = scene.audio ?? [];
+    // A cue with words has a voice row instead.
+    const cues = (scene.audio ?? []).filter((cue) => !cue.words?.length);
     if (cues.length === 0) return null;
     const laneEnds: number[] = [];
     const bands = cues
@@ -2418,9 +2524,20 @@ export class App {
         laneEnds[lane] = to;
         const label = cue.file ? cue.file.slice(cue.file.lastIndexOf('/') + 1) : (cue.generator ?? cue.id);
         const played = (to - from) / scene.fps;
-        return { id: cue.id, label, from, to, lane, ...(cue.file ? { file: { path: cue.file, from: cue.in ?? 0, to: (cue.in ?? 0) + played } } : {}) };
+        return { id: cue.id, label, from, to, lane, ...(cue.file ? { file: { path: cue.file, from: cue.in ?? 0, to: (cue.in ?? 0) + played }, canTime: this.ui.keyEdit === 'on' && !cue.id.endsWith(':sound') } : {}) };
       });
     return { bands, lanes: laneEnds.length, frameCount: this.total };
+  }
+
+  /** The cues with words, for their rows (ADR 0016). A row only changes with its scene. */
+  private voiceLines(scene: Scene): VoiceLine[] {
+    return (scene.audio ?? []).flatMap((cue) => {
+      if (!cue.words?.length || !cue.file) return [];
+      const from = timeToFrame(cue.start, scene.fps);
+      const to = Math.max(from + 1, timeToFrame(cue.end, scene.fps));
+      const start = cue.in ?? 0;
+      return [{ cue: { id: cue.id, start: cue.start, end: cue.end, ...(cue.in !== undefined ? { in: cue.in } : {}), words: cue.words }, label: cue.file.slice(cue.file.lastIndexOf('/') + 1), from, to, file: { path: cue.file, from: start, to: start + (to - from) / scene.fps } }];
+    });
   }
 
   /** The frame the URL should carry. While a scene is invalid the clock keeps its frame, so the URL keeps it too. */

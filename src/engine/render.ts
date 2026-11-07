@@ -1,4 +1,5 @@
 import { PASS_THROUGH } from './kit';
+import { speechKit } from './speech';
 import { pictureTime } from './picture';
 import { quantize, stageSize } from './pixel';
 import { defaultParams } from './registry';
@@ -150,7 +151,7 @@ function drawResolved(ctx: Ctx2D, scene: Scene, { id, rig, params, t }: Resolved
       ctx.scale(view.zoom, view.zoom);
       ctx.translate(-width / 2 - view.x, -height / 2 - view.y);
     }
-    rig.draw(ctx, params, t, createRng(scene.seed, id), { width, height }, kit);
+    rig.draw(ctx, params, t, createRng(scene.seed, id), { width, height }, speechKit(kit, scene));
   } finally {
     ctx.restore();
   }

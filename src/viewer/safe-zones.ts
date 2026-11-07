@@ -4,9 +4,10 @@
 // numbers are rounded, in 1080x1920 scene pixels, and cover all three
 // platforms, which change their layouts now and then; they're a guide, not a spec.
 
+import { SAFE_INSET as INSET } from '../engine/safe-area';
+
 const WIDTH = 1080;
 const HEIGHT = 1920;
-const INSET = { top: 260, right: 140, bottom: 480, left: 60 };
 const SVG = 'http://www.w3.org/2000/svg';
 
 function node<K extends keyof SVGElementTagNameMap>(name: K, attrs: Record<string, string | number>, text?: string): SVGElementTagNameMap[K] {
