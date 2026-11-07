@@ -934,7 +934,7 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 ## Known issues
 
 - ElevenLabs has only run against a fake host: its voice list, model and price estimate still need a real key. The real path is one Generate from the app.
-- Kokoro's Spanish needs espeak-ng data, which is GPL. It arrives only through the optional download, never in the app. Whether that's acceptable is an open licence question for the maintainer.
+- Kokoro's Spanish needs espeak-ng data, which is GPL. It arrives only through the optional download, never in the app. The maintainer accepted that on 2026-11-07, since the step is optional.
 - A scene can't read a composition's cue, so captions need the voice in a scene. The check tool warns.
 
 - Command-Z in the packaged app relies on the page handling the key before the Edit menu. Untested: the browser tests send keys to the page directly.
