@@ -186,9 +186,10 @@ describe('the viewer', () => {
       type W = { studio: { frameCount: number; errors: string[] } };
       await page.goto(studio.paired('?scene=voice&frame=12'));
       await page.waitForFunction(() => (window as unknown as W).studio?.frameCount === 48);
-      const media = page.getByRole('region', { name: 'Media' });
+      await page.getByRole('button', { name: 'Library' }).first().click();
+      const media = page.getByRole('region', { name: 'Media', exact: true });
       await media.getByText('tone.wav').waitFor();
-      await expect.poll(() => media.textContent()).toContain('2s');
+      await expect.poll(() => media.textContent()).toContain('2 s');
 
       await media.locator('input[type=file]').setInputFiles({ name: 'Music Bed.wav', mimeType: 'audio/wav', buffer: wav(1.5, () => 0.3) });
       await media.getByText('music-bed.wav').waitFor();
@@ -204,7 +205,7 @@ describe('the viewer', () => {
       }, bytes);
       await media.getByText('dropped.wav').waitFor();
 
-      // Frame 12 at 24 fps is 0.5 s; the 1.5 s file runs to the scene's end at 2 s.
+      // Frame 12 at 24 fps is 0.5 s; the 1.5 s file runs to the scene's end at 2 s. Adding goes back to the scene.
       await media.getByRole('button', { name: 'Add music-bed.wav at the playhead' }).click();
       await expect
         // The first call starts the server's workspace, which takes a moment.

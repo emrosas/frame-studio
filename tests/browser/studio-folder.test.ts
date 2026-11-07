@@ -104,23 +104,21 @@ describe('a studio folder', () => {
     try {
       await page.goto(studio.paired('?scene=dot-test'));
       await page.waitForFunction(() => (window as unknown as W).studio?.frameCount === 12);
-      // A folder with no compositions still offers to make one.
-      expect(await page.getByText('No compositions yet.', { exact: false }).isVisible()).toBe(true);
-
-      await page.getByRole('button', { name: 'New scene', exact: true }).click();
+      await page.getByRole('button', { name: 'New', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'New scene' }).click();
       let dialog = page.getByRole('dialog', { name: 'New scene' });
       await dialog.getByLabel('Name').fill('Opening Shot');
       expect(await dialog.getByText('Saved as scenes/opening-shot.json').isVisible()).toBe(true);
       await dialog.getByText('Square').click();
-      await dialog.getByText('30 fps').click();
       await dialog.getByRole('button', { name: 'Create' }).click();
       await page.waitForFunction(() => (window as unknown as W).studio.scene?.id === 'opening-shot');
       expect(await page.evaluate(() => (window as unknown as W).studio.scene)).toMatchObject({ fps: 30, size: [1080, 1080] });
-      expect(read('scenes/opening-shot.json')).toMatchObject({ id: 'opening-shot', fps: 30, size: [1080, 1080], duration: 5, background: { rig: 'paper' }, layers: [] });
+      expect(read('scenes/opening-shot.json')).toMatchObject({ id: 'opening-shot', fps: 30, size: [1080, 1080], duration: 10, background: { rig: 'paper' }, layers: [] });
       await page.getByRole('heading', { name: 'What goes in this scene?' }).waitFor();
 
       // A taken name is refused in the dialog, and Escape closes it without reaching the viewer.
-      await page.getByRole('button', { name: 'New scene', exact: true }).click();
+      await page.getByRole('button', { name: 'New', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'New scene' }).click();
       dialog = page.getByRole('dialog', { name: 'New scene' });
       await dialog.getByLabel('Name').fill('dot-test');
       await dialog.getByRole('button', { name: 'Create' }).click();
@@ -129,10 +127,14 @@ describe('a studio folder', () => {
       await dialog.waitFor({ state: 'detached' });
       expect(await page.evaluate(() => (window as unknown as W).studio.scene?.id)).toBe('opening-shot');
 
-      await page.getByRole('button', { name: 'New composition' }).click();
-      dialog = page.getByRole('dialog', { name: 'New composition' });
+      await page.getByRole('button', { name: 'New', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'New video' }).click();
+      dialog = page.getByRole('dialog', { name: 'New video' });
       await dialog.getByLabel('Name').fill('Short film');
+      expect(await dialog.getByText('Saved as compositions/short-film.json, with scenes/short-film-1.json on its track.').isVisible()).toBe(true);
+      await dialog.getByText('Start with an empty scene').click();
       expect(await dialog.getByText('Saved as compositions/short-film.json, with one empty track.').isVisible()).toBe(true);
+      await dialog.getByText('Custom').click();
       await dialog.getByText('12 fps').click();
       await dialog.getByRole('button', { name: 'Create' }).click();
       await page.waitForFunction(() => new URLSearchParams(location.search).get('scene') === 'short-film');
@@ -149,6 +151,141 @@ describe('a studio folder', () => {
       await page.getByRole('button', { name: 'short-film', exact: true }).last().click();
       await page.waitForFunction(() => (window as unknown as W).studio.scene?.id === 'short-film');
       expect(await page.evaluate(() => (window as unknown as W).studio.errors)).toEqual([]);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('makes a pixel short as a video with a pixel scene on its track', async () => {
+    const read = (path: string) => JSON.parse(readFileSync(join(folder, path), 'utf8'));
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+    try {
+      await page.goto(studio.paired('?scene=dot-test'));
+      await page.waitForFunction(() => (window as unknown as { studio?: { frameCount: number } }).studio?.frameCount === 12);
+      await page.getByRole('button', { name: 'New', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'New video' }).click();
+      const dialog = page.getByRole('dialog', { name: 'New video' });
+      await dialog.getByLabel('Name').fill('Bread');
+      await dialog.getByText('Pixel short').click();
+      await dialog.getByText('Harbour').click();
+      await dialog.getByRole('button', { name: 'Create' }).click();
+      await page.waitForFunction(() => new URLSearchParams(location.search).get('scene') === 'bread');
+      const scene = read('scenes/bread-1.json');
+      expect(scene).toMatchObject({ fps: 30, duration: 40, size: [1080, 1920], pixel: { scale: 6, dither: 0.5 } });
+      expect(scene.pixel.palette).toHaveLength(16);
+      expect(read('compositions/bread.json')).toMatchObject({ fps: 30, duration: 40, size: [1080, 1920], tracks: [{ id: 'V1', clips: [{ id: 'clip-1', scene: 'bread-1' }] }] });
+      await page.getByRole('heading', { name: 'What goes in this video?' }).waitFor();
+      expect(await page.evaluate(() => document.querySelector('.stage-canvas')?.classList.contains('is-pixel'))).toBe(true);
+      // A guide for the platforms' interfaces, shown over a 9:16 video and never in the canvas.
+      expect(await page.locator('.safe-zones').isVisible()).toBe(false);
+      await page.getByRole('button', { name: 'View', exact: true }).click();
+      await page.getByRole('button', { name: 'Safe zones' }).click();
+      expect(await page.locator('.safe-zones').isVisible()).toBe(true);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('moves and trims a clip on the timeline, through the checked edit, and locks it while an agent works there', async () => {
+    const read = (path: string) => JSON.parse(readFileSync(join(folder, path), 'utf8'));
+    writeFileSync(
+      join(folder, 'compositions/cut.json'),
+      JSON.stringify({ id: 'cut', fps: 12, duration: 4, size: [640, 360], tracks: [{ id: 'V1', clips: [{ id: 'one', scene: 'dot-test', start: 1 }] }], markers: [{ t: 2, label: 'beat' }] }),
+    );
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+    try {
+      await page.goto(studio.paired('?scene=cut'));
+      await page.waitForFunction(() => (window as unknown as { studio?: { frameCount: number } }).studio?.frameCount === 48);
+      await page.locator('.marker button', { hasText: 'beat' }).waitFor();
+      const band = page.getByRole('group', { name: 'Shots' }).getByRole('button');
+      const ruler = (await page.locator('.ruler').boundingBox())!;
+      const perFrame = ruler.width / 48;
+      const start = (await band.boundingBox())!;
+
+      await page.mouse.move(start.x + start.width / 2, start.y + 8);
+      await page.mouse.down();
+      await page.mouse.move(start.x + start.width / 2 + perFrame * 6, start.y + 8, { steps: 4 });
+      await page.mouse.up();
+      await expect.poll(() => read('compositions/cut.json').tracks[0].clips[0].start).toBe(1.5);
+
+      await page.waitForFunction(() => (window as unknown as { studio: { shots: { from: number }[] } }).studio.shots[0].from === 18);
+      const moved = (await band.boundingBox())!;
+      await page.mouse.move(moved.x + moved.width - 2, moved.y + 8);
+      await page.mouse.down();
+      await page.mouse.move(moved.x + moved.width - 2 - perFrame * 3, moved.y + 8, { steps: 4 });
+      await page.mouse.up();
+      await expect.poll(() => read('compositions/cut.json').tracks[0].clips[0].out).toBe(0.75);
+
+      // The range handles work the same way on the ruler, and dragging one back clears the range.
+      const handle = (await page.getByRole('button', { name: 'Range start' }).boundingBox())!;
+      await page.mouse.move(handle.x + handle.width / 2, handle.y + handle.height / 2);
+      await page.mouse.down();
+      await page.mouse.move(ruler.x + perFrame * 12, handle.y + handle.height / 2, { steps: 3 });
+      await page.mouse.up();
+      expect(await page.evaluate(() => (window as unknown as { studio: { range: unknown } }).studio.range)).toEqual({ from: 12, to: 48 });
+
+      // Command-Z takes the clip edits back, newest first, and Shift puts them back.
+      const clip = () => read('compositions/cut.json').tracks[0].clips[0];
+      await page.keyboard.press('Meta+z');
+      await expect.poll(() => clip().out).toBeUndefined();
+      await expect.poll(() => page.evaluate(() => (window as unknown as { studio: { shots: { to: number }[] } }).studio.shots[0].to)).toBe(30);
+      await page.keyboard.press('Meta+z');
+      await expect.poll(() => clip().start).toBe(1);
+      await page.keyboard.press('Meta+Shift+z');
+      await expect.poll(() => clip().start).toBe(1.5);
+      await page.keyboard.press('Meta+Shift+z');
+      await expect.poll(() => clip().out).toBe(0.75);
+
+      // While an agent works there it does nothing.
+      const claimed = await studio.server.queue.create({ selection: { sceneId: 'cut', from: 0, to: 48 }, frame: 0, prompt: 'cut it', references: [] });
+      await studio.server.queue.claim(claimed.id, 'test-session');
+      await page.waitForFunction(() => !document.querySelector('.shot-band')?.classList.contains('is-editable'));
+      const refused = await fetch(`${studio.base}__studio/compositions/cut/clip`, {
+        method: 'POST',
+        headers: { ...studio.auth, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clip: 'one', start: 0, in: 0, out: null }),
+      });
+      expect(refused.status).toBe(409);
+      expect(read('compositions/cut.json').tracks[0].clips[0].start).toBe(1.5);
+      await page.keyboard.press('Meta+z');
+      await page.waitForTimeout(300);
+      expect(clip().out).toBe(0.75);
+
+      // An edit from elsewhere ends the history: its inverse is no longer known to be right.
+      await studio.server.queue.complete(claimed.id, 'done', 'cut');
+      await page.waitForFunction(() => document.querySelector('.shot-band')?.classList.contains('is-editable'));
+      writeFileSync(join(folder, 'compositions/cut.json'), JSON.stringify({ ...read('compositions/cut.json'), markers: [{ t: 3, label: 'moved' }] }));
+      await page.locator('.marker button', { hasText: 'moved' }).waitFor();
+      await page.keyboard.press('Meta+z');
+      await page.waitForTimeout(300);
+      expect(clip().out).toBe(0.75);
+    } finally {
+      await page.close();
+    }
+  });
+
+  it('opens on the library with nothing selected, shows what the folder holds, and goes back to a scene', async () => {
+    mkdirSync(join(folder, 'out/dot-test'), { recursive: true });
+    writeFileSync(join(folder, 'out/dot-test/dot-test.gif'), Buffer.from('R0lGODlhAQABAAAAACw=', 'base64'));
+    const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
+    try {
+      await page.goto(studio.paired());
+      const library = page.getByRole('region', { name: 'Library' });
+      await library.waitFor();
+      expect(new URL(page.url()).searchParams.get('scene')).toBeNull();
+      await library.getByRole('region', { name: 'Scenes' }).getByRole('button', { name: 'dot-test', exact: true }).waitFor();
+      await library.getByRole('region', { name: 'Renders' }).getByText('dot-test.gif').waitFor();
+      await expect.poll(async () => (await page.request.get(`${studio.base}__studio/renders/dot-test/dot-test.gif`)).status()).toBe(200);
+      expect((await page.request.get(`${studio.base}__studio/renders/..%2Fproject.json`)).status()).toBe(404);
+
+      await library.getByRole('region', { name: 'Scenes' }).getByRole('button', { name: 'dot-test', exact: true }).click();
+      await library.waitFor({ state: 'detached' });
+      await page.waitForFunction(() => new URLSearchParams(location.search).get('scene') === 'dot-test');
+
+      await page.getByRole('button', { name: 'Library' }).first().click();
+      await library.waitFor();
+      await library.getByRole('button', { name: 'Back to dot-test' }).click();
+      await library.waitFor({ state: 'detached' });
     } finally {
       await page.close();
     }

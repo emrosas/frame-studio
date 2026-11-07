@@ -50,6 +50,7 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `list_generators()` | Each audio generator's param schema, for the scene's `audio` cues. |
 | `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` (`out/<project>/<scene>/` in an old film) and returns a preview up to `maxWidth` wide (1280 by default). |
 | `render_contact_sheet(sceneId, from?, to?, every?, columns?)` | A labelled grid of every Nth frame, returned as an image and written to `out/<scene>/`. |
+| `check(sceneId, from?, to?, loop?)` | Measures a scene or composition, for what an agent can't watch or hear. Renders every frame of `[from, to)` at reduced size in the render worker, reads the rendered audio, and returns `{ ok, scene, from, to, checks: [{ id, status, message, frames?, value? }], file }`. `status` is `pass`, `warn` or `fail`, `ok` is false when any check failed, and `frames` are `[from, to)` ranges. The report is saved to `.frame-studio/checks/<id>.json`, and the viewer's Check video button runs the same job. The checks are listed below. |
 | `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. On a composition, it names the clip; hit-test the clip's scene to find what's inside. |
 | `apply_to_selection(selection, patch)` | A scoped edit. Over `[from, to)` of one layer, it swaps to a rig variant and/or holds params, written as overrides. |
 | `export(sceneId, target, from?, to?, silent?, media?)` | `mp4`, `gif` or `html`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. HTML leaves sound files out, and lists them in `mediaLeftOut`, unless `media` is true. Returns the file path under `out/`. |
@@ -61,6 +62,27 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 In Claude Code the server also offers the `/frame-studio:next` command, which takes the next request and hands it to the agent, and the resource `@frame-studio:selection://current`, the viewer's current selection.
 
 A selection is `{ sceneId, layerId?, partId?, from, to }`. `layerId` comes from `hit_test`, and `"background"` means the background. Leaving out `layerId` selects the whole frame range, and then params go to every layer whose rig takes all of them. A rig swap always needs a layer. A patch is `{ rig?, params? }`. An override the range only partly covers is split, so it keeps applying outside the range and the patch lands on top of it inside. A `partId` is accepted, but params apply to the whole layer. A part-level change needs a rig variant.
+
+## What check measures
+
+Frames are measured at 320 pixels on the long side. Sound checks read the same rendered buffer the exports encode.
+
+| Check | Measures | Warns or fails |
+| --- | --- | --- |
+| `format` | Size and fps. Notes 1080×1920 as a vertical short. | Fails on odd dimensions, and on an fps that doesn't divide 48000 with audio. |
+| `duration` | Length in seconds. | Warns when it doesn't land on a whole frame. |
+| `black` | Frames at least 98% black. | Warns on any; fails when every frame is. |
+| `freeze` | Byte-identical frames. Held frames from `stepFps` only count in a run over 1.5 s. | Warns on a run over 1.5 s. |
+| `opening` | The first second. Skipped on a range that starts later. | Warns when nothing moves, or frame 0 shows nothing, as in a fade from blank. |
+| `loop-seam` | The distance from the last frame to the first, as `value` from 0 to 1. | Warns only with `loop: true`, when it is over 1% and over three ordinary frame steps. |
+| `flashing` | Full-screen flashes a second, as in WCAG 2.3.1: a flash is a swing of at least 10% in mean relative luminance and back, with the darker side under 80%. | Fails on more than 3 in any second, with the frames. |
+| `sparse` | Frames at least 97% one colour. | Warns on a run over 3 s. |
+| `loudness` | Integrated LUFS by BS.1770-4: K-weighting, with the absolute and relative gates. | Warns outside -18 to -12 LUFS. |
+| `true-peak` | dBTP, approximated by 4x oversampling. | Warns above -1 dBTP. |
+| `dropouts` | Silence under -60 dBFS between two sounds. | Warns on over 1 s. |
+| `markers` | Markers whose label ends in `!`, like `hit!`, against sounds that start in the audio buffer. | Fails when no sound starts within 2 frames, and names the nearest. |
+
+A composition is checked as it plays, against its own `markers`. Markers inside the scenes it places aren't read.
 
 ## Requests from the viewer
 
@@ -92,7 +114,8 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 2. `hit_test` on the thing to change, to get its layer.
 3. `apply_to_selection` for a change over some frames, or `update_scene` for a change to the whole scene. Sound is `update_scene` on the scene's `audio` cues, with generators from `list_generators`. The agent can't hear it, so place cues by frame: a cue starts on the frame its `start` falls in.
 4. `render_frame` or `render_contact_sheet` again to check it. Frames outside the edited range are untouched.
-5. `export` when it looks right.
+5. `check`, and fix what fails. Warnings are judgment calls.
+6. `export` when it looks right.
 
 ## Notes
 

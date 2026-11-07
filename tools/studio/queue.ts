@@ -487,6 +487,18 @@ export class StudioQueue {
     });
   }
 
+  /** Notes the model running the newest turn. */
+  setRanModel(id: number, model: string): Promise<StudioRequest> {
+    return this.exclusive(id, async () => {
+      const thread = await this.get(id);
+      const turn = thread.turns.at(-1);
+      if (!turn || turn.ranModel === model) return thread;
+      const next = { ...thread, turns: [...thread.turns.slice(0, -1), { ...turn, ranModel: model }] };
+      await this.write(next);
+      return next;
+    });
+  }
+
   /** Withdraws the newest turn before or while an agent works on it. A thread with nothing else in it is cancelled. */
   cancel(id: number): Promise<StudioRequest> {
     return this.exclusive(id, () => this.cancelNow(id));

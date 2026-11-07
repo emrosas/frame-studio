@@ -172,12 +172,15 @@ const studioCall = (fn: string, ...args: unknown[]) =>
 
 /** Starts a thread with the test agent from the viewer, about `layer` over [from, to). */
 async function send(prompt: string, options: { full?: boolean; layer?: string; from?: number; to?: number } = {}): Promise<void> {
-  if (await thread().count()) await thread().getByRole('button', { name: 'New thread' }).click();
+  if (await thread().count()) await panel().getByRole('button', { name: 'New thread' }).click();
   await studioCall('select', options.layer ?? 'ball');
   await studioCall('setRange', options.from ?? 12, options.to ?? 24);
-  await panel().getByRole('combobox', { name: 'Agent' }).selectOption('fake');
-  const full = panel().getByRole('checkbox', { name: 'Full access' });
-  if ((await full.isChecked()) !== (options.full ?? false)) await full.click();
+  await panel().getByRole('button', { name: 'Agent settings' }).click();
+  await panel().getByRole('radio', { name: 'Test agent' }).click();
+  await panel().getByRole('radio', { name: 'Scripted' }).click();
+  await panel().getByRole('button', { name: 'Permissions' }).click();
+  await panel().getByRole('menuitemradio', { name: options.full ? 'Full access' : 'Studio access' }).click();
+  await page.keyboard.press('Escape');
   await panel().getByRole('textbox', { name: 'Prompt' }).fill(prompt);
   await panel().getByRole('button', { name: 'Send to agent' }).click();
   await thread().waitFor();
@@ -186,9 +189,9 @@ async function send(prompt: string, options: { full?: boolean; layer?: string; f
 describe('an agent in the studio', () => {
   it('offers the external agent and the test agent, ready', async () => {
     // Claude's and Codex's CLIs are asked for their status too, which can take a few seconds.
-    await expect
-      .poll(async () => (await panel().getByRole('combobox', { name: 'Agent' }).locator('option').allTextContents()).join(' | '), { timeout: 30000 })
-      .toContain('Test agent');
+    await panel().getByRole('button', { name: 'Agent settings' }).click({ timeout: 30000 });
+    await panel().getByRole('radiogroup', { name: 'Agent' }).getByRole('radio', { name: 'Test agent' }).waitFor({ timeout: 30000 });
+    await page.keyboard.press('Escape');
     const { agents } = (await (await fetch(`${vite.base}__studio/agents`, { headers: vite.auth })).json()) as { agents: { id: string; ready: boolean }[] };
     // Claude and Codex are offered too; whether they are ready depends on this machine's CLIs.
     expect(agents.map((a) => a.id)).toEqual(['external', 'claude', 'codex', 'fake']);
@@ -200,7 +203,7 @@ describe('an agent in the studio', () => {
     await expectText(turn(1), 'Made the ball blue over frames 12 to 24.');
     await expectText(turn(1), 'Studio: apply_to_selection');
     await turn(1).getByRole('img', { name: 'Frame 12' }).waitFor();
-    await expectText(threadStatus(), 'your turn');
+    await expectText(threadStatus(), 'Your turn');
     const scene = JSON.parse(readFileSync(sceneFile(A), 'utf8'));
     expect(scene.layers[0].overrides).toEqual([{ from: 12, to: 24, params: { fill: '#3355ff' } }]);
     // The thumbnail is the frame the agent rendered, served next to the thread.
@@ -220,7 +223,7 @@ describe('an agent in the studio', () => {
     await expectText(turn(2), 'reverted');
     expect(readFileSync(sceneFile(A), 'utf8')).toBe(originals.get(A));
     await thread().getByRole('button', { name: 'Settle' }).click();
-    await expectText(threadStatus(), 'settled');
+    await expectText(threadStatus(), 'Settled');
   });
 
   it('asks before writing outside scenes/, src/rigs/ and src/audio/ and before commands, and full access does not', async () => {
@@ -276,9 +279,10 @@ describe('an agent in the studio', () => {
     await send('ask about the title');
     await expectText(card(), 'Which typeface for the title?');
     await expectText(card(), '1 of 2');
-    // While the card waits, the thread reads as Input, here and in the sidebar.
-    await expectText(threadStatus(), 'input');
-    await expectText(page.getByRole('navigation', { name: 'Studio' }).getByRole('article').first(), 'Input · Test agent');
+    // While the card waits, the thread reads as Needs you, here and on its card in the sidebar.
+    await expectText(threadStatus(), 'Needs you');
+    await page.keyboard.press('ControlOrMeta+2');
+    await expectText(page.getByRole('navigation', { name: 'Studio' }).getByRole('article').first(), 'Needs you');
     // The preview shows for the option with focus.
     await card().getByRole('radio', { name: /Fraunces/ }).focus();
     await expectText(card(), 'Aa Bb Cc');
@@ -290,7 +294,7 @@ describe('an agent in the studio', () => {
     await card().getByRole('button', { name: 'Send' }).click();
     await expectText(turn(1), 'You chose: Font Fraunces (Recommended); Extras A kicker + A date + A logo.');
     await expectText(turn(1), 'Set the title.');
-    await expectText(threadStatus(), 'your turn');
+    await expectText(threadStatus(), 'Your turn');
     expect(await card().count()).toBe(0);
     // The thread keeps what was asked and answered.
     await expectText(turn(1).getByRole('group', { name: 'Questions' }), 'A kicker, A date, A logo');
@@ -308,7 +312,7 @@ describe('an agent in the studio', () => {
     // Answers that don't fit the card are refused; Stop ends the wait.
     // A card that opens while its thread isn't showing gets a toast, and Answer brings it up.
     await send('ask and wait');
-    await thread().getByRole('button', { name: 'New thread' }).click();
+    await panel().getByRole('button', { name: 'New thread' }).click();
     const toast = page.getByRole('status', { name: 'Agent waits for you' });
     await expectText(toast, 'needs you: Which colour?');
     await toast.getByRole('button', { name: 'Answer' }).click();
@@ -323,7 +327,7 @@ describe('an agent in the studio', () => {
     expect((await post({ colour: ['Red', 'Blue'] })).status).toBe(400);
     expect((await post({ shade: ['Red'] })).status).toBe(400);
     await thread().getByRole('button', { name: 'Stop' }).click();
-    await expectText(threadStatus(), 'your turn');
+    await expectText(threadStatus(), 'Your turn');
     expect(await card().count()).toBe(0);
     expect((await post({ colour: ['Red'] })).status).toBe(409);
   });
@@ -347,7 +351,7 @@ describe('an agent in the studio', () => {
     await expectText(turn(1), 'Orange so far.');
     await thread().getByRole('button', { name: 'Stop' }).click();
     await expectText(turn(1), 'stopped');
-    await expectText(threadStatus(), 'your turn');
+    await expectText(threadStatus(), 'Your turn');
     expect(JSON.parse(readFileSync(sceneFile(A), 'utf8')).layers[0].overrides).toContainEqual({ from: 12, to: 24, params: { fill: '#ff8800' } });
     await turn(1).getByRole('button', { name: 'Revert to before turn 1' }).click();
     await expectText(turn(1), 'reverted');

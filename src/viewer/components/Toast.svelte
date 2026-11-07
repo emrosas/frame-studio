@@ -25,6 +25,6 @@
         onview();
       }}>{asking ? 'Answer' : 'View'}</button
     >
-    <button type="button" class="icon-btn is-small" aria-label="Dismiss" onclick={() => actions.dismissToast()}><Icon name="close" size={13} /></button>
+    <button type="button" class="icon-btn is-small" aria-label="Dismiss" onclick={() => actions.dismissToast()}><Icon name="close" /></button>
   </div>
 {/if}

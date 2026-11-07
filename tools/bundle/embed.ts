@@ -282,6 +282,8 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
   const scene = quiet(entry.scene);
   const placed = new Map([...placedScenes(entry.scene, entry.world)].map(([id, s]) => [id, quiet(s)] as const));
   const world: World = { scenes: placed, cast: entry.world.cast };
+  const pictures = engine.picturesUsed(entry.scene, entry.world);
+  if (pictures.length > 0) throw new Error(`An HTML export can't carry picture clips yet (ADR 0014): ${pictures.join(', ')}. Export this as MP4.`);
   const ids = engine.rigIdsUsed(scene, world);
   const rigFiles = new Map(modules.rigDefinitions);
   if (project) for (const [id, file] of modules.projectRigDefinitions[project.id] ?? []) rigFiles.set(id, file);

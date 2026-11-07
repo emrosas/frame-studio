@@ -10,7 +10,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { relative } from 'node:path';
 import { createInterface } from 'node:readline';
-import type { AgentQuestion, TurnUsage } from '../../../src/studio/protocol.ts';
+import type { AgentModel, AgentQuestion, TurnUsage } from '../../../src/studio/protocol.ts';
 import { summaryOf } from './claude.ts';
 import { agentEnv, findExecutable, run } from './exec.ts';
 import type { AgentProvider, TurnCallbacks, TurnHandle, TurnInput, TurnOutcome } from './types.ts';
@@ -110,19 +110,40 @@ export function codexPolicy(access: 'studio' | 'full'): { approvalPolicy: string
   return access === 'full' ? { approvalPolicy: 'never', sandbox: 'danger-full-access' } : { approvalPolicy: 'untrusted', sandbox: 'read-only' };
 }
 
-export function codexProvider(): AgentProvider {
-  let models: { at: number; list: { id: string; label: string }[]; efforts: string[] } | null = null;
+/** A model as `codex app-server` lists it. */
+export interface CodexModel {
+  id: string;
+  displayName: string;
+  hidden: boolean;
+  isDefault: boolean;
+  supportedReasoningEfforts: { reasoningEffort: string }[];
+  defaultReasoningEffort?: string;
+}
 
-  async function listModels(bin: string): Promise<{ list: { id: string; label: string }[]; efforts: string[] }> {
+/** The models Codex shows, its default first, each with its own efforts. */
+export function codexModels(data: readonly CodexModel[]): { list: AgentModel[]; efforts: string[] } {
+  const shown = data.filter((m) => !m.hidden).sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
+  const list = shown.map((m): AgentModel => ({
+    id: m.id,
+    label: m.displayName,
+    efforts: m.supportedReasoningEfforts.map((e) => e.reasoningEffort),
+    ...(m.isDefault ? { default: true } : {}),
+    ...(m.defaultReasoningEffort ? { defaultEffort: m.defaultReasoningEffort } : {}),
+  }));
+  return { list, efforts: [...new Set(list.flatMap((m) => m.efforts ?? []))] };
+}
+
+export function codexProvider(): AgentProvider {
+  let models: { at: number; list: AgentModel[]; efforts: string[] } | null = null;
+
+  async function listModels(bin: string): Promise<{ list: AgentModel[]; efforts: string[] }> {
     if (models && Date.now() - models.at < MODELS_TTL_MS) return models;
     const server = new AppServer(bin, [], agentEnv(), process.cwd());
     const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('codex model/list took too long')), MODELS_TIMEOUT_MS).unref?.());
     try {
       await Promise.race([server.open(), timeout]);
-      const { data } = (await Promise.race([server.request('model/list', {}), timeout])) as { data: { id: string; displayName: string; hidden: boolean; isDefault: boolean; supportedReasoningEfforts: { reasoningEffort: string }[] }[] };
-      const shown = data.filter((m) => !m.hidden).sort((a, b) => Number(b.isDefault) - Number(a.isDefault));
-      const efforts = (shown.find((m) => m.isDefault) ?? shown[0])?.supportedReasoningEfforts.map((e) => e.reasoningEffort) ?? [];
-      models = { at: Date.now(), list: shown.map((m) => ({ id: m.id, label: m.displayName })), efforts };
+      const { data } = (await Promise.race([server.request('model/list', {}), timeout])) as { data: CodexModel[] };
+      models = { at: Date.now(), ...codexModels(data) };
       return models;
     } finally {
       server.close();

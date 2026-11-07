@@ -310,7 +310,6 @@ export class AgentRunner {
       const url = this.options.mcpUrl();
       if (!url) throw new Error('The studio server is not listening yet.');
       const info = await this.options.sceneInfo(thread.sceneId);
-      if (thread.session) log.append({ type: 'status', message: `Resuming the ${provider.label} session` });
       const handle = provider.startTurn(
         {
           thread,
@@ -327,6 +326,7 @@ export class AgentRunner {
           decide: (action) => this.decide(thread, settings, running, action),
           ask: (questions) => this.ask(running, questions),
           session: (id) => void queue.setSession(thread.id, id).catch(() => {}),
+          model: (id) => void queue.setRanModel(thread.id, id).catch(() => {}),
         },
       );
       running.handle = handle;

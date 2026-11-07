@@ -23,7 +23,7 @@ export interface TestStudio {
   close(): Promise<void>;
 }
 
-export async function startStudio(options: { agents?: boolean; hmr?: boolean; folder?: string } = {}): Promise<TestStudio> {
+export async function startStudio(options: { agents?: boolean; hmr?: boolean; folder?: string; thumbs?: boolean } = {}): Promise<TestStudio> {
   const token = newToken();
   const server = await startStudioServer({
     folder: studioFolder(options.folder ?? ROOT),
@@ -31,6 +31,8 @@ export async function startStudio(options: { agents?: boolean; hmr?: boolean; fo
     port: 0,
     viewer: { kind: 'vite', hmr: options.hmr ?? false },
     agents: options.agents ?? false,
+    // Posters render in the worker, so a test that doesn't look at them shouldn't start one.
+    thumbs: options.thumbs ?? false,
     worker: 'electron',
     log: () => {},
   });

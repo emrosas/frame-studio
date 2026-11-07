@@ -5,6 +5,8 @@ import { clamp } from './math';
 export const num = (def: number, min: number, max: number, description: string) =>
   ({ type: 'number', default: def, min, max, description }) as const;
 export const col = (def: string, description: string) => ({ type: 'color', default: def, description }) as const;
+export const str = (def: string, description: string) => ({ type: 'string', default: def, description }) as const;
+export const bool = (def: boolean, description: string) => ({ type: 'boolean', default: def, description }) as const;
 export const choice = (def: string, options: readonly string[], description: string) =>
   ({ type: 'enum', default: def, options, description }) as const;
 

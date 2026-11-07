@@ -12,17 +12,38 @@ import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import type { Layer, Params, Rig, RigRegistry, Scene } from '../../src/engine/types.ts';
 import type { SceneEntry, SceneLibrary } from '../../src/viewer/library.ts';
+import type { CheckReport } from '../../src/export/check.ts';
 import type { ContactSheetResult, RenderExportResult, RenderHit } from '../../src/viewer/render-api.ts';
 import { buildEmbed } from '../bundle/embed.ts';
 import { openStudio, poolTransport, writeViaSink, type Studio } from '../render/studio.ts';
 import { entryPath, libraryFrom, loadModules, readSceneFiles, sceneLibrary, writeFileAtomic, type LoadedModules } from '../scene-files.ts';
+import { runCheck } from '../studio/check.ts';
 import type { CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
-import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, projectOf, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
+import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, projectOf, type LayerChange, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
 import type { StudioQueue } from '../studio/queue.ts';
+
+type RawLayer = Record<string, unknown>;
+interface RawScene {
+  background?: unknown;
+  layers?: RawLayer[];
+  tracks?: { clips: RawLayer[] }[];
+}
+
+/** A layer of a scene file, its background, or a composition's clip. */
+export function rawLayer(scene: RawScene, id: string): RawLayer | undefined {
+  if (scene.tracks) return scene.tracks.flatMap((t) => t.clips).find((c) => c.id === id);
+  if (id === 'background') return typeof scene.background === 'object' && scene.background !== null ? (scene.background as RawLayer) : undefined;
+  return scene.layers?.find((l) => l.id === id);
+}
+
+export function withoutId(layer: RawLayer): RawLayer {
+  const { id: _id, ...rest } = layer;
+  return rest;
+}
 
 /** What the workspace works with: the studio server's folder, code, render worker and queue. */
 export interface WorkspaceContext {
@@ -218,21 +239,48 @@ export class Workspace {
     const working = (await this.queue.list()).find((r) => r.status === 'working' && r.sceneId === entry.key);
     if (working) throw new Error(`Request #${working.id} is working on this scene; place the sound when its turn ends.`);
     const info = (await mediaInfo(this.folder)).find((m) => m.file === file);
-    if (!info) throw new Error(`No sound file "${file}" in media/.`);
+    if (!info) throw new Error(`No file "${file}" in media/.`);
     const path = entryPath(entry, this.folder);
-    const raw = JSON.parse(await readFile(path, 'utf8')) as { fps: number; duration: number; audio?: { id: string }[] };
+    const raw = JSON.parse(await readFile(path, 'utf8')) as { fps: number; duration: number; audio?: { id: string }[]; tracks?: { id: string; clips: Record<string, unknown>[] }[] };
     const frame = Math.min(Math.max(0, Math.floor(start * raw.fps)), Math.max(0, modules.engine.frameCount(raw as Scene) - 1));
     const from = frame / raw.fps;
+    if (modules.engine.isPictureFile(file)) return this.placePicture(modules, entry, path, raw, file, from, info.duration);
     const end = Math.min(raw.duration, info.duration !== undefined ? from + info.duration : raw.duration);
     const taken = new Set((raw.audio ?? []).map((c) => c.id));
     const stem = file.slice(file.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'sound';
     let id = stem;
     for (let n = 2; taken.has(id); n++) id = `${stem}-${n}`;
-    const cue = { id, file, start: Math.round(from * 1e6) / 1e6, end: Math.round(end * 1e6) / 1e6 };
+    const cue = { id, file, start: from, end };
     const next = { ...raw, audio: [...(raw.audio ?? []), cue] };
     await this.checkEdit(modules, entry, next, 'Placing the sound');
     await this.writeScene(path, next, modules);
     return { file: this.show(path), cue };
+  }
+
+  /** A picture clip at the playhead (ADR 0014), on a track of its own above the others. An image shows for 3 s. */
+  private async placePicture(
+    modules: LoadedModules,
+    entry: SceneEntry,
+    path: string,
+    raw: { fps: number; duration: number; tracks?: { id: string; clips: Record<string, unknown>[] }[] },
+    file: string,
+    start: number,
+    duration: number | undefined,
+  ): Promise<{ file: string; cue: Record<string, unknown> }> {
+    if (!raw.tracks) throw new Error('Images and videos go in a video, not a scene. Open a video from the Library, or start one with New video.');
+    const length = Math.min(raw.duration - start, modules.engine.isVideoFile(file) ? (duration ?? 3) : 3);
+    const taken = new Set(raw.tracks.flatMap((t) => t.clips.map((c) => c.id)));
+    const stem = file.slice(file.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'clip';
+    let id = stem;
+    for (let n = 2; taken.has(id); n++) id = `${stem}-${n}`;
+    const clip = { id, file, start, out: length };
+    const tracks = raw.tracks.map((t) => t.id);
+    let track = tracks.length + 1;
+    while (tracks.includes(`V${track}`)) track++;
+    const next = { ...raw, tracks: [...raw.tracks, { id: `V${track}`, clips: [clip] }] };
+    await this.checkEdit(modules, entry, next as never, 'Placing the clip');
+    await this.writeScene(path, next as never, modules);
+    return { file: this.show(path), cue: clip };
   }
 
   /** The studio folder's sound files, with their lengths (ADR 0012). */
@@ -311,6 +359,7 @@ export class Workspace {
               ...(l.rig !== undefined ? { rig: l.rig } : {}),
               ...(l.cast !== undefined ? { cast: l.cast } : {}),
               ...(l.scene !== undefined ? { scene: e.project !== null ? `${e.project}/${l.scene}` : l.scene } : {}),
+              ...(l.file !== undefined ? { file: l.file } : {}),
             })),
           }
         : {}),
@@ -405,6 +454,26 @@ export class Workspace {
     await this.checkEdit(modules, entry, next, 'That patch');
     await this.writeScene(path, next, modules);
     return { file: this.show(path), scene: next };
+  }
+
+  /**
+   * A hand edit from the viewer (ADR 0015): replaces whole fields of one layer, or clip, or the background,
+   * and null removes a field. Checked like update_scene. Returns the layer on either side, without its id.
+   */
+  async editLayer(key: string, layerId: string, set: Record<string, unknown>): Promise<LayerChange> {
+    const { modules, entry } = await this.entry(key);
+    const path = entryPath(entry, this.folder);
+    const next = JSON.parse(await readFile(path, 'utf8')) as RawScene;
+    const layer = rawLayer(next, layerId);
+    if (!layer) throw new Error(`"${key}" has no layer "${layerId}".`);
+    const before = structuredClone(layer);
+    for (const [field, value] of Object.entries(set)) {
+      if (value === null) delete layer[field];
+      else layer[field] = value;
+    }
+    await this.checkEdit(modules, entry, next, 'That edit');
+    await this.writeScene(path, next, modules);
+    return { before: withoutId(before), after: withoutId(layer) };
   }
 
   /** A scene with nothing in it yet: paper, no layers, and a seed of its own. */
@@ -568,6 +637,16 @@ export class Workspace {
     return { file: this.show(path), png: await readFile(path), sheet };
   }
 
+  /** Measures a scene or composition, saves the report under .frame-studio/checks/, and returns it with its path. */
+  async check(key: string, options: { from?: FrameInput; to?: FrameInput; loop?: boolean } = {}): Promise<CheckReport & { file: string }> {
+    const { files } = await this.validScene(key);
+    const studio = await this.page(key, files);
+    const from = options.from === undefined ? undefined : await this.resolveFrame(studio, options.from);
+    const to = options.to === undefined ? undefined : await this.resolveFrame(studio, options.to, true);
+    const { report, file } = await runCheck(this.ctx, key, { from, to, loop: options.loop });
+    return { ...report, file: this.show(file) };
+  }
+
   async hitTest(key: string, frame: FrameInput, x: number, y: number): Promise<RenderHit & { frame: number }> {
     const { files } = await this.validScene(key);
     const studio = await this.page(key, files);
@@ -592,8 +671,11 @@ export class Workspace {
       const names = Object.keys(patch.params ?? {});
       const registry = entry.registry ?? modules.createRegistry();
       const paramsOf = (l: Layer) =>
-        l.scene !== undefined ? modules.engine.SCENE_LAYER_PARAMS : (registry.get(l.rig ?? entry.world.cast?.[l.cast ?? '']?.rig ?? '')?.params ?? {});
-      targets = layers.filter((l) => names.every((name) => name in paramsOf(l))).map((l) => l.id);
+        l.scene !== undefined || l.file !== undefined ? modules.engine.SCENE_LAYER_PARAMS : (registry.get(l.rig ?? entry.world.cast?.[l.cast ?? '']?.rig ?? '')?.params ?? {});
+      // A video clip with its own sound takes volume as keys, so an override of its sound would be refused.
+      const sounding = (l: Layer) => (scene.audio ?? []).some((c) => c.id === `${l.id}:sound`);
+      const aboutSound = names.includes('mute') || names.includes('volume');
+      targets = layers.filter((l) => names.every((name) => name in paramsOf(l)) && !(aboutSound && sounding(l))).map((l) => l.id);
       if (targets.length === 0) throw new Error(`no layer's rig takes all of ${names.join(', ')}; give a layerId, or params one rig takes`);
     }
     let edited = scene;

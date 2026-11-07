@@ -49,8 +49,8 @@ describe('a composition', () => {
     expect(errorsOf(comp({ tracks: [{ id: 'V1', clips: [{ id: 'a', scene: 'meet', out: 9 }] }] }))[0]).toMatch(/^tracks\[0\]\.clips\[0\]\.out: must be within the shot's duration \(4 s\)/);
     expect(errorsOf(comp({ tracks: [{ id: 'V1', clips: [{ id: 'a', scene: 'meet' }, { id: 'a', scene: 'pip' }] }] }))[0]).toMatch(/^tracks\[0\]\.clips\[1\]\.id: duplicate/);
     expect(errorsOf(comp({ tracks: [{ id: 'V1', clips: [{ id: 'a', rig: 'box' }] }] }))).toEqual([
-      'tracks[0].clips[0].rig: unknown field "rig"; a clip has id, scene, start, in, out, params, tracks, overrides, mask',
-      'tracks[0].clips[0].scene: must be the id of a scene or composition to place, got nothing',
+      'tracks[0].clips[0].rig: unknown field "rig"; a clip has id, scene, file, fit, sound, start, in, out, params, tracks, overrides, mask',
+      'tracks[0].clips[0].scene: must be the id of a scene or composition to place, or use "file" for an image or video in media/; got nothing',
     ]);
     expect(errorsOf(comp({ tracks: [{ id: 'V1', clips: [] }, { id: 'V1', clips: [] }] }))).toEqual(['tracks[1].id: duplicate track id "V1" (also tracks[0])']);
     expect(errorsOf(comp({ background: 12 }))).toEqual(['background: must be a colour, like "#101010", got 12']);

@@ -284,6 +284,23 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
   );
 
   server.registerTool(
+    'check',
+    {
+      title: 'Check a video',
+      description:
+        "Measures a scene or composition, for what you can't watch or hear. Renders every frame of [from, to) at reduced size, reads the rendered audio, and returns { ok, checks: [{ id, status, message, frames?, value? }] }. status is pass, warn or fail; ok is false when any check failed; frames are [from, to) ranges to look at. Checks: format, duration, black, freeze (identical frames over 1.5 s), opening (static first second, or a fade from blank), loop-seam (the last frame's distance from the first, judged only with loop: true), flashing (over 3 full-screen flashes a second), sparse (nearly one colour over 3 s), loudness (warns outside -18 to -12 LUFS), true-peak (warns above -1 dBTP), dropouts (over 1 s of silence between sounds), and markers (a marker whose label ends in !, like \"hit!\", needs a sound to start within 2 frames). Saves the report to .frame-studio/checks/<id>.json. Run it before calling a film done.",
+      inputSchema: {
+        sceneId,
+        from: frame.optional().describe('First frame, included. Defaults to 0'),
+        to: frame.optional().describe('Last frame, excluded. Defaults to the end'),
+        loop: z.boolean().optional().describe('The video is meant to loop: warn when its last frame jumps to its first.'),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    tool('check', async (w, { sceneId: id, from, to, loop }: { sceneId: string; from?: number | string; to?: number | string; loop?: boolean }) => text(await w.check(id, { from, to, loop }))),
+  );
+
+  server.registerTool(
     'hit_test',
     {
       title: 'Hit test',

@@ -7,36 +7,48 @@
 // `npm run dev`, the CLI and the MCP shim start it in Node. Node only.
 
 import { watch, type FSWatcher } from 'node:fs';
-import { mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, stat } from 'node:fs/promises';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { ViteDevServer } from 'vite';
 import {
+  checkClipEdit,
+  checkLayerEdit,
   checkNewComposition,
   checkNewRequest,
   checkNewScene,
+  checkNewVideo,
   checkRetry,
+  CHECK_EVENT,
   EXPORT_EVENT,
   LIBRARY_EVENT,
   MAX_REFERENCE_BYTES,
   QUEUE_EVENT,
   REFERENCE_TYPES,
+  THUMB_EVENT,
   type AgentStatus,
   type ApprovalDecision,
+  type ClipEdit,
   type CurrentSelection,
+  type LayerChange,
+  type LayerEdit,
   type NewComposition,
   type NewRequest,
   type NewScene,
+  type NewVideo,
   type QuestionAnswers,
   type Reply,
   type TurnSettings,
 } from '../../src/studio/protocol.ts';
 import { buildEmbed } from '../bundle/embed.ts';
 import { listMedia, mediaInfo, saveMedia, serveMedia } from './media.ts';
+import { listRenders, serveRender } from './renders.ts';
+import { Thumbs } from './thumbs.ts';
 import { createSerial } from '../mcp/tools.ts';
-import type { Workspace } from '../mcp/workspace.ts';
+import { withoutId, type Workspace } from '../mcp/workspace.ts';
 import { entryPath, loadModules, readSceneFiles, sceneLibrary, writeFileAtomic } from '../scene-files.ts';
+import { runCheck } from './check.ts';
 import { STUDIO_INSTRUCTIONS } from './agents/instructions.ts';
 import { createProviders } from './agents/providers.ts';
 import { AgentRunner, readTurnEvents } from './agents/runner.ts';
@@ -88,6 +100,8 @@ export interface StudioServerOptions {
   viewer: { kind: 'static'; dir: string } | { kind: 'vite'; hmr?: boolean };
   /** Run the agents in the studio (ADR 0006). Only the server the viewer uses should. */
   agents?: boolean;
+  /** Render posters for the viewer's library in the background. On by default; tests that don't look at them turn it off. */
+  thumbs?: boolean;
   /**
    * Who opens the render worker: 'electron' launches Electron in worker-only mode when a job arrives and none
    * is connected; 'app' waits for the app, which opens it in a hidden window.
@@ -279,6 +293,35 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   await mkdir(queue.requestsDir, { recursive: true });
   watchers.push(watch(queue.requestsDir, { persistent: false }, pushQueue));
 
+  // ---- posters for the library ----
+
+  const thumbs = new Thumbs({
+    dir: join(folder.studio, 'thumbs'),
+    enabled: options.thumbs !== false,
+    entries: async () => {
+      const mods = await loadModules(code);
+      const library = await sceneLibrary(mods, folder);
+      return { entries: library.entries, shared: await modules.manifest(), media: await listMedia(folder) };
+    },
+    render: (key, frame, path, maxWidth) => withSink(path, (sink) => pool.call(key, 'writePng', [frame, sink, { maxWidth }], { low: true, release: true })),
+    push: (key, file) => events.send(THUMB_EVENT, { key, file }),
+  });
+
+  /** Runs `write` with a sink that lands in a temporary file, which becomes `path` when it succeeds. */
+  async function withSink<T>(path: string, write: (sink: string) => Promise<T>): Promise<T> {
+    const partial = `${path}.partial`;
+    const sink = await pool.openSink(partial);
+    try {
+      const result = await write(sink);
+      await pool.closeSink(sink);
+      await rename(partial, path);
+      return result;
+    } finally {
+      await pool.closeSink(sink);
+      await rm(partial, { force: true });
+    }
+  }
+
   // ---- exports from the viewer ----
 
   const exports = new Map<string, AbortController>();
@@ -301,22 +344,94 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     const ranged = input.from !== undefined || input.to !== undefined;
     const suffix = ranged ? `-${pad(input.from ?? 0)}-${pad(input.to ?? info.scene.frameCount)}` : '';
     const path = join(folder.out, info.scene.out, `${info.scene.id}${suffix}.${input.target}`);
-    const partial = `${path}.partial`;
-    const sink = await pool.openSink(partial);
-    try {
-      const result = await pool.call(input.scene, 'exportVideo', [input.target, sink, { from: input.from, to: input.to, silent: input.silent }], {
+    const result = await withSink(path, (sink) =>
+      pool.call(input.scene, 'exportVideo', [input.target, sink, { from: input.from, to: input.to, silent: input.silent }], {
         signal,
         onProgress: (p) => progress(p.stage, p.done, p.total),
-      });
-      await pool.closeSink(sink);
-      const { rename } = await import('node:fs/promises');
-      await rename(partial, path);
-      return { file: path, ...(result as object) };
-    } finally {
-      await pool.closeSink(sink);
-      await rm(partial, { force: true });
+      }),
+    );
+    return { file: path, ...(result as object) };
+  }
+
+  // ---- creating from the viewer ----
+
+  /** create_scene, then the pixel stage it has no argument for yet. A stage the scene refuses takes the new file back out. */
+  async function makeScene(input: NewScene) {
+    const w = await ws();
+    const { pixel, ...plain } = input;
+    const made = await w.createScene(plain);
+    if (!pixel) return made;
+    try {
+      return { ...made, ...(await w.updateScene(made.id, { pixel })) };
+    } catch (err) {
+      await rm(join(folder.root, made.file), { force: true });
+      throw err;
     }
   }
+
+  /** A composition, with its first empty scene placed on its track unless asked for none. */
+  async function makeVideo(input: NewVideo) {
+    const w = await ws();
+    const { pixel, scene, ...composition } = input;
+    if (scene === false) return w.createComposition(composition);
+    const first = await makeScene({ id: `${input.id}-1`, duration: input.duration, ...(input.fps !== undefined ? { fps: input.fps } : {}), ...(input.size ? { size: input.size } : {}), ...(pixel ? { pixel } : {}) });
+    let made: Awaited<ReturnType<typeof w.createComposition>> | null = null;
+    try {
+      made = await w.createComposition(composition);
+      await w.updateScene(made.id, { tracks: [{ id: 'V1', clips: [{ id: 'clip-1', scene: first.id }] }] });
+      return made;
+    } catch (err) {
+      await rm(join(folder.root, first.file), { force: true });
+      if (made) await rm(join(folder.root, made.file), { force: true });
+      throw err;
+    }
+  }
+
+  /** Sets a clip's start and trim, leaving out what is the default, through the same validation as update_scene. Returns the clip on either side, for undo. */
+  async function moveClip(id: string, edit: ClipEdit): Promise<LayerChange> {
+    const w = await ws();
+    const { scene } = await w.getScene(id);
+    const { tracks } = scene as { tracks?: { id: string; clips: Record<string, unknown>[] }[] };
+    const clip = tracks?.flatMap((t) => t.clips).find((c) => c.id === edit.clip);
+    if (!tracks || !clip) throw new Error(`Composition "${id}" has no clip "${edit.clip}".`);
+    const before = structuredClone(clip);
+    // Keys and overrides are in composition time, so a fade goes where its clip goes.
+    const moved = edit.start - (typeof clip.start === 'number' ? clip.start : 0) - (edit.in - (typeof clip.in === 'number' ? clip.in : 0));
+    if (moved !== 0) {
+      const { fps } = scene as { fps: number };
+      const shift = (list: unknown) => {
+        for (const track of (Array.isArray(list) ? list : []) as { keys: { t: number }[] }[]) for (const key of track.keys) key.t = Math.max(0, key.t + moved);
+      };
+      shift(clip.tracks);
+      shift((clip.mask as { tracks?: unknown } | undefined)?.tracks);
+      if (Array.isArray(clip.overrides)) {
+        // Kept inside the composition: what slides off an end goes, as the clip's picture does.
+        const { duration } = scene as { duration: number };
+        const total = Math.floor(duration * fps);
+        const delta = Math.round(moved * fps);
+        const clampFrame = (f: number) => Math.min(total, Math.max(0, f + delta));
+        clip.overrides = (clip.overrides as { from: number; to: number }[]).map((o) => ({ ...o, from: clampFrame(o.from), to: clampFrame(o.to) })).filter((o) => o.to > o.from);
+        if ((clip.overrides as unknown[]).length === 0) delete clip.overrides;
+      }
+    }
+    if (edit.start > 0) clip.start = edit.start;
+    else delete clip.start;
+    if (edit.in > 0) clip.in = edit.in;
+    else delete clip.in;
+    // A picture clip always says where it ends; the validator doesn't read files.
+    if (edit.out !== null) clip.out = edit.out;
+    else if (clip.file === undefined) delete clip.out;
+    await w.updateScene(id, { tracks });
+    return { before: withoutId(before), after: withoutId(clip) };
+  }
+
+  /** Whether an agent has a turn running on this scene or composition. Hand edits wait for it (ADR 0015). */
+  async function agentWorks(id: string): Promise<boolean> {
+    return (await queue.list()).some((r) => r.sceneId === id && r.status === 'working');
+  }
+
+  const checks = new Map<string, AbortController>();
+  let checkCount = 0;
 
   // ---- static files for the viewer ----
 
@@ -379,6 +494,12 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       const saved = await saveMedia(folder, url.searchParams.get('name') ?? 'sound', req);
       return send(res, 201, { file: saved });
     }
+    // Posters: where each scene's stands, starting any that are missing, and the files themselves, named by content.
+    if (req.method === 'GET' && path === '/thumbs') return send(res, 200, { thumbs: await thumbs.list() });
+    if (req.method === 'GET' && parts[0] === 'thumbs' && parts.length === 2) return thumbs.serve(parts[1], res);
+    // What's in out/, newest first, and a file from there to play or open.
+    if (req.method === 'GET' && path === '/renders') return send(res, 200, { renders: await listRenders(folder) });
+    if (req.method === 'GET' && path.startsWith('/renders/')) return serveRender(folder, decodeURIComponent(path.slice('/renders/'.length)), req, res);
     if (req.method === 'GET' && path === '/modules') return send(res, 200, { generation, modules: await modules.manifest() });
     if (req.method === 'GET' && url.pathname.startsWith(MODULES_PATH)) {
       return modules.serve(url.pathname.slice(MODULES_PATH.length), url.searchParams.get('h'), res);
@@ -444,16 +565,17 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       return send(res, 200, { ok: true });
     }
 
+    const frame = (v: unknown, name: string) => {
+      if (v === undefined || v === null) return undefined;
+      if (!Number.isInteger(v) || (v as number) < 0) throw new HttpError(400, `${name} must be a frame number`);
+      return v as number;
+    };
+
     // Exports from the viewer.
     if (req.method === 'POST' && path === '/export') {
       const input = await json<{ scene?: unknown; target?: unknown; from?: unknown; to?: unknown; silent?: unknown; media?: unknown }>(req);
       if (typeof input.scene !== 'string') throw new HttpError(400, 'scene must be a scene id');
       if (input.target !== 'mp4' && input.target !== 'gif' && input.target !== 'html') throw new HttpError(400, 'target must be mp4, gif or html');
-      const frame = (v: unknown, name: string) => {
-        if (v === undefined || v === null) return undefined;
-        if (!Number.isInteger(v) || (v as number) < 0) throw new HttpError(400, `${name} must be a frame number`);
-        return v as number;
-      };
       const job = { scene: input.scene, target: input.target as 'mp4' | 'gif' | 'html', from: frame(input.from, 'from'), to: frame(input.to, 'to'), silent: input.silent === true, media: input.media === true };
       if (job.target === 'html' && (job.from !== undefined || job.to !== undefined)) throw new HttpError(400, 'html exports the whole scene');
       const id = `export-${++exportCount}`;
@@ -470,12 +592,55 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       return send(res, 200, { ok: true });
     }
 
-    // New scenes and compositions from the viewer's sidebar, the same operations as create_scene and create_composition.
+    // Checks from the viewer, the same job as the MCP tool.
+    if (req.method === 'POST' && path === '/check') {
+      const input = await json<{ scene?: unknown; from?: unknown; to?: unknown; loop?: unknown }>(req);
+      if (typeof input.scene !== 'string') throw new HttpError(400, 'scene must be a scene id');
+      const job = { from: frame(input.from, 'from'), to: frame(input.to, 'to'), loop: input.loop === true };
+      const id = `check-${++checkCount}`;
+      const abort = new AbortController();
+      checks.set(id, abort);
+      runCheck({ pool, folder }, input.scene, job, { signal: abort.signal, onProgress: (p) => events.send(CHECK_EVENT, { id, ...p }) })
+        .then(({ report }) => events.send(CHECK_EVENT, { id, report }))
+        .catch((err: unknown) => events.send(CHECK_EVENT, { id, error: abort.signal.aborted ? 'Cancelled.' : err instanceof Error ? err.message : String(err) }))
+        .finally(() => checks.delete(id));
+      return send(res, 202, { id });
+    }
+    if (req.method === 'POST' && parts[0] === 'check' && parts[2] === 'cancel') {
+      checks.get(parts[1])?.abort();
+      return send(res, 200, { ok: true });
+    }
+
+    // New scenes and compositions from the viewer, the same operations as create_scene and create_composition.
     if (req.method === 'POST' && path === '/scenes') {
       const input = await json<NewScene>(req);
       const problem = checkNewScene(input);
       if (problem) throw new HttpError(400, problem);
-      return send(res, 201, await created(() => ws().then((w) => w.createScene(input))));
+      return send(res, 201, await created(() => makeScene(input)));
+    }
+    if (req.method === 'POST' && path === '/videos') {
+      const input = await json<NewVideo>(req);
+      const problem = checkNewVideo(input);
+      if (problem) throw new HttpError(400, problem);
+      return send(res, 201, await created(() => makeVideo(input)));
+    }
+    // Moving or trimming a clip from the timeline: the checked edit path, like update_scene, refused while an agent works there.
+    const clipping = /^\/compositions\/([^/]+)\/clip$/.exec(path);
+    if (req.method === 'POST' && clipping) {
+      const id = decodeURIComponent(clipping[1]);
+      const input = await json<ClipEdit>(req);
+      const problem = checkClipEdit(input);
+      if (problem) throw new HttpError(400, problem);
+      if (await agentWorks(id)) throw new HttpError(409, 'An agent is working on this composition, so its clips stay put until it finishes.');
+      return send(res, 200, await created(() => moveClip(id, input)));
+    }
+    // A hand edit of a layer from the timeline or the canvas, or undoing one (ADR 0015). The same lock as a clip's.
+    if (req.method === 'POST' && path === '/layers') {
+      const input = await json<LayerEdit>(req);
+      const problem = checkLayerEdit(input);
+      if (problem) throw new HttpError(400, problem);
+      if (await agentWorks(input.scene)) throw new HttpError(409, 'An agent is working on this scene, so it stays put until the agent finishes.');
+      return send(res, 200, await created(() => ws().then((w) => w.editLayer(input.scene, input.layer, input.set))));
     }
     if (req.method === 'POST' && path === '/sounds') {
       // Add at playhead: a cue playing a sound file, from the viewer's Media list (ADR 0012).
@@ -692,7 +857,8 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         if (changeTimer) clearTimeout(changeTimer);
         if (queueTimer) clearTimeout(queueTimer);
         for (const w of watchers) w.close();
-        for (const abort of exports.values()) abort.abort();
+        for (const abort of [...exports.values(), ...checks.values()]) abort.abort();
+        thumbs.close();
         await runner.dispose();
         await (await workspace?.catch(() => null))?.close();
         await pool.close();

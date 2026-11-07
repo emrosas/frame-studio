@@ -13,31 +13,26 @@
     canRevert,
     clipboardLine,
     currentTurn,
-    describeTarget,
-    displayStatus,
     firstRevertableTurn,
     isReferencePath,
+    type RequestSelection,
     type StudioRequest,
     type Turn,
+    threadSummary,
     type TurnSettings,
   } from '../../studio/protocol';
-  import { describeUsage, foldTurn } from '../transcript';
+  import { readDraft, writeDraft } from '../prefs';
+  import { clockTime, selectionLabel } from '../selection';
+  import { threadBadge } from '../thread-groups';
+  import { describeUsage, foldTurn, groupSteps } from '../transcript';
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
   import QuestionCard from './QuestionCard.svelte';
+  import SelectionToken from './SelectionToken.svelte';
 
-  let { ui, actions, thread, onhide }: { ui: ViewerUi; actions: ViewerActions; thread: StudioRequest; onhide: () => void } = $props();
+  let { ui, actions, thread }: { ui: ViewerUi; actions: ViewerActions; thread: StudioRequest } = $props();
 
-  const THREAD_LABELS: Record<string, string> = {
-    pending: 'waiting',
-    working: 'working',
-    your_turn: 'your turn',
-    input: 'input',
-    settled: 'settled',
-    cancelled: 'cancelled',
-    stalled: 'stalled',
-  };
   const TURN_LABELS: Record<Turn['status'], string> = {
     pending: 'waiting for the agent',
     working: 'working…',
@@ -49,7 +44,10 @@
     reverted: 'reverted',
   };
 
-  let reply = $state('');
+  // A reply not sent yet outlives a reload and a switch to another project. The panel keys this on the thread.
+  const draftKey = untrack(() => String(thread.id));
+  let reply = $state(readDraft(draftKey));
+  $effect(() => writeDraft(draftKey, reply));
   let files = $state<{ file: File; url: string }[]>([]);
   let problem = $state<string | null>(null);
   let busy = $state(false);
@@ -64,7 +62,9 @@
     ...(initial?.effort ? { effort: initial.effort } : {}),
   });
 
-  const shown = $derived(displayStatus(thread, ui.studio.now));
+  const summary = $derived(threadSummary(thread, ui.studio.now));
+  // You're here, so it's your turn: the same words its card shows while it's open.
+  const badge = $derived(threadBadge(summary, false));
   // The question card the working turn waits on (ADR 0011), shown above the actions.
   const asking = $derived(thread.status === 'working' ? foldTurn(ui.turnEvents[`${thread.id}:${thread.turns.length - 1}`] ?? []).asking : null);
   const external = $derived(thread.agent === 'external');
@@ -83,17 +83,14 @@
       (!thread.turns[lastCounted].checkpointAt || canRevert(thread, lastCounted, ui.studio.requests)),
   );
 
+  // A thread's times read at its own scene's rate, which may not be the scene on screen.
+  const fps = $derived(ui.scenes.find((o) => o.key === thread.sceneId)?.format?.fps ?? ui.selection.fps);
+  const askLabel = (s: RequestSelection) => selectionLabel(s.layerId, s.partId, { from: s.from, to: s.to }, fps);
+
   // What a reply is about, by the App's rule: a layer or range picked on this thread's scene, else the newest
   // turn's selection. Try again asks about the turn it reverts.
-  const replyTarget = $derived.by(() => {
-    const sel = ui.selection;
-    if (!retrying && sel.sceneId === thread.sceneId && (sel.layer !== '' || sel.range !== null)) {
-      const what = sel.layer === '' ? 'All layers' : sel.layer;
-      return `${what}${sel.range ? ` · ${sel.rangeText?.interval ?? ''}` : ''} · ${thread.sceneId}`;
-    }
-    const s = (retrying && lastCounted >= 0 ? thread.turns[lastCounted] : currentTurn(thread)).ask.selection;
-    return `${describeTarget(s)} · [${s.from}, ${s.to}) · ${thread.sceneId}`;
-  });
+  const onScene = $derived(!retrying && ui.selection.sceneId === thread.sceneId && (ui.selection.layer !== '' || ui.selection.range !== null));
+  const threadTarget = $derived(askLabel((retrying && lastCounted >= 0 ? thread.turns[lastCounted] : currentTurn(thread)).ask.selection));
 
   // Stick to the bottom while the agent works, as T3 Code's list does: follow whatever grows (streamed text,
   // thumbnails that load late) and whatever shrinks the view (a question card, the reply box). Only scrolling
@@ -136,7 +133,6 @@
   });
 
   const frameUrl = (turn: number, file: string) => `/__studio/requests/${thread.id}/turns/${turn}/frames/${encodeURIComponent(file)}`;
-  const range = (t: Turn) => `[${t.ask.selection.from}, ${t.ask.selection.to})`;
   const settingsText = (s: TurnSettings | undefined) =>
     s ? [s.model, s.effort, s.access === 'full' ? 'full access' : null].filter(Boolean).join(' · ') : '';
 
@@ -163,15 +159,23 @@
   }
 </script>
 
+{#snippet target()}
+  {#if onScene}
+    <SelectionToken {ui} {actions} />
+  {:else}
+    <span class="token is-quiet">{threadTarget}</span>
+  {/if}
+{/snippet}
+
 <section class="thread" aria-label="Request {thread.id}">
   <header class="panel-head">
-    <span class="panel-title">#{thread.id} <span class="sub">· {agentLabel}</span></span>
-    <span class="status-badge is-{shown}" role="status" aria-label="Request status"><span class="status-dot is-{shown}" aria-hidden="true"></span>{THREAD_LABELS[shown]}</span>
+    <h2 class="panel-title thread-head-title" title={thread.turns[0].ask.prompt}>{summary.title}</h2>
+    <span class="thread-status" role="status" aria-label="Request status" title="#{thread.id} · {agentLabel}"><span class="status-dot is-{badge.kind}" aria-hidden="true"></span>{badge.label}</span>
     <div class="actions">
       <button type="button" class="icon-btn" aria-label="New thread" title="New thread" onclick={() => actions.openThread(null)}><Icon name="plus" /></button>
-      <button type="button" class="icon-btn" aria-label="Hide agent panel" title="Hide agent panel" onclick={onhide}><Icon name="panel" /></button>
     </div>
   </header>
+  {#if ui.studio.error}<p class="panel-note is-error thread-error">{ui.studio.error}</p>{/if}
 
   <div class="panel-body" bind:this={body} onscroll={onScroll} onwheel={(e) => e.deltaY < 0 && (pinned = false)}>
     <ol class="turns" bind:this={list}>
@@ -186,29 +190,36 @@
               </ul>
             {/if}
             <p class="ask-meta">
-              {describeTarget(turn.ask.selection)} · {range(turn)}{turn.attempt && turn.attempt > 1 ? ` · attempt ${turn.attempt}` : ''}{settingsText(turn.settings) ? ` · ${settingsText(turn.settings)}` : ''}
+              {askLabel(turn.ask.selection)}{turn.attempt && turn.attempt > 1 ? ` · attempt ${turn.attempt}` : ''}{settingsText(turn.settings) ? ` · ${settingsText(turn.settings)}` : ''}
             </p>
           </div>
 
           <div class="work">
-            {#each transcript.items as item, i (i)}
+            {#each groupSteps(transcript.items) as item, i (i)}
               {#if item.kind === 'text'}
                 <p class="work-text">{item.text}</p>
-              {:else if item.kind === 'step'}
-                <p class="work-step is-{item.status}" title={item.detail ?? ''}>{item.label}</p>
+              {:else if item.kind === 'steps'}
+                {@const running = item.steps.some((step) => step.status === 'running')}
+                {@const failed = item.steps.some((step) => step.status === 'failed')}
+                <details class="work-steps" class:is-running={running} class:is-failed={failed}>
+                  <summary>{item.steps.length} {item.steps.length === 1 ? 'step' : 'steps'}</summary>
+                  {#each item.steps as step (step.id)}
+                    <p class="work-step is-{step.status}" title={step.detail ?? ''}>{step.label}</p>
+                  {/each}
+                </details>
               {:else if item.kind === 'frames'}
                 <div class="work-frames">
                   {#each item.frames as f (f.file)}
-                    <button type="button" class="thumb" title="Show frame {f.frame}" onclick={() => actions.showFrame(thread.id, f.frame)}>
+                    <button type="button" class="frame-thumb" title="Show frame {f.frame}" onclick={() => actions.showFrame(thread.id, f.frame)}>
                       <img src={frameUrl(k, f.file)} alt="Frame {f.frame}" />
-                      <span>{f.frame}</span>
+                      <span>{clockTime(f.frame, fps)}</span>
                     </button>
                   {/each}
                 </div>
               {:else if item.kind === 'approval'}
                 <div class="approval" class:is-open={item.decision === null} role="group" aria-label="Approval: {item.summary}">
                   <p class="approval-summary">{item.summary}</p>
-                  {#if item.detail}<p class="approval-detail">{item.detail}</p>{/if}
+                  {#if item.detail && item.decision === null}<p class="approval-detail">{item.detail}</p>{/if}
                   {#if item.decision === null && (turn.status === 'working' || turn.status === 'pending')}
                     <div class="row">
                       <button type="button" class="btn is-small" disabled={busy} onclick={() => run(() => actions.respond(thread.id, item.id, 'decline'))}>Decline</button>
@@ -243,7 +254,7 @@
             {#if transcript.usage}<span class="turn-usage">{describeUsage(transcript.usage)}</span>{/if}
             {#if turn.checkpointAt && canRevert(thread, k, ui.studio.requests)}
               <button type="button" class="btn is-ghost is-small" aria-label="Revert to before turn {k + 1}" title="Put the scene back as it was before this turn" onclick={() => run(() => actions.revert(thread.id, k))}>
-                <Icon name="revert" size={13} />Revert to here
+                <Icon name="revert" />Revert to here
               </button>
             {/if}
             {#if external && turn.summary}<span class="turn-summary">{turn.summary}</span>{/if}
@@ -253,7 +264,7 @@
       {/each}
     </ol>
     {#if !pinned}
-      <button type="button" class="jump-latest" aria-label="Jump to the latest" title="Jump to the latest" onclick={stick}><Icon name="chevronDown" size={16} /></button>
+      <button type="button" class="jump-latest" aria-label="Jump to the latest" title="Jump to the latest" onclick={stick}><Icon name="chevronDown" /></button>
     {/if}
   </div>
 
@@ -270,11 +281,11 @@
     <div class="thread-actions">
       {#if thread.status === 'working'}
         {#if external}
-          {#if shown === 'stalled'}<button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'requeue'))}>Requeue</button>{/if}
+          {#if summary.status === 'stalled'}<button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'requeue'))}>Requeue</button>{/if}
           <button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>
         {:else}
           <button type="button" class="btn is-small is-danger" onclick={async () => (stopFailed = !(await run(() => actions.requestAction(thread.id, 'stop'))))}>
-            <Icon name="stop" size={12} />Stop
+            <Icon name="stop" />Stop
           </button>
           <!-- Stop works only on a turn this studio server runs; Cancel ends the turn whoever has it. -->
           {#if stopFailed}<button type="button" class="btn is-small" onclick={() => run(() => actions.requestAction(thread.id, 'cancel'))}>Cancel</button>{/if}
@@ -288,7 +299,7 @@
       {#if canReply}
         {#if thread.status === 'your_turn'}
           <button type="button" class="btn is-small" title="It's right: close the thread" onclick={() => run(() => actions.requestAction(thread.id, 'settle'))}>
-            <Icon name="check" size={13} />Settle
+            <Icon name="check" />Settle
           </button>
         {/if}
         {#if canRetry && !retrying}
@@ -299,12 +310,12 @@
             onclick={() => {
               retrying = true;
               reply = thread.turns[lastCounted].ask.prompt;
-            }}><Icon name="retry" size={13} />Try again</button
+            }}><Icon name="retry" />Try again</button
           >
         {/if}
         {#if retrying}<button type="button" class="btn is-small" onclick={() => ((retrying = false), (reply = ''))}>Cancel</button>{/if}
         {#if canRevertAll}
-          <button type="button" class="btn is-small" onclick={() => run(() => actions.revert(thread.id))}><Icon name="revert" size={13} />Revert all</button>
+          <button type="button" class="btn is-small" onclick={() => run(() => actions.revert(thread.id))}><Icon name="revert" />Revert all</button>
         {/if}
       {/if}
     </div>
@@ -318,10 +329,12 @@
         bind:settings
         agent={thread.agent}
         agents={ui.studio.agents}
+        layers={ui.layers}
+        onmention={(id) => actions.selectLayer(id)}
         fixed
         label={retrying ? 'Prompt for the next attempt' : 'Reply'}
         placeholder={thread.status === 'settled' ? 'Reply to reopen this thread' : 'Reply, e.g. a bit smaller'}
-        target={replyTarget}
+        {target}
         sendLabel={retrying ? 'Revert and try again' : 'Reply'}
         canSend={reply.trim() !== '' && !busy}
         onsubmit={send}

@@ -69,7 +69,7 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
     await viewer.evaluate(() => (window as unknown as { studio: { setRange(a: number, b: number): void } }).studio.setRange(0, 24));
     await viewer.getByRole('button', { name: 'Export', exact: true }).click();
     const panel = viewer.getByRole('region', { name: 'Export' });
-    await panel.getByRole('checkbox', { name: /Only frames \[0, 24\)/ }).check();
+    await panel.getByRole('checkbox', { name: 'Only 0:00–0:01' }).check();
     await panel.getByRole('button', { name: 'Export', exact: true }).click();
     await expect.poll(() => panel.getByRole('status').textContent(), { timeout: 60_000 }).toMatch(/Saved hello-00000-00024\.mp4/);
     await expect.poll(() => panel.getByRole('button', { name: 'Reveal in Finder' }).count()).toBe(1);

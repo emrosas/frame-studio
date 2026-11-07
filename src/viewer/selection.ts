@@ -2,9 +2,10 @@
 // to), click cycling, labels, and reading a selection back from the URL.
 // Pure, so it is unit tested without a browser.
 
-import { formatTimecode, parseTimecode, sceneLayers } from '../engine';
+import { parseTimecode, sceneLayers } from '../engine';
 import type { RigRegistry, Scene, World } from '../engine/types';
 import { clampFrame } from './clock';
+import { formatClock } from './timeline';
 
 /** A frame range [from, to): from is included, to is not. */
 export interface FrameRange {
@@ -84,28 +85,36 @@ export function editRangeEnd(range: FrameRange | null, end: 'from' | 'to', text:
   return error ? { ok: false, error } : { ok: true, range: next };
 }
 
-export interface RangeText {
-  /** "[12, 36)" or "all frames". */
-  interval: string;
-  /** "00:01:00 – 00:03:00", empty without a range. */
-  timecodes: string;
-  /** "24 frames". */
-  count: string;
+// ---- words ----
+
+/** The one name for a selection with no layer. */
+export const WHOLE_SCENE = 'Whole scene';
+
+/** A frame as a person reads it: "0:02", with hundredths off the second, "0:02.25". */
+export function clockTime(frame: number, fps: number): string {
+  return formatClock(frame, fps).replace(/\.00$/, '');
 }
 
-export function describeRange(range: FrameRange | null, fps: number, frameCount: number): RangeText {
-  const plural = (n: number) => `${n} frame${n === 1 ? '' : 's'}`;
-  if (!range) return { interval: 'all frames', timecodes: '', count: plural(frameCount) };
-  return {
-    interval: `[${range.from}, ${range.to})`,
-    timecodes: `${formatTimecode(range.from, fps)} – ${formatTimecode(range.to, fps)}`,
-    count: plural(range.to - range.from),
-  };
+/** A range in clock time, "0:02–0:04". The end is where the range stops, so it reads like a duration. */
+export function spanLabel(range: FrameRange, fps: number): string {
+  return `${clockTime(range.from, fps)}–${clockTime(range.to, fps)}`;
+}
+
+/** The range in frames, for a tooltip. Frames stay off the surface. */
+export function spanTitle(range: FrameRange): string {
+  const n = range.to - range.from;
+  return `Frame ${range.from} up to frame ${range.to}, ${n} frame${n === 1 ? '' : 's'}`;
 }
 
 export function layerLabel(layerId: string | null, partId: string | null | undefined): string {
   if (!layerId) return '';
   return partId ? `${layerId} ${CHEVRON} ${partId}` : layerId;
+}
+
+/** What a selection is, in the one form every surface shows: "pip · 0:02–0:04", "Whole scene". */
+export function selectionLabel(layerId: string | null | undefined, partId: string | null | undefined, range: FrameRange | null, fps: number): string {
+  const who = layerLabel(layerId ?? null, partId) || WHOLE_SCENE;
+  return range ? `${who} · ${spanLabel(range, fps)}` : who;
 }
 
 // ---- click cycling ----

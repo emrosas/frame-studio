@@ -98,6 +98,20 @@ ui.folder = { path: paired.folder, canSwitch: desktop() !== null };
 // The app's window has no title bar on macOS: the page leaves room for the window buttons and is dragged by its bars.
 if (desktop() && /Mac/.test(navigator.platform)) document.documentElement.classList.add('is-desktop-mac');
 const actions = {} as ViewerActions;
+// The sidebar's + on a project that wasn't on screen comes back here to finish.
+const query = new URLSearchParams(location.search);
+const asked = query.get('new');
+if (asked === 'video') ui.newRequest = { kind: 'video' };
+else if (asked === 'scene') ui.newRequest = { kind: 'scene', project: null };
+// So does a thread card of a project that wasn't on screen.
+const thread = /^\d+$/.test(query.get('thread') ?? '') ? Number(query.get('thread')) : null;
+if (asked !== null || query.has('thread')) {
+  // Once: a reload shouldn't open it again.
+  const here = new URL(location.href);
+  here.searchParams.delete('new');
+  here.searchParams.delete('thread');
+  history.replaceState(history.state, '', here);
+}
 mount(Viewer, { target: root, props: { ui, actions } });
 flushSync();
 const app = new App(
@@ -105,9 +119,11 @@ const app = new App(
   loaded.library,
   {
     scene: url.scene,
+    home: url.scene === null,
     frame: url.frame,
     autoplay: takeResumeFlag(),
     selection: { layer: url.layer, part: url.part, from: url.from, to: url.to },
+    thread,
   },
   ui,
 );

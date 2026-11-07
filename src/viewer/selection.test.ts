@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CHEVRON,
-  describeRange,
+  clockTime,
   editRangeEnd,
   isRepeatClick,
   layerLabel,
@@ -12,6 +12,10 @@ import {
   rangeError,
   resolveSelectionParams,
   sceneShape,
+  selectionLabel,
+  spanLabel,
+  spanTitle,
+  WHOLE_SCENE,
   type SceneShape,
 } from './selection';
 import type { Rig, RigRegistry, Scene } from '../engine/types';
@@ -142,14 +146,30 @@ describe('editRangeEnd (typed from and to)', () => {
   });
 });
 
-describe('describeRange', () => {
-  it('shows [from, to) with both timecodes and the frame count', () => {
-    expect(describeRange({ from: 12, to: 36 }, 12, 72)).toEqual({ interval: '[12, 36)', timecodes: '00:01:00 – 00:03:00', count: '24 frames' });
-    expect(describeRange({ from: 5, to: 6 }, 12, 72).count).toBe('1 frame');
+describe('the selection in words', () => {
+  it('reads clock time, with hundredths only off the second', () => {
+    expect(clockTime(0, 12)).toBe('0:00');
+    expect(clockTime(24, 12)).toBe('0:02');
+    expect(clockTime(27, 12)).toBe('0:02.25');
+    expect(clockTime(780, 12)).toBe('1:05');
   });
 
-  it('says "all frames" without a range', () => {
-    expect(describeRange(null, 12, 72)).toEqual({ interval: 'all frames', timecodes: '', count: '72 frames' });
+  it('labels a layer with its clock times', () => {
+    expect(selectionLabel('pip', null, { from: 24, to: 48 }, 12)).toBe('pip · 0:02–0:04');
+    expect(selectionLabel('bear', 'nose', { from: 6, to: 12 }, 12)).toBe(`bear ${CHEVRON} nose · 0:00.50–0:01`);
+    expect(selectionLabel('pip', null, null, 12)).toBe('pip');
+  });
+
+  it('has one name for no layer', () => {
+    expect(WHOLE_SCENE).toBe('Whole scene');
+    expect(selectionLabel(null, null, null, 12)).toBe('Whole scene');
+    expect(selectionLabel(undefined, undefined, { from: 0, to: 12 }, 12)).toBe('Whole scene · 0:00–0:01');
+  });
+
+  it('never shows the interval notation, even in the tooltip', () => {
+    expect(spanLabel({ from: 12, to: 36 }, 12)).toBe('0:01–0:03');
+    expect(spanTitle({ from: 12, to: 36 })).toBe('Frame 12 up to frame 36, 24 frames');
+    expect(spanTitle({ from: 5, to: 6 })).toBe('Frame 5 up to frame 6, 1 frame');
   });
 });
 

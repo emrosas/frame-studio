@@ -64,7 +64,7 @@ A scene draws one shot. A composition arranges scenes, and other compositions, a
 
 The sample project is Bears' story: `film` is a 12-second composition cut from three scene shots, and `hello` is a bouncing ball.
 
-The window has three columns. The sidebar lists the project's compositions, scenes, sound files and request threads. Selecting a scene shows which compositions use it. The middle has the canvas and the timeline. Space plays, the arrow keys step one frame, and the keyboard button in the top bar lists the other shortcuts. The agent panel is on the right.
+The window has three columns. The sidebar switches between Footage, your compositions and scenes, and Threads, every project's request threads (Command-1 and Command-2). Selecting a scene shows which compositions use it. The middle has the canvas and the timeline. Space plays, the arrow keys step one frame, and the keyboard button in the top bar lists the other shortcuts. The agent panel is on the right, and holds the conversation.
 
 An agent keeps working in a project after you switch to another. The switcher shows each project's threads that are working, waiting on your input, or your turn, and a dot on it says when another project needs a look.
 
@@ -154,7 +154,7 @@ npm run test:browser                              # viewer, renders, exports, em
 
 - The app is macOS on Apple Silicon only. It has no Apple Developer ID signature or notarization, so macOS blocks the first launch until you allow it.
 - Nothing proves who built an update beyond HTTPS to GitHub and a checksum published on the same release. Each update downloads the whole app, about 124 MB.
-- There's no timeline editor yet. Timing lives in the scene JSON, which you or the agent edit.
+- The timeline moves clips and key times, and the canvas drags layers. Everything else about timing lives in the scene JSON, which you or the agent edit.
 - Agent access rules keep a well-behaved agent on track, but they aren't a sandbox. Rig code an agent writes runs in the studio server and the viewer.
 
 ## License

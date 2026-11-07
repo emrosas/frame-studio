@@ -1,22 +1,19 @@
 <!--
-  A new thread: how the studio is used (point at the canvas, pick frames,
-  say what should change), each step ticked as the selection fills in, and
-  the composer. On an empty scene there is nothing to point at yet, so it
-  asks what goes in it instead. For the external agent, sending queues the request and copies
-  a line to paste into it; for an agent the studio runs, the thread opens.
-  The draft belongs to the agent panel, which keeps it while this is away.
+  A new thread: one quiet line and the composer. For the external agent, sending
+  queues the request and copies a line to paste into it; for an agent the
+  studio runs, the thread opens. The draft belongs to the agent panel, which
+  keeps it while this is away.
 -->
 <script lang="ts">
   import type { AgentId, TurnSettings } from '../../studio/protocol';
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Composer from './Composer.svelte';
-  import Icon from './Icon.svelte';
-  import Logo from './Logo.svelte';
+  import SelectionToken from './SelectionToken.svelte';
 
   let {
     ui,
     actions,
-    onhide,
+    onpick,
     prompt = $bindable(),
     files = $bindable(),
     agent = $bindable(),
@@ -24,14 +21,12 @@
   }: {
     ui: ViewerUi;
     actions: ViewerActions;
-    onhide: () => void;
+    onpick: (id: AgentId) => void;
     prompt: string;
     files: { file: File; url: string }[];
     agent: AgentId;
     settings: TurnSettings;
   } = $props();
-
-  const AGENT_KEY = 'frame-studio:agent';
 
   let sending = $state(false);
   let status = $state<{ text: string; error: boolean } | null>(null);
@@ -43,16 +38,22 @@
 
   const sel = $derived(ui.selection);
   const empty = $derived(ui.header?.empty ?? false);
-  const target = $derived.by(() => {
-    if (!sel.sceneId) return 'No valid scene';
-    const what = sel.layer === '' ? (sel.range ? 'All layers' : 'The whole scene') : sel.layer;
-    return `${what}${sel.range ? ` · ${sel.rangeText?.interval ?? ''}` : ''} · ${sel.sceneId}`;
+  const what = $derived(ui.header?.video ? 'video' : 'scene');
+  // Nothing on this scene yet says so, once; with threads listed above, the composer asks.
+  const quiet = $derived(!ui.studio.requests.some((r) => r.sceneId === ui.selectedScene));
+  const line = $derived(ui.home ? 'Pick something to work on' : empty ? `What goes in this ${what}?` : quiet ? 'No threads on this scene yet' : null);
+  const hint = $derived(!ui.home && !empty && quiet ? 'Click a layer, then ask' : null);
+  const placeholder = $derived.by(() => {
+    if (ui.home) return 'What should change?';
+    if (empty) return `Describe what happens in this ${what}…`;
+    if (sel.layer !== '') return `Change ${sel.layer}…`;
+    return sel.range ? 'What should change in these seconds?' : 'What should change?';
   });
   const agentStatus = $derived(ui.studio.agents.find((a) => a.id === agent));
   const ready = $derived(agent === 'external' || (agentStatus?.ready ?? false));
 
   async function send(): Promise<void> {
-    if (!prompt.trim() || sending || !ready) return;
+    if (!prompt.trim() || sending || !ready || ui.home) return;
     sending = true;
     status = null;
     const result = await actions.sendRequest(prompt, files.map((f) => f.file), agent, agent === 'external' ? undefined : $state.snapshot(settings));
@@ -60,11 +61,6 @@
     if (!result.ok) {
       status = { text: result.error, error: true };
       return;
-    }
-    try {
-      localStorage.setItem(AGENT_KEY, agent);
-    } catch {
-      // storage unavailable; the picker starts on the external agent next time
     }
     for (const f of files) URL.revokeObjectURL(f.url);
     files = [];
@@ -83,38 +79,23 @@
   }
 </script>
 
-<header class="panel-head">
-  <span class="panel-title">New thread</span>
-  <div class="actions">
-    <button type="button" class="icon-btn" aria-label="Hide agent panel" title="Hide agent panel" onclick={onhide}><Icon name="panel" /></button>
-  </div>
-</header>
+{#snippet target()}
+  {#if ui.home}
+    <span class="token is-quiet">Open a video or scene first</span>
+  {:else if !sel.sceneId}
+    <span class="token is-quiet">No valid scene</span>
+  {:else}
+    <SelectionToken {ui} {actions} />
+  {/if}
+{/snippet}
 
-<div class="panel-body">
-  <div class="intro">
-    <Logo size={40} />
-    {#if empty}
-      <h2>What goes in this scene?</h2>
-      <p>It's empty so far. Describe what should be in it and what happens, and attach reference images if you have them. The agent draws it and shows you the frames.</p>
-    {:else}
-      <h2>What should change?</h2>
-      <p>Point at what you see, pick the frames, and describe it. The agent edits the scene and shows you the frames.</p>
-    {/if}
-    <ol class="steps" hidden={empty}>
-      <li class:is-done={sel.layer !== ''}>
-        <Icon name={sel.layer !== '' ? 'check' : 'pointer'} size={15} />
-        <span>{sel.layer !== '' ? `Selected ${sel.layer}` : 'Click something on the canvas'}</span>
-      </li>
-      <li class:is-done={sel.range !== null}>
-        <Icon name={sel.range !== null ? 'check' : 'range'} size={15} />
-        <span>{sel.range !== null ? `Frames ${sel.rangeText?.interval ?? ''}` : 'Mark frames with I and O'}</span>
-      </li>
-      <li>
-        <Icon name="message" size={15} />
-        <span>Describe the change below</span>
-      </li>
-    </ol>
-  </div>
+<div class="panel-body is-empty">
+  {#if line}
+    <div class="intro">
+      <h2>{line}</h2>
+      {#if hint}<p>{hint}</p>{/if}
+    </div>
+  {/if}
 </div>
 
 <footer class="panel-foot">
@@ -126,13 +107,16 @@
     bind:agent
     bind:settings
     agents={ui.studio.agents}
+    layers={ui.layers}
+    onmention={(id) => actions.selectLayer(id)}
     label="Prompt"
-    placeholder={empty ? 'A fox trots across a snowy field, then looks back…' : 'Make pip look sad here…'}
+    {placeholder}
     {target}
     sendLabel="Send to agent"
-    canSend={prompt.trim() !== '' && !sending && sel.sceneId !== null && ready}
+    canSend={prompt.trim() !== '' && !sending && sel.sceneId !== null && ready && !ui.home}
     onsubmit={send}
     onproblem={(text) => (status = { text, error: true })}
     onrefresh={() => actions.refreshAgents()}
+    {onpick}
   />
 </footer>

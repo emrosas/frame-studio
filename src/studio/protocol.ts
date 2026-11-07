@@ -73,6 +73,8 @@ export interface Turn {
   status: TurnStatus;
   /** For agents in the studio. */
   settings?: TurnSettings;
+  /** The model the agent reported running, which a default doesn't say. */
+  ranModel?: string;
   claimedAt?: string;
   /** Which session claimed it: an MCP server's process id, or the studio server's. */
   claimedBy?: string;
@@ -174,6 +176,18 @@ export interface AgentQuestion {
 export type QuestionAnswers = Record<string, string[]>;
 
 /** An agent the studio can run, as the agent picker shows it. */
+/** A model a provider offers. Its own effort levels and default, where the provider reports them. */
+export interface AgentModel {
+  id: string;
+  label: string;
+  /** The provider's default model. */
+  default?: boolean;
+  /** The efforts this model takes; left out, those of its agent. */
+  efforts?: string[];
+  /** The effort this model starts on, when the provider says. */
+  defaultEffort?: string;
+}
+
 export interface AgentStatus {
   id: AgentId;
   label: string;
@@ -183,7 +197,8 @@ export interface AgentStatus {
   detail: string;
   /** The command that fixes it, e.g. "claude auth login". */
   fix?: string;
-  models: { id: string; label: string }[];
+  models: AgentModel[];
+  /** Every effort of its models, or the efforts of a provider that doesn't say per model. */
   efforts: string[];
 }
 
@@ -200,6 +215,11 @@ export const LIBRARY_EVENT = 'frame-studio:library';
 
 /** Pushed as a viewer export goes: progress, then done with the file, or an error. */
 export const EXPORT_EVENT = 'frame-studio:export';
+
+/** Pushed as a viewer check goes: progress, then the report, or an error. */
+export const CHECK_EVENT = 'frame-studio:check';
+/** A poster finished in the background: its scene key and file name under .frame-studio/thumbs/. */
+export const THUMB_EVENT = 'frame-studio:thumb';
 
 /** Reference image types the studio accepts, with the extension each is saved under. */
 export const REFERENCE_TYPES: Readonly<Record<string, string>> = { 'image/png': '.png', 'image/jpeg': '.jpg', 'image/webp': '.webp' };
@@ -323,6 +343,48 @@ export function displayStatus(request: StudioRequest, now: number): DisplayStatu
     return 'stalled';
   }
   return request.status;
+}
+
+/** A thread as the sidebar's cards show it, the same whether it came from the live queue or off another project's disk. */
+export interface ThreadSummary {
+  id: number;
+  /** The first prompt, on one line. */
+  title: string;
+  status: DisplayStatus;
+  /** How its newest turn stands, which tells a failure from a turn that went well. */
+  turn: TurnStatus;
+  sceneId: string;
+  agent: AgentId;
+  /** The model id its newest turn ran on. Null when the turn didn't name one, as an external agent's doesn't. */
+  model: string | null;
+  /** When it last moved, and what a finished turn is marked seen by. */
+  at: string;
+  /** The poster of its scene: a file under .frame-studio/thumbs/. */
+  poster: string | null;
+}
+
+/** Longer prompts cut here. A card shows two lines, and the app hands every project's list to each page. */
+const TITLE_CHARS = 160;
+
+/**
+ * The summary of a thread. `live` is false when nothing runs the thread's agent: a turn left working
+ * on disk then counts as interrupted, which is what a server finds when it starts there.
+ */
+export function threadSummary(request: StudioRequest, now: number, options: { live?: boolean; poster?: string | null } = {}): ThreadSummary {
+  const turn = currentTurn(request);
+  const shown = displayStatus(request, now);
+  const dead = options.live === false && (shown === 'working' || shown === 'input');
+  return {
+    id: request.id,
+    title: request.turns[0].ask.prompt.replace(/\s+/g, ' ').trim().slice(0, TITLE_CHARS),
+    status: dead ? 'your_turn' : shown,
+    turn: dead ? 'interrupted' : turn.status,
+    sceneId: request.sceneId,
+    agent: request.agent,
+    model: turn.ranModel ?? turn.settings?.model ?? null,
+    at: turn.completedAt ?? turn.claimedAt ?? turn.ask.at,
+    poster: options.poster ?? null,
+  };
 }
 
 /** "layer pip › mouth", "layer pip", or "all layers" for a whole-range selection. */
@@ -473,6 +535,15 @@ export interface NewScene {
   fps?: number;
   size?: [number, number];
   duration: number;
+  /** A pixel stage (ADR 0014), for a scene in the folder. The server writes it into the new scene file. */
+  pixel?: NewPixel;
+}
+
+/** A new scene's pixel stage, as the engine's scene format takes it. */
+export interface NewPixel {
+  scale: number;
+  palette?: string[];
+  dither?: number;
 }
 
 /**
@@ -486,11 +557,47 @@ export interface NewComposition {
   duration: number;
 }
 
+/**
+ * A new video from the viewer: a composition and, with `scene`, a first empty scene the length of the
+ * video, placed on its track, so there is something to point at. `pixel` is that scene's pixel stage;
+ * compositions have none of their own, so a pixel video always starts with its scene.
+ */
+export interface NewVideo extends NewComposition {
+  scene?: boolean;
+  pixel?: NewPixel;
+}
+
+/** A clip's place in its composition, in seconds: `out` null means the end of what it places. */
+export interface ClipEdit {
+  clip: string;
+  start: number;
+  in: number;
+  out: number | null;
+}
+
+/** The fields of a layer or clip a hand edit may change (ADR 0015). */
+export const LAYER_EDIT_FIELDS = ['params', 'tracks', 'overrides', 'mask', 'start', 'in', 'out'];
+
+/** A hand edit of one layer or clip: each field in `set` is replaced whole, and null removes it (ADR 0015). */
+export interface LayerEdit {
+  /** The scene or composition, as the library keys it, so "<project>/<scene>" for an old film's. */
+  scene: string;
+  layer: string;
+  set: Record<string, unknown>;
+}
+
+/** The layer's JSON in the file on either side of an edit, without `id`, for undo. */
+export interface LayerChange {
+  before: Record<string, unknown>;
+  after: Record<string, unknown>;
+}
+
 /** The format a new scene or composition gets when neither it nor project.json says. */
 export const DEFAULT_FORMAT = { fps: 24, size: [1920, 1080] as [number, number] };
 
-const NEW_SCENE_FIELDS = new Set(['id', 'project', 'fps', 'size', 'duration']);
+const NEW_SCENE_FIELDS = new Set(['id', 'project', 'fps', 'size', 'duration', 'pixel']);
 const NEW_COMPOSITION_FIELDS = new Set(['id', 'fps', 'size', 'duration']);
+const NEW_VIDEO_FIELDS = new Set([...NEW_COMPOSITION_FIELDS, 'scene', 'pixel']);
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 /** A scene or project id from a name as typed: "Bears' Story 2" becomes "bears-story-2". Empty when nothing is left. */
@@ -520,6 +627,15 @@ function checkFormat(input: Record<string, unknown>): string | null {
   return null;
 }
 
+/** A pixel stage's shape. The scene validator checks the rest when the scene is saved. */
+function checkNewPixel(pixel: unknown, size: unknown): string | null {
+  if (pixel === undefined) return null;
+  if (!isObject(pixel) || !isInt(pixel.scale, 1)) return 'pixel must be { scale, palette?, dither? } with a whole scale';
+  const scale = pixel.scale as number;
+  if (Array.isArray(size) && size.some((n) => typeof n === 'number' && n % scale !== 0)) return `pixel scale ${scale} must divide the size evenly`;
+  return null;
+}
+
 function checkDuration(duration: unknown): string | null {
   return typeof duration === 'number' && Number.isFinite(duration) && duration > 0 && duration <= 3600 ? null : 'duration must be a number of seconds, above 0 and at most 3600';
 }
@@ -535,8 +651,9 @@ export function checkNewScene(input: unknown): string | null {
     if (inProject) return inProject;
     if (input.id === 'project') return 'a scene in a project can\'t be called "project"; project.json is taken';
     if (input.fps !== undefined || input.size !== undefined) return "a scene in a project takes the project's fps and size; leave them out";
+    if (input.pixel !== undefined) return 'a pixel stage is for scenes in the folder; a film made before compositions keeps its own format';
   } else {
-    const format = checkFormat(input);
+    const format = checkFormat(input) ?? checkNewPixel(input.pixel, input.size);
     if (format) return format;
   }
   return checkDuration(input.duration);
@@ -547,6 +664,36 @@ export function checkNewComposition(input: unknown): string | null {
   if (!isObject(input)) return 'a new composition must be a JSON object';
   for (const key of Object.keys(input)) if (!NEW_COMPOSITION_FIELDS.has(key)) return `unknown field "${key}"`;
   return checkId(input.id, 'a composition') ?? checkFormat(input) ?? checkDuration(input.duration);
+}
+
+/** Why `input` is not a well-formed NewVideo, or null when it is. */
+export function checkNewVideo(input: unknown): string | null {
+  if (!isObject(input)) return 'a new video must be a JSON object';
+  for (const key of Object.keys(input)) if (!NEW_VIDEO_FIELDS.has(key)) return `unknown field "${key}"`;
+  if (input.scene !== undefined && typeof input.scene !== 'boolean') return 'scene must be true or false';
+  if (input.pixel !== undefined && input.scene === false) return 'a pixel video needs its first scene, which carries the pixel stage';
+  return checkId(input.id, 'a video') ?? checkFormat(input) ?? checkNewPixel(input.pixel, input.size) ?? checkDuration(input.duration);
+}
+
+/** Why `input` is not a well-formed ClipEdit, or null when it is. */
+export function checkClipEdit(input: unknown): string | null {
+  if (!isObject(input)) return 'a clip edit must be a JSON object';
+  if (typeof input.clip !== 'string' || input.clip === '') return 'clip must be a clip id';
+  const seconds = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+  if (!seconds(input.start)) return 'start must be seconds, 0 or more';
+  if (!seconds(input.in)) return 'in must be seconds, 0 or more';
+  if (input.out !== null && !(seconds(input.out) && (input.out as number) > (input.in as number))) return 'out must be seconds after in, or null for the end';
+  return null;
+}
+
+/** Why `input` is not a well-formed LayerEdit, or null when it is. What it does to the scene is the validator's to say. */
+export function checkLayerEdit(input: unknown): string | null {
+  if (!isObject(input)) return 'a layer edit must be a JSON object';
+  if (typeof input.scene !== 'string' || input.scene === '') return 'scene must be a scene id';
+  if (typeof input.layer !== 'string' || input.layer === '') return 'layer must be a layer id';
+  if (!isObject(input.set)) return 'set must be an object of fields to change';
+  const unknown = Object.keys(input.set).find((field) => !LAYER_EDIT_FIELDS.includes(field));
+  return unknown === undefined ? null : `set can't change "${unknown}"; it takes ${LAYER_EDIT_FIELDS.join(', ')}`;
 }
 
 const QUESTION_ANSWER_LIMIT = 2000;

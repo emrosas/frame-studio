@@ -5,6 +5,8 @@
  */
 import { blip } from './blip';
 import { buzz } from './buzz';
+import { chip } from './chip';
+import { hit } from './hit';
 import { pad } from './pad';
 import type { AudioGenerator, GeneratorRegistry } from './types';
 
@@ -15,10 +17,10 @@ export { envelopeGain, noiseBuffer, toSamples, wanderCurve } from './parts';
 export { AUDIO_CHANNELS, audioKey, generatorIdsUsed, generatorsUsed, hasAudio, renderSceneAudio, sameGenerators, scheduleScene, type ShotAudio } from './render';
 export { cutFile, decodeMedia, isFileCue, mediaUsed, type MediaBuffers } from './media';
 export { DRIFT_TOLERANCE, LivePlayback, wrapInto, wrappedDifference, type Playhead } from './live';
-export { blip, buzz, pad };
+export { blip, buzz, chip, hit, pad };
 
 /** Every generator the studio ships. Add new generators here. */
-export const allGenerators: readonly AudioGenerator[] = [pad, buzz, blip];
+export const allGenerators: readonly AudioGenerator[] = [pad, buzz, blip, chip, hit];
 
 export function createGeneratorRegistry(generators: readonly AudioGenerator[]): GeneratorRegistry {
   const map = new Map<string, AudioGenerator>();

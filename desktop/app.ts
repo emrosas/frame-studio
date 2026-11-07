@@ -2,10 +2,11 @@
 // server on each in a utility process, with a hidden render worker window for
 // its jobs. One project is on screen at a time, in the viewer its server
 // serves; a project you switch away from keeps running while an agent works
-// there, and stops when none does. IPC carries only the token handoff and
-// native features: the project switcher's list, folder pickers, Reveal in
-// Finder, menus and updates. The app's data goes over each server's HTTP and
-// event stream, as in a browser. Electron main process only.
+// there or for a few minutes after, and then stops. IPC carries only the token
+// handoff and native features: the sidebar's project list, what the viewer
+// keeps between projects, folder pickers, Reveal in Finder, menus and updates.
+// The app's data goes over each server's HTTP and event stream, as in a
+// browser. Electron main process only.
 
 import { randomBytes } from 'node:crypto';
 import { createWriteStream, existsSync, mkdirSync, renameSync, writeFileSync, type WriteStream } from 'node:fs';
@@ -16,7 +17,7 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, utilityProcess, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
 import { convertFilm } from '../tools/studio/convert.ts';
 import { createStudioFolder, writeTsconfig } from './folders.ts';
-import { createProject, hasAgentWork, listProjects } from './projects.ts';
+import { createProject, hasAgentWork, listProjects, projectPoster, WARM_MS, warmProjects, type ProjectEntry } from './projects.ts';
 import { appPaths } from './paths.ts';
 import { adoptShellPath } from './shell-path.ts';
 import { checkForUpdates, checkFromMenu, installUpdate, openReleaseNotes, startUpdates, type UpdateState, updatesEnabled, updateState } from './updater.ts';
@@ -26,6 +27,8 @@ interface Settings {
   /** Project folders, most recent first. */
   recent: string[];
   bounds?: Rectangle;
+  /** What the viewer keeps between visits. Every project's server has its own port and so its own localStorage, so these live here. */
+  prefs?: Record<string, string>;
 }
 
 interface Session {
@@ -35,6 +38,15 @@ interface Session {
   server: UtilityProcess;
   worker: BrowserWindow;
   stopping: boolean;
+  /** When it left the screen. */
+  left?: number;
+}
+
+/** Where the viewer opens a project: on a scene, on a thread of that scene, or with the New dialog up. */
+interface OpenTarget {
+  scene?: string;
+  thread?: number;
+  new?: 'video' | 'scene';
 }
 
 const paths = appPaths();
@@ -48,6 +60,10 @@ let welcome: BrowserWindow | null = null;
 let serverLog: WriteStream | null = null;
 let mainLog: WriteStream | null = null;
 let restarts = 0;
+/** The sidebar's last list, handed to the next page at once so its rows don't arrive late. */
+let listing: ProjectEntry[] = [];
+/** Unsent prompts by project, so they outlive a switch. */
+const drafts = new Map<string, Record<string, string>>();
 
 const settingsFile = () => join(app.getPath('userData'), 'settings.json');
 
@@ -58,22 +74,31 @@ function log(line: string): void {
 async function loadSettings(): Promise<Settings> {
   try {
     const read = JSON.parse(await readFile(settingsFile(), 'utf8')) as Partial<Settings>;
-    return { recent: Array.isArray(read.recent) ? read.recent.filter((p) => typeof p === 'string') : [], ...(read.bounds ? { bounds: read.bounds } : {}) };
+    return {
+      recent: Array.isArray(read.recent) ? read.recent.filter((p) => typeof p === 'string') : [],
+      ...(read.bounds ? { bounds: read.bounds } : {}),
+      ...(read.prefs && typeof read.prefs === 'object' ? { prefs: read.prefs } : {}),
+    };
   } catch {
     return { recent: [] };
   }
 }
 
-/** Writes the settings whole, through a temporary file, so quitting mid-write never leaves half a file. */
-async function saveSettings(): Promise<void> {
-  try {
-    await mkdir(app.getPath('userData'), { recursive: true });
-    const partial = `${settingsFile()}.partial`;
-    await writeFile(partial, `${JSON.stringify(settings, null, 2)}\n`);
-    await rename(partial, settingsFile());
-  } catch {
-    // Settings are a convenience; the app works without them.
-  }
+let saving: Promise<void> = Promise.resolve();
+
+/** Writes the settings whole, through a temporary file, so quitting mid-write never leaves half a file. One write at a time. */
+function saveSettings(): Promise<void> {
+  saving = saving.then(async () => {
+    try {
+      await mkdir(app.getPath('userData'), { recursive: true });
+      const partial = `${settingsFile()}.partial`;
+      await writeFile(partial, `${JSON.stringify(settings, null, 2)}\n`);
+      await rename(partial, settingsFile());
+    } catch {
+      // Settings are a convenience; the app works without them.
+    }
+  });
+  return saving;
 }
 
 /** The same, at once, for quitting, when nothing async gets to finish. */
@@ -143,15 +168,23 @@ function stopSession(target: Session | null): void {
   target.server.kill();
 }
 
-/** Stops the projects in the background whose agents have nothing left to do (ADR 0013). */
+/** Stops the projects in the background whose agents have nothing left to do, once they've cooled (ADR 0013). */
 async function sweep(): Promise<void> {
-  for (const s of [...sessions.values()]) {
+  const background = [...sessions.values()].filter((s) => s !== session && !s.stopping);
+  const warm = warmProjects(new Map(background.map((s) => [s.folder, s.left ?? 0])), Date.now(), warmMs());
+  for (const s of background) {
+    if (warm.has(s.folder) || (await hasAgentWork(s.folder))) continue;
+    // It may have come back on screen while that looked.
     if (s === session || s.stopping) continue;
-    if (!(await hasAgentWork(s.folder))) {
-      log(`stopping ${s.folder}: nothing runs there`);
-      stopSession(s);
-    }
+    log(`stopping ${s.folder}: nothing runs there`);
+    stopSession(s);
   }
+}
+
+/** How long a project left behind stays warm. Tests set it. */
+function warmMs(): number {
+  const set = Number(process.env.FRAME_STUDIO_WARM_MS);
+  return process.env.FRAME_STUDIO_WARM_MS !== undefined && Number.isFinite(set) ? set : WARM_MS;
 }
 
 /** Opens run one at a time, so a double click can't start two servers. */
@@ -161,13 +194,13 @@ let opening: Promise<string | null> = Promise.resolve(null);
  * Opens `folder`: its server, its render worker, and the viewer. The folder open now stays until the new server
  * is up, so a folder that fails to open leaves you where you were. Returns why it failed, or null.
  */
-function openFolder(folder: string, options: { restart?: boolean } = {}): Promise<string | null> {
+function openFolder(folder: string, options: { restart?: boolean; target?: OpenTarget } = {}): Promise<string | null> {
   const run = opening.then(() => openFolderNow(folder, options));
   opening = run.catch(() => null);
   return run;
 }
 
-async function openFolderNow(folder: string, options: { restart?: boolean }): Promise<string | null> {
+async function openFolderNow(folder: string, options: { restart?: boolean; target?: OpenTarget }): Promise<string | null> {
   const dir = resolve(folder);
   if (!(await isDirectory(dir))) return `${dir} is not a folder.`;
   if (!options.restart) restarts = 0;
@@ -202,13 +235,17 @@ async function openFolderNow(folder: string, options: { restart?: boolean }): Pr
   }
   const previous = session;
   session = target;
+  target.left = undefined;
   settings.recent = [dir, ...settings.recent.filter((p) => p !== dir)].slice(0, 10);
   void saveSettings();
   buildMenu();
-  showViewer(target.url, basename(dir));
+  showViewer(target.url, basename(dir), options.target);
   welcome?.close();
-  // The project left behind keeps running only while its agents work.
-  if (previous && previous !== target) void sweep();
+  // The project left behind stays warm for a while, and keeps running while its agents work.
+  if (previous && previous !== target) {
+    previous.left = Date.now();
+    void sweep();
+  }
   return null;
 }
 
@@ -246,15 +283,18 @@ function guard(win: BrowserWindow): void {
   });
 }
 
+/** The viewer's background (--bg) in the system's theme, so a switch between projects never shows anything else. */
+const pageColour = () => (nativeTheme.shouldUseDarkColors ? '#1c1c1e' : '#f5f5f7');
+
 /** The page's background under the system's theme, and on macOS no title bar: the pages draw their own, with room for the window buttons. */
 function windowLook(): Electron.BrowserWindowConstructorOptions {
   return {
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#161615' : '#fbfaf9',
+    backgroundColor: pageColour(),
     ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const, trafficLightPosition: { x: 16, y: 16 } } : {}),
   };
 }
 
-function showViewer(url: string, name: string): void {
+function showViewer(url: string, name: string, target?: OpenTarget): void {
   if (!main || main.isDestroyed()) {
     const bounds = settings.bounds;
     main = new BrowserWindow({
@@ -283,7 +323,8 @@ function showViewer(url: string, name: string): void {
     });
   }
   main.setTitle(`${name} · Frame Studio`);
-  void main.loadURL(`${url}/`);
+  const query = new URLSearchParams({ ...(target?.scene ? { scene: target.scene } : {}), ...(target?.thread !== undefined ? { thread: String(target.thread) } : {}), ...(target?.new ? { new: target.new } : {}) }).toString();
+  void main.loadURL(`${url}/${query ? `?${query}` : ''}`);
   main.show();
 }
 
@@ -340,12 +381,13 @@ async function newProject(): Promise<string | null> {
 }
 
 /**
- * Converts film `id` of the project on screen, projects/<id>/ (M9), into a project folder of its own
- * (ADR 0013): asks where, writes it, and switches to it.
+ * Converts film `id` of a listed project, or of the one on screen, projects/<id>/ (M9), into a project
+ * folder of its own (ADR 0013): asks where, writes it, and switches to it.
  */
-async function convertFilmToProject(id: string): Promise<string | null> {
-  if (!session) return 'No project is open.';
-  const source = join(session.folder, 'projects', id);
+async function convertFilmToProject(id: string, project: string | null): Promise<string | null> {
+  const folder = project ?? session?.folder;
+  if (!folder) return 'No project is open.';
+  const source = join(folder, 'projects', id);
   if (!/^[a-z0-9][a-z0-9-]*$/i.test(id) || !(await isDirectory(source))) return `There is no film "${id}" in projects/.`;
   await mkdir(projectsHome(), { recursive: true }).catch(() => {});
   const parent = BrowserWindow.getFocusedWindow() ?? main;
@@ -358,7 +400,7 @@ async function convertFilmToProject(id: string): Promise<string | null> {
   };
   const picked = parent ? await dialog.showSaveDialog(parent, options) : await dialog.showSaveDialog(options);
   if (picked.canceled || !picked.filePath) return null;
-  const problem = await convertFilm(source, picked.filePath, session.folder).then(
+  const problem = await convertFilm(source, picked.filePath, folder).then(
     () => null,
     (err: unknown) => `Could not convert into ${picked.filePath}: ${err instanceof Error ? err.message : String(err)}`,
   );
@@ -455,12 +497,34 @@ function pushUpdate(state: UpdateState): void {
   for (const win of [main, welcome]) if (win && !win.isDestroyed()) win.webContents.send('frame-studio:update-changed', state);
 }
 
+/** The longest value the viewer may keep. */
+const PREF_MAX = 64 * 1024;
+
 function registerIpc(): void {
   ipcMain.on('frame-studio:token', (event) => {
     event.returnValue = fromViewer(event.senderFrame?.url) ? session!.token : '';
   });
   ipcMain.on('frame-studio:recent', (event) => {
     event.returnValue = settings.recent;
+  });
+  // What a new page starts from, at once: no flicker of defaults while it asks.
+  ipcMain.on('frame-studio:boot', (event) => {
+    const here = fromViewer(event.senderFrame?.url) ? session : null;
+    event.returnValue = {
+      prefs: here ? (settings.prefs ?? {}) : {},
+      drafts: here ? (drafts.get(here.folder) ?? {}) : {},
+      projects: here ? listing.map((p) => ({ ...p, current: p.path === here.folder })) : [],
+    };
+  });
+  ipcMain.on('frame-studio:pref', (event, key: unknown, value: unknown) => {
+    if (!fromViewer(event.senderFrame?.url) || typeof key !== 'string' || !key.startsWith('frame-studio:') || typeof value !== 'string' || value.length > PREF_MAX) return;
+    settings.prefs = { ...settings.prefs, [key]: value };
+    void saveSettings();
+  });
+  ipcMain.on('frame-studio:draft', (event, key: unknown, text: unknown) => {
+    if (!session || !fromViewer(event.senderFrame?.url) || typeof key !== 'string' || typeof text !== 'string') return;
+    const { [key]: _, ...others } = drafts.get(session.folder) ?? {};
+    drafts.set(session.folder, text === '' ? others : { ...others, [key]: text });
   });
   ipcMain.handle('frame-studio:reveal', (event, path: string) => {
     if (!session || !fromViewer(event.senderFrame?.url)) return;
@@ -472,10 +536,31 @@ function registerIpc(): void {
   ipcMain.handle('frame-studio:open-folder', (event) => (fromApp(event) ? pickFolder() : null));
   ipcMain.handle('frame-studio:new-project', (event) => (fromApp(event) ? newProject() : null));
   ipcMain.handle('frame-studio:sample-project', (event) => (fromApp(event) ? sampleProject() : null));
-  ipcMain.handle('frame-studio:convert-film', (event, id: string) => (fromApp(event) ? convertFilmToProject(String(id)) : null));
-  ipcMain.handle('frame-studio:open-recent', (event, path: string) => (fromApp(event) && settings.recent.includes(path) ? openFolder(path) : null));
-  // The project switcher's list (ADR 0013): the recent projects with their threads that need a look.
-  ipcMain.handle('frame-studio:projects', (event) => (fromApp(event) ? listProjects(settings.recent, session?.folder ?? null, new Set(sessions.keys())) : []));
+  ipcMain.handle('frame-studio:convert-film', (event, id: string, project: string | null) => {
+    if (!fromApp(event) || (project !== null && !settings.recent.includes(project))) return null;
+    return convertFilmToProject(String(id), project);
+  });
+  ipcMain.handle('frame-studio:open-recent', (event, path: string, target?: OpenTarget) => {
+    if (!fromApp(event)) return null;
+    if (!settings.recent.includes(path)) return `${path} is no longer a recent project.`;
+    const scene = typeof target?.scene === 'string' ? target.scene : undefined;
+    const thread = Number.isInteger(target?.thread) ? target?.thread : undefined;
+    const add = target?.new === 'video' || target?.new === 'scene' ? target.new : undefined;
+    return openFolder(path, { target: { ...(scene ? { scene } : {}), ...(thread !== undefined ? { thread } : {}), ...(add ? { new: add } : {}) } });
+  });
+  ipcMain.handle('frame-studio:forget-recent', (event, path: string) => {
+    if (!fromApp(event)) return;
+    settings.recent = settings.recent.filter((p) => p !== path);
+    void saveSettings();
+    buildMenu();
+  });
+  // The sidebar's list (ADR 0013): each recent project with what it holds and its threads that need a look.
+  ipcMain.handle('frame-studio:projects', async (event) => {
+    if (!fromApp(event)) return [];
+    listing = await listProjects(settings.recent, session?.folder ?? null, new Set(sessions.keys()));
+    return listing;
+  });
+  ipcMain.handle('frame-studio:poster', (event, path: string, file: string) => (fromApp(event) && settings.recent.includes(path) ? projectPoster(path, String(file)) : null));
   // Updates (ADR 0009). The preloads offer them only when the app can update.
   ipcMain.on('frame-studio:updates', (event) => {
     event.returnValue = updatesEnabled() && fromApp(event);
@@ -510,6 +595,7 @@ export function runApp(): void {
     win.focus();
   });
   app.on('window-all-closed', () => app.quit());
+  nativeTheme.on('updated', () => main?.setBackgroundColor(pageColour()));
   // The Dock icon with no window up: the viewer if a folder is open, else the welcome screen.
   app.on('activate', () => {
     if (main || welcome) return;
@@ -532,8 +618,12 @@ export function runApp(): void {
     buildMenu();
     if (updatesEnabled()) startUpdates({ push: pushUpdate, log });
     setInterval(() => void sweep(), 5000);
-    const last = settings.recent[0];
-    if (last && (await isDirectory(last)) && !(await openFolder(last))) return;
+    // The last project that's still there.
+    for (const dir of settings.recent) {
+      if (!(await isDirectory(dir))) continue;
+      if (!(await openFolder(dir))) return;
+      break;
+    }
     showWelcome();
   });
 }

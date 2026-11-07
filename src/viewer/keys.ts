@@ -12,6 +12,15 @@ export type KeyAction =
   | { type: 'escape' }
   /** M: sound on or off. */
   | { type: 'mute' }
+  /** X: the range goes to the span of what is selected. */
+  | { type: 'markSpan' }
+  /** Return: the prompt takes the keyboard. */
+  | { type: 'compose' }
+  /** Delete and Backspace: the selected key. */
+  | { type: 'delete' }
+  /** Command-Z and Shift-Command-Z: hand edits, of keys, of clips and on the canvas. */
+  | { type: 'undo' }
+  | { type: 'redo' }
   /** A key the viewer owns but should not act on (Space auto-repeat). */
   | { type: 'ignore' };
 
@@ -27,12 +36,15 @@ export interface KeyInput {
 
 /**
  * Space play/pause, Left/Right one frame (Shift: one second), Home/End,
- * I and O for the range, Escape to clear the selection one step at a time,
- * M for sound on or off.
+ * I and O for the range, X for the span of what is selected, Escape to clear
+ * the selection one step at a time, M for sound on or off, Return to go to the
+ * prompt, Delete or Backspace for the selected key, and Command-Z with Shift to
+ * undo and redo a hand edit. The App sends the arrows to a selected key instead.
  * A held Space or M toggles once: its auto-repeats are ignored. Held arrows keep
  * stepping, so they scrub.
  */
 export function keyAction(e: KeyInput, fps: number): KeyAction | null {
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'z' || e.key === 'Z')) return { type: e.shiftKey ? 'redo' : 'undo' };
   if (e.altKey || e.ctrlKey || e.metaKey) return null;
   const big = Math.max(1, Math.round(fps));
   switch (e.key) {
@@ -53,8 +65,16 @@ export function keyAction(e: KeyInput, fps: number): KeyAction | null {
     case 'o':
     case 'O':
       return { type: 'markOut' };
+    case 'x':
+    case 'X':
+      return { type: 'markSpan' };
+    case 'Enter':
+      return e.shiftKey ? null : { type: 'compose' };
     case 'Escape':
       return { type: 'escape' };
+    case 'Delete':
+    case 'Backspace':
+      return { type: 'delete' };
     case 'm':
     case 'M':
       return e.repeat ? { type: 'ignore' } : { type: 'mute' };

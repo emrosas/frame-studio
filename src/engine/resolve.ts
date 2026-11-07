@@ -29,6 +29,7 @@ export function sceneLayers(scene: Scene): Layer[] {
  */
 export function resolveLayer(layer: Layer, scene: Scene, frame: number, registry: RigRegistry, world: World = {}): ResolvedLayer {
   if (layer.scene !== undefined) throw new Error(`layer "${layer.id}" places scene "${layer.scene}"; a scene layer has no rig`);
+  if (layer.file !== undefined) throw new Error(`layer "${layer.id}" shows "${layer.file}"; a picture clip has no rig`);
   const t = quantizeTime(frame, scene.fps, layer.stepFps);
   const o = activeOverride(layer.overrides, frame);
   const member = layer.cast !== undefined ? world.cast?.[layer.cast] : undefined;

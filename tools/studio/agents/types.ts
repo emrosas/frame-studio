@@ -49,6 +49,8 @@ export interface TurnCallbacks {
   ask(questions: AgentQuestion[]): Promise<QuestionAnswers | null>;
   /** The provider's session id, as soon as it is known, so a later turn can resume it. */
   session(id: string): void;
+  /** The model running the turn, when the provider says. */
+  model?(id: string): void;
 }
 
 export interface TurnOutcome {

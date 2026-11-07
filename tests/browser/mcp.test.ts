@@ -94,6 +94,7 @@ describe('an agent session', () => {
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
         'apply_to_selection',
+        'check',
         'complete_request',
         'create_composition',
         'create_scene',
@@ -130,7 +131,7 @@ describe('an agent session', () => {
     expect(bear?.params.body.description).toMatch(/colour/);
     expect(rigs.find((r) => r.id === 'bear.bandaged')?.base).toBe('bear');
     const generators = json<{ id: string; params: Record<string, { type: string; description?: string }> }[]>(await call('list_generators'));
-    expect(generators.map((g) => g.id).sort()).toEqual(['blip', 'buzz', 'pad']);
+    expect(generators.map((g) => g.id).sort()).toEqual(['blip', 'buzz', 'chip', 'hit', 'pad']);
     expect(generators.find((g) => g.id === 'blip')?.params.every.description).toMatch(/Seconds between blips/);
   });
 
@@ -237,6 +238,15 @@ describe('an agent session', () => {
     expect(r.isError).toBeFalsy();
     expect(textOf(r)).toMatch(/frames 0, 24, 48, 72/);
     expect(r.content.some((c) => c.type === 'image')).toBe(true);
+  });
+
+  it('measures a scene with check, and saves the report', async () => {
+    const report = json<{ ok: boolean; scene: string; from: number; to: number; file: string; checks: { id: string; status: string }[] }>(await call('check', { sceneId: ID, from: 0, to: 24 }));
+    expect(report).toMatchObject({ scene: ID, from: 0, to: 24 });
+    expect(report.checks.map((c) => c.id)).toContain('flashing');
+    expect(report.checks.every((c) => ['pass', 'warn', 'fail'].includes(c.status))).toBe(true);
+    expect(report.ok).toBe(report.checks.every((c) => c.status !== 'fail'));
+    expect(report.file).toMatch(new RegExp(`checks.${ID}\\.json$`));
   });
 
   it('exports all three targets', async () => {

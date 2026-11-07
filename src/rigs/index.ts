@@ -8,14 +8,20 @@ import { circle } from './circle';
 import { fill } from './fill';
 import { paper } from './paper';
 import { rect } from './rect';
+import { arrow } from './pixel/arrow';
+import { drift } from './pixel/drift';
+import { pixelText } from './pixel/pixel-text';
+import { ridge } from './pixel/ridge';
+import { sky } from './pixel/sky';
+import { sprite } from './pixel/sprite';
 import { star } from './star';
 import { studyRigs } from './studies';
 import { text } from './type/text';
 
-export { bear, bearArm, bearBandaged, bearBlush, circle, fill, paper, rect, star, text };
+export { arrow, bear, bearArm, bearBandaged, bearBlush, circle, drift, fill, paper, pixelText, rect, ridge, sky, sprite, star, text };
 
 /** Every rig the studio ships. Add new rigs (and variants) here. */
-export const allRigs: readonly Rig[] = [paper, fill, circle, rect, star, text, bear, bearArm, bearBandaged, bearBlush, ...studyRigs];
+export const allRigs: readonly Rig[] = [paper, fill, circle, rect, star, text, bear, bearArm, bearBandaged, bearBlush, pixelText, sprite, sky, ridge, drift, arrow, ...studyRigs];
 
 export function createDefaultRegistry(): RigRegistry {
   return createRegistry(allRigs);

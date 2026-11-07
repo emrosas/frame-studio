@@ -11,6 +11,11 @@ const press = (key: string, mods: Partial<{ shiftKey: boolean; altKey: boolean; 
 });
 
 describe('keyAction', () => {
+  it('takes Delete and Backspace for the selected key', () => {
+    expect(keyAction(press('Delete'), 12)).toEqual({ type: 'delete' });
+    expect(keyAction(press('Backspace'), 12)).toEqual({ type: 'delete' });
+  });
+
   it('maps the shortcuts', () => {
     expect(keyAction(press(' '), 12)).toEqual({ type: 'toggle' });
     expect(keyAction(press('ArrowLeft'), 12)).toEqual({ type: 'step', delta: -1 });
@@ -52,6 +57,19 @@ describe('keyAction', () => {
   it('Escape clears one step of the selection', () => {
     expect(keyAction(press('Escape'), 12)).toEqual({ type: 'escape' });
     expect(keyAction(press('Escape', { ctrlKey: true }), 12)).toBeNull();
+  });
+
+  it('maps the selection keys', () => {
+    expect(keyAction(press('x'), 12)).toEqual({ type: 'markSpan' });
+    expect(keyAction(press('Enter'), 12)).toEqual({ type: 'compose' });
+    expect(keyAction(press('Enter', { shiftKey: true }), 12)).toBeNull();
+  });
+
+  it('maps undo and redo, on Command and on Control', () => {
+    expect(keyAction(press('z', { metaKey: true }), 12)).toEqual({ type: 'undo' });
+    expect(keyAction(press('z', { ctrlKey: true }), 12)).toEqual({ type: 'undo' });
+    expect(keyAction(press('z', { metaKey: true, shiftKey: true }), 12)).toEqual({ type: 'redo' });
+    expect(keyAction(press('z'), 12)).toBeNull();
   });
 
   it('leaves modified and unknown keys alone', () => {

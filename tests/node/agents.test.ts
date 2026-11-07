@@ -7,8 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { judge, type AccessContext } from '../../tools/studio/agents/access';
-import { claudeAction, claudeProvider, claudeStepLabel, summaryOf } from '../../tools/studio/agents/claude';
-import { codexPolicy, codexProvider } from '../../tools/studio/agents/codex';
+import { claudeAction, claudeModels, claudeProvider, claudeStepLabel, summaryOf } from '../../tools/studio/agents/claude';
+import { codexModels, codexPolicy, codexProvider } from '../../tools/studio/agents/codex';
 
 const ROOT = '/repo';
 const ctx = (overrides: Partial<AccessContext> = {}): AccessContext => ({ access: 'studio', root: ROOT, sceneId: 'hello', busyScenes: [], busyRigs: [], ...overrides });
@@ -167,5 +167,32 @@ describe('provider status, with no login handled by the studio', () => {
     } finally {
       rmSync(bin, { recursive: true, force: true });
     }
+  });
+});
+
+describe('what each provider reports about its models', () => {
+  it("keeps Codex's efforts and default per model, its default model first, and hides what it hides", () => {
+    const { list, efforts } = codexModels([
+      { id: 'small', displayName: 'Small', hidden: false, isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'ultra' }], defaultReasoningEffort: 'low' },
+      { id: 'secret', displayName: 'Secret', hidden: true, isDefault: false, supportedReasoningEfforts: [{ reasoningEffort: 'max' }] },
+      { id: 'big', displayName: 'Big', hidden: false, isDefault: true, supportedReasoningEfforts: [{ reasoningEffort: 'low' }, { reasoningEffort: 'high' }], defaultReasoningEffort: 'high' },
+    ]);
+    expect(list).toEqual([
+      { id: 'big', label: 'Big', efforts: ['low', 'high'], default: true, defaultEffort: 'high' },
+      { id: 'small', label: 'Small', efforts: ['low', 'ultra'], defaultEffort: 'low' },
+    ]);
+    expect(efforts).toEqual(['low', 'high', 'ultra']);
+  });
+
+  it("takes Claude's names and efforts as the CLI reports them", () => {
+    const { models, efforts } = claudeModels([
+      { value: 'default', displayName: 'Default (recommended)', description: '', supportsEffort: true, supportedEffortLevels: ['low', 'max'] },
+      { value: 'haiku', displayName: 'Haiku', description: '', supportsEffort: false },
+    ]);
+    expect(models).toEqual([
+      { id: 'default', label: 'Default', efforts: ['low', 'max'], default: true },
+      { id: 'haiku', label: 'Haiku', efforts: [] },
+    ]);
+    expect(efforts).toEqual(['low', 'max']);
   });
 });

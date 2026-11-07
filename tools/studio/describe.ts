@@ -79,7 +79,7 @@ export function describeThread(request: StudioRequest, info: SceneInfo, options:
   }
   lines.push(
     '',
-    'How to do it: look with render_frame, render_contact_sheet and hit_test. Change it with apply_to_selection (pass this selection), update_scene, or a new rig variant under src/rigs applied through an override. Render again to check.',
+    'How to do it: look with render_frame, render_contact_sheet and hit_test. Change it with apply_to_selection (pass this selection), update_scene, or a new rig variant under src/rigs applied through an override. Render again to check. Before calling a film done, run check and fix what fails.',
   );
   if (options.agent === 'external') {
     lines.push(

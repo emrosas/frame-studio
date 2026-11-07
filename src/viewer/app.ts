@@ -6,31 +6,39 @@
 import { LivePlayback } from '../audio/live';
 import { mediaUsed } from '../audio/media';
 import { audioKey, generatorsUsed, hasAudio, renderSceneAudio, sameGenerators } from '../audio/render';
-import { MediaStore } from './media';
+import { mediaUrl, MediaStore } from './media';
+import { PictureStore } from '../export/pictures';
 import type { AudioGenerator } from '../audio/types';
 import {
   formatTimecode,
   frameCount as countFrames,
   hitTest,
+  isImageFile,
+  picturesAt,
   render,
   sceneLayerSpan,
+  sceneLayers,
   shotFrame,
   timeToFrame,
   type HitResult,
+  type PictureRequest,
   type HitTestOptions,
   type SceneLayerSpan,
 } from '../engine';
-import type { Scene, World } from '../engine/types';
+import type { Layer, Scene, World } from '../engine/types';
 import { createSurfaces } from '../embed/surfaces';
 import { CanvasView } from './canvas';
-import { FpsMeter, PlaybackClock } from './clock';
+import { PlaybackClock } from './clock';
+import { dragDelta, dragScale, landValue, lockAxis, movable, snapCentre, stageCentre, withinBounds, withLayers, writePosition, type DragMoment, type DragScale, type Movable, type Position } from './drag';
+import { deleteKeys, keyLanes, keyMarks, keysAt, moveTarget, type KeyTarget, type SelectedKey } from './keyframes';
+import { formatClock, visibleSpans, type ClipPlace } from './timeline';
 import { ErrorLog, errorText } from './errors';
 import { focusKeepsKey, keyAction } from './keys';
 import { findEntry, openingEntry, type SceneEntry, type SceneLibrary } from './library';
 import { SelectionOverlay } from './overlay';
 import { clientToScene, isDrag, type Point } from './pointer';
+import { SafeZoneGuide } from './safe-zones';
 import {
-  describeRange,
   editRangeEnd,
   isRepeatClick,
   layerLabel,
@@ -40,6 +48,8 @@ import {
   rangeError,
   resolveSelectionParams,
   sceneShape,
+  spanLabel,
+  spanTitle,
   type ClickMemo,
   type FrameRange,
   type SceneShape,
@@ -57,8 +67,10 @@ import {
   type TurnSettings,
 } from '../studio/protocol';
 import { desktop } from './desktop';
+import { readPref, writePref } from './prefs';
 import { StudioClient } from './studio-client';
-import type { SceneOption, ShotBand, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
+import type { LayerRow, SceneOption, ShotBand, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
+import { asLayer, EditHistory, layerKey, layerSet, sceneState } from './undo';
 import { parseFrameParam, RELOAD_KEY, reloadRecord, UrlSync, type UrlPosition } from './url';
 
 /** window.studio.selection: what is picked, in the shape agent tools take. */
@@ -142,18 +154,22 @@ export interface StudioApi {
 export interface AppOptions {
   /** ?scene= from the URL. */
   scene: string | null;
+  /** Open on the library: the project opened with nothing selected. */
+  home?: boolean;
   /** ?frame= from the URL: a frame number or MM:SS:FF. */
   frame: string | null;
   /** Start playing (restoring play state across a full reload). */
   autoplay: boolean;
   /** ?layer=&part=&from=&to= from the URL, checked against the scene once it is valid. */
   selection?: SelectionParams;
+  /** ?thread= from a thread card in another project: the thread to open. */
+  thread?: number | null;
 }
 
 /** sessionStorage key: play state carried across Vite's full-reload fallback. */
 export const RESUME_KEY = 'frame-studio:resume-playback';
 
-/** localStorage key: sound muted, kept across reloads and scenes. */
+/** Sound muted, kept across reloads, scenes and projects. */
 const MUTED_KEY = 'frame-studio:muted';
 
 /** Start of the notice shown when a hover probe throws. */
@@ -161,24 +177,45 @@ const HOVER_OFF = 'Hover inspect is off';
 
 type DrawResult = { kind: 'drawn' } | { kind: 'skipped'; reason: string } | { kind: 'failed'; error: unknown };
 
+/** A layer being dragged on the canvas. Nothing is saved until the pointer lifts. */
+interface CanvasDrag {
+  layerId: string;
+  pointerId: number;
+  /** Where the press was, client CSS px. */
+  start: Point;
+  base: Layer;
+  next: Layer;
+  from: Movable;
+  scale: DragScale;
+  moment: DragMoment;
+  centre: Position;
+  guides: { x: boolean; y: boolean } | null;
+}
+
+/** How long Left and Right wait before a run of nudges saves, as one edit. */
+const NUDGE_SAVE_MS = 250;
+/** How long a saved layer stays held if its file never shows that edit, which means someone else's arrived first. */
+const HOLD_MS = 2000;
+
+const LOCKED = 'An agent is working on this scene, so it stays put until the agent finishes.';
+
 export class App {
   readonly api: StudioApi;
   private library: SceneLibrary;
   private entry: SceneEntry | null = null;
   private total = 0;
   private readonly clock = new PlaybackClock(() => performance.now());
-  private readonly meter = new FpsMeter();
   private readonly url = new UrlSync();
   private readonly view: CanvasView;
   private readonly ui: ViewerUi;
   /** What the Svelte components call (ui.svelte.ts). */
   readonly actions: ViewerActions;
   private readonly overlay: SelectionOverlay;
+  private readonly safeZones: SafeZoneGuide;
   private readonly errors: ErrorLog;
   private raf = 0;
   private canvasDirty = true;
   private uiDirty = true;
-  private lastFpsUpdate = -Infinity;
   private resumeAfterScrub = false;
   /** Set when a hot edit made the playing scene invalid; playback resumes once it is valid again. */
   private resumeWhenValid = false;
@@ -193,6 +230,10 @@ export class App {
   private layerId: string | null = null;
   private partId: string | null = null;
   private rangeValue: FrameRange | null = null;
+  /** The span X marks when a click landed on one: a clip, an override, a sound cue. */
+  private pickedSpan: FrameRange | null = null;
+  /** A row or band under the pointer, which outranks the canvas's hover. */
+  private rowHover: string | null = null;
   /** The selected frame range. Playback loops inside it while it is set. */
   private get range(): FrameRange | null {
     return this.rangeValue;
@@ -212,6 +253,11 @@ export class App {
   private probe: OffscreenCanvasRenderingContext2D | null = null;
   /** Offscreen surfaces for masks and faded shots (ADR 0007). */
   private readonly surfaces = createSurfaces();
+  /** Decoded picture clips (ADR 0014). A draw shows the nearest ready frame and asks for the exact one. */
+  private readonly pictures = new PictureStore(mediaUrl);
+  private picturesWanted = '';
+  private picturesNext: PictureRequest[] | null = null;
+  private picturesBusy = false;
   /** Pointer over the canvas, client CSS px; null when outside. */
   private pointer: Point | null = null;
   private downAt: Point | null = null;
@@ -226,6 +272,27 @@ export class App {
   /** The frame on which a hover probe threw; hover skips that frame only, until the next scene swap. */
   private hoverFailedFrame: number | null = null;
   private scrubbing = false;
+  /** Hand edits, for Command-Z. */
+  private readonly history = new EditHistory();
+  private historySteps: Promise<unknown> = Promise.resolve();
+
+  // ---- hand edits (ADR 0015) ----
+  /** Layers on screen ahead of their files: a drag under way, or a save on its way back. */
+  private readonly held = new Map<string, Layer>();
+  private heldVersion = 0;
+  private heldScene: { base: Scene; version: number; scene: Scene } | null = null;
+  private keyDrag: { target: KeyTarget; base: Layer; next: Layer } | null = null;
+  /** Nudges not saved yet. */
+  private nudge: { base: Layer; next: Layer; timer: ReturnType<typeof setTimeout> } | null = null;
+  private canvasDrag: CanvasDrag | null = null;
+  /** This press has looked for something to drag. */
+  private pressLooked = false;
+  /** The press became a drag, so the click it ends in selects nothing. */
+  private pressDragged = false;
+  /** The pointer is over the selected layer, and it can move. */
+  private overMovable = false;
+  /** Layers already told "Position is set by this rig". */
+  private readonly toldFixed = new Set<string>();
 
   // ---- shots (ADR 0007) ----
   /** Where Open shot came from, so Back returns there. Any other scene switch forgets it. */
@@ -245,6 +312,8 @@ export class App {
   private selectionPoint: Point | null = null;
   private publishTimer: ReturnType<typeof setTimeout> | null = null;
   private requests: StudioRequest[] = [];
+  /** The thread to open when the queue arrives. */
+  private askedThread: number | null = null;
   /** Turns whose saved events were fetched, "id:turn". */
   private readonly loadedTurns = new Set<string>();
 
@@ -256,6 +325,7 @@ export class App {
     this.library = library;
     this.ui = ui;
     this.pendingFrameParam = options.frame;
+    this.askedThread = options.thread ?? null;
     const sel = options.selection;
     this.pendingSelection = sel && (sel.layer ?? sel.part ?? sel.from ?? sel.to) !== null ? sel : null;
 
@@ -271,6 +341,8 @@ export class App {
         this.pauseInternal();
         this.scrubbing = true;
         this.hoverLayer = null;
+        // The arrows go back to the playhead.
+        this.ui.selectedKey = null;
       },
       scrub: (f) => this.seekInternal(f, false),
       scrubEnd: () => {
@@ -281,7 +353,12 @@ export class App {
       },
       selectScene: (key) => {
         const next = findEntry(this.library, key);
-        if (next) this.userSelect(next);
+        // The scene already behind the library opens as it was left.
+        if (next && next === this.entry && this.ui.home) this.setHome(false);
+        else if (next) {
+          this.userSelect(next);
+          this.followThreads(next.key);
+        }
       },
       importMedia: (files) =>
         attempt(async () => {
@@ -292,20 +369,56 @@ export class App {
           const scene = this.validScene();
           if (!scene || !this.entry) throw new Error('No valid scene is showing.');
           await this.studio.placeSound(this.entry.key, file, this.clock.frame / scene.fps);
+          this.setHome(false);
         }),
       waveform: (file, from, to, buckets) => this.media.peaks(file, from, to, buckets),
       createScene: (input) => this.create(() => this.studio.createScene(input)),
-      createComposition: (input) => this.create(() => this.studio.createComposition(input)),
-      selectShot: (layerId) => {
-        const shot = this.shots().find((s) => s.layerId === layerId);
-        if (!shot) return;
-        this.clickMemo = null;
-        this.layerId = layerId;
-        this.partId = null;
-        this.selectionPoint = null;
-        this.range = { from: shot.span.from, to: shot.span.to };
-        this.selectionChanged();
-        this.canvasDirty = true;
+      createVideo: (input) => this.create(() => this.studio.createVideo(input)),
+      showHome: (on) => {
+        if (on && !this.ui.home) this.ui.homeReturn = this.library.entries.length > 0;
+        this.setHome(on);
+      },
+      dragRange: (range) => {
+        this.userSetRange(range);
+        this.flushNow();
+      },
+      moveClip: (layerId, place) => this.moveClip(layerId, place),
+      startKeyDrag: (target) => this.startKeyDrag(target),
+      dragKeys: (to) => this.dragKeys(to),
+      endKeyDrag: (commit) => this.endKeyDrag(commit),
+      selectKey: (key) => {
+        if (key && key.layerId !== this.layerId) this.pick(key.layerId, null);
+        this.ui.selectedKey = key;
+        this.flushNow();
+      },
+      deleteKey: (key) => this.deleteKey(key),
+      syncGuides: () => this.syncOverlay(),
+      revealRender: (path) => void desktop()?.reveal(path),
+      selectLayer: (layerId, span) => {
+        this.pick(layerId, span ?? null);
+        this.flushNow();
+      },
+      selectRange: (layerId, range) => {
+        this.pick(layerId, null);
+        this.userSetRange(range.from === 0 && range.to === this.total ? null : range);
+        this.flushNow();
+      },
+      selectCue: (id, span) => {
+        this.pick(null, span);
+        this.ui.cue = id;
+        this.flushNow();
+      },
+      pickStack: (layerId) => {
+        const point = this.ui.stackMenu?.point ?? null;
+        this.ui.stackMenu = null;
+        this.pick(layerId, null);
+        this.selectionPoint = point ? { x: Math.round(point.x), y: Math.round(point.y) } : null;
+        this.flushNow();
+      },
+      hoverLayer: (layerId) => {
+        if (layerId === this.rowHover) return;
+        this.rowHover = layerId;
+        this.uiDirty = true;
         this.flushNow();
       },
       openShot: (layerId) => this.say(this.openShot(layerId)),
@@ -322,11 +435,15 @@ export class App {
         const result = this.ui.exporting.result;
         if (result && 'file' in result) void desktop()?.reveal(result.file);
       },
-      clearLayer: () => {
-        this.userSetLayer(null, null);
-        this.flushNow();
+      startCheck: (loop) => this.startCheck(loop),
+      cancelCheck: () => {
+        const running = this.ui.checking.running;
+        if (running) void this.studio.cancelCheck(running.id).catch(() => {});
       },
-      clearRange: () => {
+      clearSelection: () => {
+        this.ui.rangeEditing = false;
+        this.clickMemo = null;
+        this.userSetLayer(null, null);
         this.userSetRange(null);
         this.flushNow();
       },
@@ -371,13 +488,23 @@ export class App {
       dismissToast: () => (this.ui.toast = null),
       openFolder: () => void desktop()?.openFolder(),
       projects: async () => (await desktop()?.projects().catch(() => [])) ?? [],
-      openProject: async (path) => (await desktop()?.openProject(path).catch((err: unknown) => errorText(err).message)) ?? null,
+      openProject: async (path, name, target) => {
+        this.pauseInternal();
+        this.ui.switching = { name, key: target?.scene ?? null, path, thread: target?.thread ?? null };
+        const problem = (await desktop()?.openProject(path, target).catch((err: unknown) => errorText(err).message)) ?? null;
+        // On success the page goes; on failure, or a project that's refused, the stage comes back.
+        if (problem) this.ui.switching = null;
+        return problem;
+      },
+      forgetProject: async (path) => {
+        await desktop()?.forgetProject(path).catch(() => {});
+      },
       newProject: async () => (await desktop()?.newProject().catch((err: unknown) => errorText(err).message)) ?? null,
-      convertFilm: async (id) => {
+      convertFilm: async (id, project) => {
         const app = desktop();
         try {
           if (app) {
-            const problem = await app.convertFilm(id);
+            const problem = await app.convertFilm(id, project);
             return problem ? { text: problem, error: true } : null;
           }
           const path = await this.studio.convertFilm(id);
@@ -405,6 +532,7 @@ export class App {
       frame,
     );
     this.overlay = new SelectionOverlay(frame);
+    this.safeZones = new SafeZoneGuide(frame);
     this.errors = new ErrorLog((blocks) => (this.ui.errors = blocks));
 
     // The letterbox around the canvas is outside the scene: a click there clears the layer.
@@ -416,7 +544,10 @@ export class App {
     canvas.addEventListener('pointerdown', this.onCanvasPointerDown);
     canvas.addEventListener('click', this.onCanvasClick);
     canvas.addEventListener('dblclick', this.onCanvasDoubleClick);
+    canvas.addEventListener('contextmenu', this.onCanvasContextMenu);
     canvas.addEventListener('pointermove', this.onCanvasPointerMove);
+    canvas.addEventListener('pointerup', this.onCanvasPointerUp);
+    canvas.addEventListener('pointercancel', this.onCanvasPointerCancel);
     canvas.addEventListener('pointerleave', this.onCanvasPointerLeave);
     window.addEventListener('keydown', this.onKey);
     window.addEventListener('pagehide', this.onPageHide);
@@ -431,12 +562,318 @@ export class App {
       this.pendingFrameParam = null;
       this.pendingSelection = null;
     }
+    // Before the first scene shows, so the URL never carries one the project didn't open on.
+    this.ui.home = options.home ?? false;
     this.selectEntry(initial, false);
-    if (options.autoplay) this.playInternal();
+    if (options.autoplay && !this.ui.home) this.playInternal();
 
     this.api = this.createApi();
     this.startQueue();
     this.refreshMedia();
+    this.refreshThumbs();
+    void this.refreshRenders();
+  }
+
+  // ---- the library ----
+
+  /**
+   * Shows or hides the library. While it shows, playback stops and the canvas isn't redrawn: it's under the
+   * library, and anything marked dirty meanwhile draws when it closes. It can't close on a project with nothing to show.
+   */
+  private setHome(on: boolean): void {
+    if (on === this.ui.home || (!on && this.library.entries.length === 0)) return;
+    if (on) {
+      this.pauseInternal();
+      this.ui.exporting = { ...this.ui.exporting, open: false };
+    }
+    // Set by the showHome action; the App's own calls open the library with nothing to go back to.
+    this.ui.home = on;
+    if (on) void this.refreshRenders();
+    else this.invalidate();
+    this.syncUrl();
+  }
+
+  private thumbTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Asks where the posters stand, a moment after the last change, so a burst of edits asks once. */
+  private refreshThumbs(): void {
+    if (this.thumbTimer) clearTimeout(this.thumbTimer);
+    this.thumbTimer = setTimeout(() => {
+      this.thumbTimer = null;
+      this.studio.thumbs().then(
+        (thumbs) => {
+          // A scene keeps the poster it has until its new one arrives.
+          const known = this.ui.thumbs;
+          this.ui.thumbs = Object.fromEntries(Object.entries(thumbs).map(([key, file]) => [key, file ?? known[key] ?? null]));
+        },
+        () => {},
+      );
+    }, 600);
+  }
+
+  private async refreshRenders(): Promise<void> {
+    this.ui.renders = await this.studio.renders().catch(() => this.ui.renders);
+  }
+
+  /** Saves a dragged clip. Whatever refuses it says why in the selection bar, and the file stays as it was. */
+  private isPictureClip(layerId: string): boolean {
+    return this.validScene()?.layers.some((l) => l.id === layerId && l.file !== undefined) ?? false;
+  }
+
+  /** Saves run one at a time, and undo waits in line behind them, or a quick Command-Z would find nothing to take back. */
+  private inLine<T>(step: () => Promise<T>): Promise<T> {
+    const run = this.historySteps.then(step);
+    this.historySteps = run.catch(() => {});
+    return run;
+  }
+
+  private moveClip(layerId: string, place: ClipPlace): Promise<boolean> {
+    return this.inLine(() => this.saveClip(layerId, place));
+  }
+
+  /** Where a clip sits now, from the composition on screen. */
+  private clipPlace(layerId: string): ClipPlace | null {
+    const shot = this.shots().find((s) => s.layerId === layerId);
+    return shot ? { from: shot.span.from, in: shot.span.in, out: shot.end, length: shot.length } : null;
+  }
+
+  private async saveClip(layerId: string, place: ClipPlace): Promise<boolean> {
+    const scene = this.validScene();
+    if (!scene || !this.entry) return false;
+    const { fps } = scene;
+    const key = this.entry.key;
+    const edit = { start: place.from / fps, in: place.in / fps, out: place.out >= place.length && !this.isPictureClip(layerId) ? null : place.out / fps };
+    const spanOf = (p: ClipPlace): FrameRange => ({ from: p.from, to: Math.min(this.total, p.from + p.out - p.in) });
+    const was = this.clipPlace(layerId);
+    const spans = was ? { before: spanOf(was), after: spanOf(place) } : undefined;
+    this.history.begin();
+    try {
+      const change = await this.studio.moveClip(key, { clip: layerId, ...edit });
+      this.history.record(key, { layerId, ...change, spans });
+      this.rangeFollows(spans?.before, spans?.after);
+      return true;
+    } catch (err) {
+      this.say(errorText(err).message);
+      return false;
+    } finally {
+      this.history.end();
+    }
+  }
+
+  /** A range marked on a clip stays on the clip. */
+  private rangeFollows(was: FrameRange | undefined, now: FrameRange | undefined): void {
+    if (was && now && this.range?.from === was.from && this.range.to === was.to) this.userSetRange(now);
+  }
+
+  /** Command-Z, one at a time, so quick presses all count. Nothing happens while an agent works on the scene. */
+  private stepHistory(direction: 'undo' | 'redo'): void {
+    this.saveNudge();
+    void this.inLine(async () => {
+      if (!this.entry || this.agentWorks()) return;
+      const key = this.entry.key;
+      const edit = direction === 'undo' ? this.history.undo() : this.history.redo();
+      if (!edit) return;
+      const [to, from] = direction === 'undo' ? [edit.before, edit.after] : [edit.after, edit.before];
+      const layer = asLayer(edit.layerId, to);
+      this.ui.selectedKey = null;
+      this.hold(layer);
+      this.history.begin();
+      try {
+        await this.studio.editLayer({ scene: key, layer: edit.layerId, set: layerSet(from, to) });
+        this.letGo(layer);
+        const spans = edit.spans;
+        if (spans) this.rangeFollows(direction === 'undo' ? spans.after : spans.before, direction === 'undo' ? spans.before : spans.after);
+      } catch (err) {
+        this.say(errorText(err).message);
+        this.unhold(edit.layerId);
+        this.history.clear();
+      } finally {
+        this.history.end();
+      }
+    });
+  }
+
+  private agentWorks(): boolean {
+    return this.requests.some((r) => r.sceneId === this.entry?.key && r.status === 'working');
+  }
+
+  // ---- hand edits (ADR 0015) ----
+
+  /** The scene as the viewer shows it: the file, with any held layers in place. */
+  private shownScene(): Scene | null {
+    const scene = this.entry?.scene ?? null;
+    if (!scene || this.held.size === 0) return scene;
+    if (this.heldScene?.base !== scene || this.heldScene.version !== this.heldVersion) {
+      this.heldScene = { base: scene, version: this.heldVersion, scene: withLayers(scene, this.held) };
+    }
+    return this.heldScene.scene;
+  }
+
+  private shownLayer(id: string): Layer | null {
+    const scene = this.shownScene();
+    return scene ? (sceneLayers(scene).find((l) => l.id === id) ?? null) : null;
+  }
+
+  /** Shows `layer` ahead of its file. */
+  private hold(layer: Layer): void {
+    this.held.set(layer.id, layer);
+    this.heldChanged(layer.id);
+  }
+
+  private unhold(id: string): void {
+    if (this.held.delete(id)) this.heldChanged(id);
+  }
+
+  /** A save answered: the file comes next. If it shows something else by then, someone else's edit came in between and wins. */
+  private letGo(layer: Layer): void {
+    setTimeout(() => {
+      if (this.held.get(layer.id) === layer) this.unhold(layer.id);
+    }, HOLD_MS);
+  }
+
+  private heldChanged(id: string): void {
+    this.heldVersion++;
+    this.version++;
+    const scene = this.shownScene();
+    const layer = this.shownLayer(id);
+    if (scene && layer) this.ui.layers = this.ui.layers.map((row) => (row.id === id ? this.layerRow(layer, scene) : row));
+    this.invalidate();
+  }
+
+  /** Files that show what was held let it go. A drag still under way keeps its layer. */
+  private releaseHeld(): void {
+    const scene = this.entry?.scene;
+    if (!scene) return;
+    for (const layer of sceneLayers(scene)) {
+      const held = this.held.get(layer.id);
+      if (held && layerKey(held) === layerKey(layer) && layer.id !== this.keyDrag?.base.id && layer.id !== this.canvasDrag?.layerId && layer.id !== this.nudge?.base.id) {
+        this.held.delete(layer.id);
+        this.heldVersion++;
+      }
+    }
+  }
+
+  /** Forgets everything under way, for a scene that's leaving. */
+  private dropHeld(): void {
+    this.endCanvasDrag(false);
+    this.keyDrag = null;
+    this.held.clear();
+    this.heldVersion++;
+    this.ui.selectedKey = null;
+    this.toldFixed.clear();
+  }
+
+  /** Saves a held layer. Whatever refuses it says why in the selection bar, and the layer goes back to what the file holds. */
+  private saveLayer(base: Layer, next: Layer): Promise<boolean> {
+    const key = this.entry?.key;
+    const set = layerSet(base, next);
+    if (!key || Object.keys(set).length === 0) {
+      this.unhold(next.id);
+      return Promise.resolve(false);
+    }
+    this.history.begin();
+    return this.inLine(async () => {
+      try {
+        const change = await this.studio.editLayer({ scene: key, layer: next.id, set });
+        this.history.record(key, { layerId: next.id, ...change });
+        this.letGo(next);
+        return true;
+      } catch (err) {
+        this.say(errorText(err).message);
+        this.ui.selectedKey = null;
+        this.unhold(next.id);
+        return false;
+      } finally {
+        this.history.end();
+      }
+    });
+  }
+
+  /** Why keys can't change here, or null. */
+  private keysRefused(): string | null {
+    if (this.entry?.kind === 'composition' || !this.validScene()) return 'Keys are edited in scenes. Open the clip to edit its keys.';
+    return this.agentWorks() ? LOCKED : null;
+  }
+
+  private startKeyDrag(target: KeyTarget): boolean {
+    const problem = this.keysRefused();
+    if (problem) {
+      this.say(problem);
+      return false;
+    }
+    this.saveNudge();
+    const base = this.shownLayer(target.layerId);
+    if (!base) return false;
+    this.pauseInternal();
+    if (target.layerId !== this.layerId) this.pick(target.layerId, null);
+    this.keyDrag = { target, base, next: base };
+    return true;
+  }
+
+  private dragKeys(to: number): void {
+    const drag = this.keyDrag;
+    const scene = this.validScene();
+    if (!drag || !scene) return;
+    const { layer, frame } = moveTarget(drag.base, drag.target, to, scene.fps, this.total);
+    drag.next = layer;
+    if (drag.target.kind === 'key' && frame !== null) this.ui.selectedKey = { layerId: drag.target.layerId, param: drag.target.param, frame };
+    this.hold(layer);
+  }
+
+  private endKeyDrag(commit: boolean): void {
+    const drag = this.keyDrag;
+    if (!drag) return;
+    this.keyDrag = null;
+    if (commit && drag.next !== drag.base) void this.saveLayer(drag.base, drag.next);
+    else {
+      if (drag.target.kind === 'key') this.ui.selectedKey = null;
+      this.unhold(drag.base.id);
+    }
+  }
+
+  private deleteKey(key: SelectedKey): void {
+    const problem = this.keysRefused();
+    const scene = this.validScene();
+    if (problem || !scene) {
+      this.say(problem);
+      return;
+    }
+    this.saveNudge();
+    const base = this.shownLayer(key.layerId);
+    if (!base) return;
+    const refs = keysAt(base.tracks, key.frame, scene.fps, key.param);
+    if (refs.length === 0) return;
+    const next = deleteKeys(base, refs);
+    this.ui.selectedKey = null;
+    this.hold(next);
+    void this.saveLayer(base, next);
+  }
+
+  /** Left and Right on a selected key. A run of them shows at once and saves as one edit. */
+  private nudgeKey(key: SelectedKey, frames: number): void {
+    const problem = this.keysRefused();
+    const scene = this.validScene();
+    const current = this.shownLayer(key.layerId);
+    if (problem || !scene || !current) {
+      this.say(problem);
+      return;
+    }
+    // Back past the start would land it on 0, changing a fade that starts before the scene.
+    if (frames < 0 && key.frame <= 0) return;
+    const { layer, frame } = moveTarget(current, { kind: 'key', ...key }, key.frame + frames, scene.fps, this.total);
+    if (frame === null || frame === key.frame) return;
+    if (this.nudge) clearTimeout(this.nudge.timer);
+    this.nudge = { base: this.nudge?.base ?? current, next: layer, timer: setTimeout(() => this.saveNudge(), NUDGE_SAVE_MS) };
+    this.ui.selectedKey = { ...key, frame };
+    this.hold(layer);
+  }
+
+  private saveNudge(): void {
+    const nudge = this.nudge;
+    if (!nudge) return;
+    clearTimeout(nudge.timer);
+    this.nudge = null;
+    void this.saveLayer(nudge.base, nudge.next);
   }
 
   /** The media list the sidebar shows was read for this listing of media/. */
@@ -447,6 +884,9 @@ export class App {
     const listing = JSON.stringify(this.library.media ?? []);
     if (listing === this.mediaListed) return;
     this.mediaListed = listing;
+    // A replaced file must decode again.
+    this.pictures.dispose();
+    this.picturesWanted = '';
     this.ui.media = (this.library.media ?? []).map((m) => ({ file: m.file, name: m.file.slice('media/'.length) }));
     this.studio.mediaList().then(
       (list) => {
@@ -487,6 +927,7 @@ export class App {
     }
     this.errors.set('hmr', null);
     this.refreshMedia();
+    this.refreshThumbs();
   }
 
   /**
@@ -555,6 +996,7 @@ export class App {
   }
 
   private userSelect(entry: SceneEntry): void {
+    this.setHome(false);
     this.shotReturn = null;
     this.pendingFrameParam = null;
     this.pendingSelection = null;
@@ -565,14 +1007,26 @@ export class App {
 
   /** keepFrame: the same scene after a hot edit (keeps frame and selection); false for a switch. */
   private selectEntry(entry: SceneEntry | null, keepFrame: boolean): void {
+    if (!keepFrame) this.saveNudge();
     this.entry = entry;
-    const scene = entry?.scene ?? null;
+    if (keepFrame) this.releaseHeld();
+    else this.dropHeld();
+    const scene = this.shownScene();
     const registry = entry?.registry ?? null;
     const renderable = scene !== null && registry !== null;
     this.total = scene ? countFrames(scene) : 0;
     this.version++;
     this.shape = renderable ? sceneShape(scene, registry, this.total, entry?.world) : null;
+    this.ui.layers = renderable ? this.layerRows(scene) : [];
+    this.history.sync(entry?.key ?? null, entry?.scene ? sceneState(entry.scene) : null);
+    this.dropMissingKey();
     this.reconcileSelection(keepFrame);
+    if (!keepFrame) {
+      // Rows and menus of the scene that's leaving won't report the pointer going.
+      this.rowHover = null;
+      this.ui.stackMenu = null;
+      this.ui.rangeEditing = false;
+    }
     this.clickMemo = null;
     this.hoverLayer = null;
     this.hoverFailedFrame = null;
@@ -591,7 +1045,7 @@ export class App {
     }
 
     this.view.setSceneSize(renderable ? scene.size : null);
-    this.meter.reset();
+    this.view.canvas.classList.toggle('is-pixel', renderable && this.showsPixels(scene, entry?.world ?? {}));
     this.errors.set('render', null);
     this.syncErrors();
     this.ui.scenes = this.sceneOptions();
@@ -608,9 +1062,12 @@ export class App {
           size: scene ? scene.size : null,
           fps: scene?.fps ?? null,
           frames: this.total,
-          empty: scene !== null && scene.layers.length === 0,
+          empty: scene !== null && (scene.layers.length === 0 || scene.layers.every((l) => l.scene !== undefined && entry.world.scenes?.get(l.scene)?.layers.length === 0)),
+          video: entry.kind === 'composition',
+          vertical: scene !== null && scene.size[0] * 16 === scene.size[1] * 9,
         }
       : null;
+    this.ui.markers = scene?.markers ? scene.markers.map((m) => ({ frame: Math.min(this.total - 1, timeToFrame(m.t, scene.fps)), label: m.label })).sort((a, b) => a.frame - b.frame) : [];
     document.title = entry ? `${entry.key} · Frame Studio` : 'Frame Studio';
     this.syncUrl();
     this.schedulePublish();
@@ -633,13 +1090,16 @@ export class App {
       this.layerId = resolved.layerId;
       this.partId = resolved.partId;
       this.range = resolved.range;
-      this.notice = resolved.ignored.length > 0 ? `Ignored from the URL: ${resolved.ignored.join('; ')}` : null;
+      this.notice = null;
+      if (resolved.ignored.length > 0) console.warn(`Ignored from the URL: ${resolved.ignored.join('; ')}`);
       return;
     }
     if (!sameScene) {
       this.layerId = null;
       this.partId = null;
       this.range = null;
+      this.pickedSpan = null;
+      this.ui.cue = null;
       this.notice = null;
       return;
     }
@@ -654,16 +1114,22 @@ export class App {
       this.partId = null;
     }
     if (this.range && this.range.to > shape.frameCount) {
-      const was = `[${this.range.from}, ${this.range.to})`;
       if (this.range.from < shape.frameCount) {
         this.range = { from: this.range.from, to: shape.frameCount };
-        notes.push(`The scene now has ${shape.frameCount} frames, so the range ${was} was cut to [${this.range.from}, ${this.range.to}).`);
+        notes.push(`The scene got shorter, so the range was cut to ${spanLabel(this.range, shape.fps)}.`);
       } else {
         this.range = null;
-        notes.push(`The scene now has ${shape.frameCount} frames, so the range ${was} was cleared.`);
+        notes.push('The scene got shorter, so the range was cleared.');
       }
     }
     if (notes.length > 0) this.notice = notes.join(' ');
+  }
+
+  /** A scene on a pixel stage, or a composition of nothing else. Square pixels should stay square however the canvas scales. */
+  private showsPixels(scene: Scene, world: World): boolean {
+    if (scene.pixel) return true;
+    const placed = scene.layers.filter((l) => l.scene !== undefined);
+    return placed.length > 0 && placed.length === scene.layers.length && placed.every((l) => world.scenes?.get(l.scene!)?.pixel !== undefined);
   }
 
   /** Compositions and scenes, then each M9 project's scenes under its name, its main scene first (ADR 0007, ADR 0013). */
@@ -688,34 +1154,48 @@ export class App {
         label: project ? e.key.slice(project.id.length + 1) : e.key,
         file: e.file,
         invalid: e.scene === null || (project?.errors.length ?? 0) > 0,
-        project: project ? project.id : null,
+        film: project ? project.id : null,
         group: project ? project.name : null,
         main,
         kind: e.kind,
         usedIn: project ? [] : (usedIn.get(e.key) ?? []),
+        format: e.scene ? { size: e.scene.size, fps: e.scene.fps, seconds: e.scene.duration, pixel: e.scene.pixel !== undefined || this.showsPixels(e.scene, e.world) } : null,
       };
     });
-    // Loose scenes keep library order; projects follow in id order, each with its main scene first.
+    // The project's own keep library order; older films follow in id order, each with its main scene first.
     return options
       .map((o, i) => ({ o, i }))
-      .sort((a, b) => Number(a.o.project !== null) - Number(b.o.project !== null) || (a.o.project ?? '').localeCompare(b.o.project ?? '') || Number(b.o.main) - Number(a.o.main) || a.i - b.i)
+      .sort((a, b) => Number(a.o.film !== null) - Number(b.o.film !== null) || (a.o.film ?? '').localeCompare(b.o.film ?? '') || Number(b.o.main) - Number(a.o.main) || a.i - b.i)
       .map(({ o }) => o);
   }
 
   // ---- shots (ADR 0007) ----
 
   /** The scene layers of the scene on screen whose shots show at all, with their spans. */
-  private shots(): { layerId: string; key: string; label: string; span: SceneLayerSpan }[] {
+  private shots(): { layerId: string; key: string; label: string; span: SceneLayerSpan; end: number; length: number }[] {
     const entry = this.entry;
-    const scene = entry?.scene;
+    const scene = this.shownScene();
     if (!entry || !scene || (entry.project === null && entry.kind !== 'composition')) return [];
     return scene.layers.flatMap((layer) => {
+      if (layer.file !== undefined) {
+        const from = timeToFrame(layer.start ?? 0, scene.fps);
+        const start = timeToFrame(layer.in ?? 0, scene.fps);
+        const end = timeToFrame(layer.out ?? 0, scene.fps);
+        const known = this.ui.media.find((m) => m.file === layer.file)?.duration;
+        // A clip of an image can run as long as you like; a video stops where its file does.
+        const length = isImageFile(layer.file) ? Number.MAX_SAFE_INTEGER : known !== undefined ? timeToFrame(known, scene.fps) : end;
+        const span = { from, to: Math.min(this.total, from + Math.max(0, end - start)), in: start };
+        return span.to > span.from ? [{ layerId: layer.id, key: '', label: layer.file.slice(layer.file.lastIndexOf('/') + 1), span, end, length }] : [];
+      }
       const shot = layer.scene !== undefined ? entry.world.scenes?.get(layer.scene) : undefined;
       if (!shot) return [];
       const span = sceneLayerSpan(layer, scene, shot);
       // A composition's clips are folder entries, keyed by their plain id; an M9 shot is "<project>/<scene>".
       const key = entry.project === null ? layer.scene! : `${entry.project}/${layer.scene}`;
-      return span.to > span.from ? [{ layerId: layer.id, key, label: layer.scene!, span }] : [];
+      const length = countFrames(shot);
+      // The trim's end, which the span doesn't show when the composition cuts the clip off.
+      const end = layer.out === undefined || layer.out >= shot.duration ? length : Math.min(length, timeToFrame(layer.out, scene.fps));
+      return span.to > span.from ? [{ layerId: layer.id, key, label: layer.scene!, span, end, length }] : [];
     });
   }
 
@@ -724,6 +1204,7 @@ export class App {
     const id = layerId ?? this.layerId;
     const shot = this.shots().find((s) => s.layerId === id);
     if (!shot || !this.entry) return id === null ? 'Select a shot first.' : `Layer "${id}" places no scene.`;
+    if (shot.key === '') return `"${shot.label}" is a recorded clip, so there is no scene to open.`;
     const target = findEntry(this.library, shot.key);
     if (!target) return `Scene "${shot.key}" is missing.`;
     const frame = this.clock.frame;
@@ -801,6 +1282,19 @@ export class App {
     }
   }
 
+  /** Asks the studio server to check the scene on screen. Returns an error message, or null. */
+  private async startCheck(loop: boolean): Promise<string | null> {
+    if (!this.validScene() || !this.entry) return 'There is no valid scene to check.';
+    if (this.ui.checking.running) return 'A check is already running.';
+    try {
+      const id = await this.studio.startCheck({ scene: this.entry.key, loop });
+      this.ui.checking = { running: { id, stage: 'starting', done: 0, total: 1 }, report: null, error: null };
+      return null;
+    } catch (err) {
+      return errorText(err).message;
+    }
+  }
+
   /** Shows why a button did nothing, in the selection bar. */
   private say(problem: string | null): void {
     if (!problem) return;
@@ -831,8 +1325,9 @@ export class App {
       'project',
       project && project.errors.length > 0 ? { title: `Project "${project.id}" has errors (${project.file})`, lines: project.errors } : null,
     );
-    // A project with no scenes yet isn't an error: the stage offers to start one (ADR 0013).
+    // A project with no scenes yet isn't an error: the library offers to start one (ADR 0013).
     this.ui.emptyProject = lib.entries.length === 0;
+    if (lib.entries.length === 0) this.setHome(true);
     if (lib.entries.length === 0) {
       this.errors.set('scene', null);
     } else if (this.entry && this.entry.errors.length > 0) {
@@ -854,8 +1349,6 @@ export class App {
     this.resumeWhenValid = false;
     if (!this.clock.play()) return false;
     this.hoverLayer = null;
-    this.meter.reset();
-    this.lastFpsUpdate = -Infinity;
     this.uiDirty = true;
     this.schedule();
     return true;
@@ -865,7 +1358,6 @@ export class App {
     this.resumeWhenValid = false;
     if (!this.clock.playing) return;
     this.clock.pause();
-    this.meter.reset();
     this.uiDirty = true;
     this.syncUrl();
     this.schedulePublish();
@@ -877,7 +1369,6 @@ export class App {
   private seekInternal(frame: number, sync: boolean): number {
     const before = this.clock.frame;
     const after = this.clock.seek(frame);
-    this.meter.reset();
     this.uiDirty = true;
     if (after !== before) {
       this.canvasDirty = true;
@@ -894,6 +1385,18 @@ export class App {
   private readonly onKey = (e: KeyboardEvent): void => {
     // A modal dialog (New scene) owns the keyboard; Escape there must close it, not clear the selection.
     if (e.defaultPrevented || e.isComposing || document.querySelector('dialog:modal')) return;
+    // Escape during a drag puts it back, and nothing else.
+    if (e.key === 'Escape' && (this.canvasDrag || this.keyDrag)) {
+      e.preventDefault();
+      this.endCanvasDrag(false);
+      this.endKeyDrag(false);
+      return;
+    }
+    // The timeline isn't showing under the library. Escape goes back to it.
+    if (this.ui.home) {
+      if (e.key === 'Escape' && this.ui.homeReturn) this.setHome(false);
+      return;
+    }
     const action = keyAction(e, this.entry?.scene?.fps ?? 1);
     if (!action || focusKeepsKey(e.target, e.key)) return;
     e.preventDefault();
@@ -904,7 +1407,8 @@ export class App {
         break;
       case 'step':
         this.pauseInternal();
-        this.seekInternal(this.clock.frame + action.delta, false);
+        if (this.ui.selectedKey) this.nudgeKey(this.ui.selectedKey, Math.sign(action.delta) * (e.shiftKey ? 10 : 1));
+        else this.seekInternal(this.clock.frame + action.delta, false);
         break;
       case 'seek':
         this.seekInternal(action.to === 'start' ? 0 : this.total - 1, false);
@@ -916,10 +1420,25 @@ export class App {
         this.userSetRange(markOut(this.range, this.clock.frame, this.total));
         break;
       case 'escape':
-        this.escape();
+        if (this.ui.selectedKey) this.ui.selectedKey = null;
+        else this.escape();
+        break;
+      case 'delete':
+        if (this.ui.selectedKey) this.deleteKey(this.ui.selectedKey);
         break;
       case 'mute':
         if (this.soundStatus !== 'none') this.toggleMute();
+        break;
+      case 'markSpan':
+        this.markSpan();
+        break;
+      case 'compose':
+        this.ui.layout.panel = true;
+        requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('.agent-panel textarea')?.focus());
+        break;
+      case 'undo':
+      case 'redo':
+        this.stepHistory(action.type);
         break;
       case 'ignore':
         break;
@@ -929,7 +1448,7 @@ export class App {
   // ---- picking ----
 
   private validScene(): Scene | null {
-    return this.clock.timeline ? (this.entry?.scene ?? null) : null;
+    return this.clock.timeline ? this.shownScene() : null;
   }
 
   /** The engine hit test on the frame on screen, with the one shared 1x1 probe. */
@@ -957,7 +1476,122 @@ export class App {
 
   private readonly onCanvasPointerDown = (e: PointerEvent): void => {
     this.downAt = e.button === 0 ? { x: e.clientX, y: e.clientY } : null;
+    this.pressLooked = false;
+    this.pressDragged = false;
   };
+
+  /** The moment a drag starts, if it starts: the range counts when the playhead is inside it. */
+  private dragMoment(scene: Scene): DragMoment {
+    return { frame: this.clock.frame, fps: scene.fps, range: this.range };
+  }
+
+  /**
+   * Past the drag threshold a press takes hold of a layer: the selected one if it's under the press, as click
+   * cycling can leave it, else the top one. It selects it, and moves it if it can. The selected part stays.
+   */
+  private startCanvasDrag(e: PointerEvent, down: Point): void {
+    const scene = this.validScene();
+    const registry = this.entry?.registry ?? null;
+    const p = this.scenePoint(down);
+    if (!scene || !registry || !p || this.scrubbing) return;
+    let under: string[];
+    try {
+      under = this.hit(p.x, p.y, { all: true }).candidates.map((c) => c.layerId);
+    } catch {
+      return;
+    }
+    const layerId = this.layerId !== null && under.includes(this.layerId) ? this.layerId : (under[0] ?? null);
+    if (layerId === null) return;
+    this.pauseInternal();
+    this.pressDragged = true;
+    this.hoverLayer = null;
+    if (layerId !== this.layerId) {
+      this.clickMemo = null;
+      this.userSetLayer(layerId, null);
+      this.selectionPoint = { x: Math.round(p.x), y: Math.round(p.y) };
+    }
+    const layer = this.shownLayer(layerId);
+    if (!layer) return;
+    const frame = this.clock.frame;
+    if (this.agentWorks()) {
+      this.say(LOCKED);
+      return;
+    }
+    const from = this.whereIs(layer, scene);
+    if (!from) {
+      if (!this.toldFixed.has(layerId)) this.say('Position is set by this rig');
+      this.toldFixed.add(layerId);
+      return;
+    }
+    const moment = this.dragMoment(scene);
+    const write = writePosition(layer, from, from, moment);
+    if (!write.ok) {
+      this.say(write.error);
+      return;
+    }
+    this.saveNudge();
+    this.view.canvas.setPointerCapture(e.pointerId);
+    this.canvasDrag = {
+      layerId,
+      pointerId: e.pointerId,
+      start: down,
+      base: layer,
+      next: layer,
+      from,
+      scale: dragScale(scene, layer, frame, this.view.currentFit.cssWidth),
+      moment,
+      centre: stageCentre(scene, layer, frame),
+      guides: null,
+    };
+    this.view.canvas.classList.add('is-dragging');
+    this.moveCanvasDrag(e);
+  }
+
+  /** The layer's position on the frame on screen, or null when it has none to change. */
+  private whereIs(layer: Layer, scene: Scene): Movable | null {
+    const registry = this.entry?.registry;
+    if (!registry) return null;
+    try {
+      return movable(layer, scene, this.clock.frame, registry, this.world());
+    } catch {
+      return null;
+    }
+  }
+
+  private moveCanvasDrag(e: PointerEvent): void {
+    const drag = this.canvasDrag;
+    if (!drag) return;
+    const dx = e.clientX - drag.start.x;
+    const dy = e.clientY - drag.start.y;
+    const moved = e.shiftKey ? lockAxis(dx, dy) : { x: dx, y: dy };
+    const delta = dragDelta(moved.x, moved.y, drag.scale);
+    const x = snapCentre(drag.from.x + delta.x, drag.centre.x, drag.scale);
+    const y = snapCentre(drag.from.y + delta.y, drag.centre.y, drag.scale);
+    const to = {
+      x: moved.x === 0 ? drag.from.x : landValue(withinBounds(x.value, drag.from.bounds.x), drag.scale),
+      y: moved.y === 0 ? drag.from.y : landValue(withinBounds(y.value, drag.from.bounds.y), drag.scale),
+    };
+    const write = writePosition(drag.base, to, drag.from, drag.moment);
+    if (!write.ok) return;
+    drag.next = write.layer;
+    drag.guides = (moved.x !== 0 && x.snapped) || (moved.y !== 0 && y.snapped) ? { x: moved.x !== 0 && x.snapped, y: moved.y !== 0 && y.snapped } : null;
+    this.hold(write.layer);
+  }
+
+  /** Lifts a canvas drag: saved, or put back. */
+  private endCanvasDrag(commit: boolean): void {
+    const drag = this.canvasDrag;
+    if (!drag) return;
+    this.canvasDrag = null;
+    this.view.canvas.classList.remove('is-dragging');
+    if (this.view.canvas.hasPointerCapture(drag.pointerId)) this.view.canvas.releasePointerCapture(drag.pointerId);
+    if (commit && drag.next !== drag.base) void this.saveLayer(drag.base, drag.next);
+    else this.unhold(drag.layerId);
+    this.requestHover();
+  }
+
+  private readonly onCanvasPointerUp = (): void => this.endCanvasDrag(true);
+  private readonly onCanvasPointerCancel = (): void => this.endCanvasDrag(false);
 
   /**
    * A click selects the layer under the pointer; a click where nothing
@@ -970,7 +1604,7 @@ export class App {
     const at = { x: e.clientX, y: e.clientY };
     const down = this.downAt;
     this.downAt = null;
-    if (down && isDrag(down, at)) return;
+    if (this.pressDragged || (down && isDrag(down, at))) return;
     if (!this.shape || !this.validScene()) return;
     const p = this.scenePoint(at);
     const spot = { scene: `${this.entry?.key ?? ''}#${this.version}`, frame: this.clock.frame, x: at.x, y: at.y };
@@ -1015,6 +1649,20 @@ export class App {
     if (top !== null && this.shots().some((s) => s.layerId === top)) this.openShot(top);
   };
 
+  /** Keynote's stack menu: every layer under the pointer, top first. The playhead stops, so the menu matches the picture. */
+  private readonly onCanvasContextMenu = (e: MouseEvent): void => {
+    e.preventDefault();
+    const p = this.scenePoint({ x: e.clientX, y: e.clientY });
+    if (!p || !this.validScene()) return;
+    this.pauseInternal();
+    try {
+      const layers = this.hit(p.x, p.y, { all: true }).candidates.map((c) => c.layerId);
+      this.ui.stackMenu = layers.length > 0 ? { x: e.clientX, y: e.clientY, layers, point: p } : null;
+    } catch (err) {
+      this.say(`Hit test failed: ${errorText(err).message}`);
+    }
+  };
+
   private readonly onStagePointerDown = (e: PointerEvent): void => {
     this.stageDownAt = e.button === 0 && e.target === this.stageElement ? { x: e.clientX, y: e.clientY } : null;
   };
@@ -1037,6 +1685,15 @@ export class App {
 
   private readonly onCanvasPointerMove = (e: PointerEvent): void => {
     const at = { x: e.clientX, y: e.clientY };
+    if (this.canvasDrag) {
+      this.moveCanvasDrag(e);
+      return;
+    }
+    if (this.downAt && (e.buttons & 1) !== 0 && !this.pressLooked && isDrag(this.downAt, at)) {
+      this.pressLooked = true;
+      this.startCanvasDrag(e, this.downAt);
+      if (this.canvasDrag) return;
+    }
     if (this.pointer && this.pointer.x === at.x && this.pointer.y === at.y) return;
     this.pointer = at;
     this.hoverHidden = false;
@@ -1063,11 +1720,13 @@ export class App {
     this.hoverDirty = false;
     let next: string | null = null;
     const frame = this.clock.frame;
-    if (this.pointer && !this.hoverHidden && this.hoverFailedFrame !== frame && !this.clock.playing && !this.scrubbing) {
+    let over = false;
+    if (this.pointer && !this.hoverHidden && this.hoverFailedFrame !== frame && !this.clock.playing && !this.scrubbing && !this.canvasDrag) {
       const p = this.scenePoint(this.pointer);
       if (p) {
         try {
           next = this.hit(p.x, p.y).layerId;
+          over = this.overMovableLayer(p, next);
           if (this.hoverFailedFrame !== null) {
             // A rig that throws on one frame (say inside one override range) should not end hover everywhere.
             if (this.notice?.startsWith(HOVER_OFF)) this.notice = null;
@@ -1083,16 +1742,26 @@ export class App {
       }
     }
     this.hoverLayer = next;
+    this.overMovable = over;
+    this.ui.hoverLayer = this.rowHover ?? next;
   }
 
-  /** Escape clears one thing: the hover, else the layer (and part), else the range. */
+  /** Whether a press here would take hold of the selected layer and move it. */
+  private overMovableLayer(p: Point, top: string | null): boolean {
+    const scene = this.validScene();
+    const layer = this.layerId !== null ? this.shownLayer(this.layerId) : null;
+    if (!scene || !layer || this.agentWorks() || !this.whereIs(layer, scene)) return false;
+    return top === layer.id || this.hit(p.x, p.y, { all: true }).candidates.some((c) => c.layerId === layer.id);
+  }
+
+  /** Escape clears one thing: the hover, else the layer (and part) or sound cue, else the range. */
   private escape(): void {
     const hoverShowing = this.hoverLayer !== null && this.hoverLayer !== this.layerId;
     if (hoverShowing) {
       this.hoverHidden = true;
       this.hoverLayer = null;
       this.schedule();
-    } else if (this.layerId !== null) {
+    } else if (this.layerId !== null || this.ui.cue !== null) {
       // Hide the hover too, or the layer under the pointer would light up again at once.
       this.hoverHidden = true;
       this.hoverLayer = null;
@@ -1105,8 +1774,27 @@ export class App {
   private userSetLayer(layerId: string | null, partId: string | null): void {
     this.layerId = layerId;
     this.partId = layerId !== null ? partId : null;
+    this.pickedSpan = null;
+    this.ui.cue = null;
+    this.ui.selectedKey = null;
     if (layerId === null) this.selectionPoint = null;
     this.selectionChanged();
+  }
+
+  /** Selects from the timeline or a list, where no click landed on the canvas. */
+  private pick(layerId: string | null, span: FrameRange | null): void {
+    this.clickMemo = null;
+    this.userSetLayer(layerId, null);
+    this.selectionPoint = null;
+    this.pickedSpan = span;
+  }
+
+  /** X: the range goes to the clip, override or cue clicked, else the selected shot, else the layer's first to last key. */
+  private markSpan(): void {
+    const row = this.ui.layers.find((r) => r.id === this.layerId);
+    const shot = this.shots().find((s) => s.layerId === this.layerId);
+    const span = (shot ? shot.span : null) ?? this.pickedSpan ?? (row && row.keys.length > 1 ? { from: row.keys[0], to: Math.min(this.total, row.keys[row.keys.length - 1] + 1) } : null);
+    if (span) this.userSetRange(span.from === 0 && span.to === this.total ? null : { from: span.from, to: span.to });
   }
 
   private userSetRange(range: FrameRange | null): void {
@@ -1117,6 +1805,7 @@ export class App {
   private selectionChanged(): void {
     this.notice = null;
     this.uiDirty = true;
+    this.requestHover();
     this.syncUrl();
     this.schedulePublish();
     this.schedule();
@@ -1128,8 +1817,7 @@ export class App {
   private requestSelection(): RequestSelection | null {
     const scene = this.validScene();
     if (!scene) return null;
-    const from = this.range?.from ?? 0;
-    const to = this.range?.to ?? this.total;
+    const { from, to } = this.selectedSpan();
     return {
       sceneId: this.entry!.key,
       ...(this.layerId !== null ? { layerId: this.layerId } : {}),
@@ -1137,6 +1825,12 @@ export class App {
       from,
       to,
     };
+  }
+
+  /** What the selection covers: the range, else the selected clip, else everything. The token and a request read this same span. */
+  private selectedSpan(): FrameRange {
+    const clip = this.layerId === null ? undefined : this.shots().find((s) => s.layerId === this.layerId)?.span;
+    return this.range ?? (clip ? { from: clip.from, to: clip.to } : { from: 0, to: this.total });
   }
 
   /** Writes .frame-studio/selection.json 300 ms after the selection stops changing (ADR 0003). */
@@ -1176,6 +1870,15 @@ export class App {
       const kept = Object.entries(this.ui.turnEvents).filter(([key]) => ids.has(key.slice(0, key.indexOf(':') + 1)));
       if (kept.length !== Object.keys(this.ui.turnEvents).length) this.ui.turnEvents = Object.fromEntries(kept);
       for (const key of [...this.loadedTurns]) if (!ids.has(key.slice(0, key.indexOf(':') + 1))) this.loadedTurns.delete(key);
+      // A clip's bands lock while an agent works on its composition.
+      this.uiDirty = true;
+      this.schedule();
+      // A project opened from a thread card lands on that thread, once its list is here.
+      if (this.askedThread !== null) {
+        const id = this.askedThread;
+        this.askedThread = null;
+        if (requests.some((r) => r.id === id)) this.openThread(id);
+      }
       // A thread that got a new turn while open needs that turn's events.
       if (this.ui.studio.open !== null) void this.loadEvents(this.ui.studio.open);
     };
@@ -1198,12 +1901,22 @@ export class App {
         this.ui.toast = { id, status: 'asking', text: event.type === 'questions' ? (event.questions[0]?.question ?? '') : event.summary };
       }
     });
+    this.studio.onThumb(({ key, file }) => (this.ui.thumbs = { ...this.ui.thumbs, [key]: file }));
     this.studio.onExport((event) => {
       const state = this.ui.exporting;
       if (state.running?.id !== event.id) return;
       if ('error' in event) this.ui.exporting = { ...state, running: null, result: { error: event.error } };
-      else if ('file' in event) this.ui.exporting = { ...state, running: null, result: { file: event.file, ...(event.note ? { note: event.note } : {}) } };
+      else if ('file' in event) {
+        this.ui.exporting = { ...state, running: null, result: { file: event.file, ...(event.note ? { note: event.note } : {}) } };
+        void this.refreshRenders();
+      }
       else this.ui.exporting = { ...state, running: { id: event.id, stage: event.stage, done: event.done, total: event.total } };
+    });
+    this.studio.onCheck((event) => {
+      if (this.ui.checking.running?.id !== event.id) return;
+      if ('error' in event) this.ui.checking = { running: null, report: null, error: event.error };
+      else if ('report' in event) this.ui.checking = { running: null, report: event.report, error: null };
+      else this.ui.checking = { running: event, report: null, error: null };
     });
     this.refreshAgents(false);
     // Stalled requests are judged against the clock, and agents sign in and out, so check now and then.
@@ -1235,6 +1948,16 @@ export class App {
       next = [...have, ...fresh].sort((a, b) => a.seq - b.seq);
     }
     this.ui.turnEvents = { ...this.ui.turnEvents, [key]: next };
+  }
+
+  /** Picking a scene brings up its conversation: the newest one still open, or none, never another scene's. */
+  private followThreads(key: string): void {
+    const open = this.requests.find((r) => r.id === this.ui.studio.open);
+    if (open?.sceneId === key) return;
+    const live = this.requests.filter((r) => r.sceneId === key && r.status !== 'settled' && r.status !== 'cancelled').at(-1);
+    // The conversation only: you picked the scene, so its playhead and selection stay yours.
+    this.ui.studio.open = live?.id ?? null;
+    if (live) void this.loadEvents(live.id);
   }
 
   private openThread(id: number | null): void {
@@ -1332,6 +2055,7 @@ export class App {
   private restoreRequest(id: number, play: boolean): void {
     const request = this.requests.find((r) => r.id === id);
     if (!request) return;
+    this.setHome(false);
     const sel = currentSelection(request);
     const entry = findEntry(this.library, sel.sceneId);
     if (!entry) {
@@ -1346,8 +2070,12 @@ export class App {
     this.layerId = missing ? null : (sel.layerId ?? null);
     this.partId = this.layerId !== null && sel.partId !== undefined && parts?.includes(sel.partId) ? sel.partId : null;
     this.selectionPoint = null;
-    this.range = rangeError(sel.from, sel.to, this.total) === null ? { from: sel.from, to: sel.to } : null;
-    this.clock.seek(play && this.range ? this.range.from : currentTurn(request).ask.frame);
+    // A thread stores what it covered, which with no range set is the whole scene or clip. That's no range: restoring one would turn the next canvas drag into an override.
+    this.range = null;
+    const natural = this.selectedSpan();
+    const chosen = rangeError(sel.from, sel.to, this.total) === null && (sel.from !== natural.from || sel.to !== natural.to);
+    this.range = chosen ? { from: sel.from, to: sel.to } : null;
+    this.clock.seek(play ? sel.from : currentTurn(request).ask.frame);
     this.selectionChanged();
     if (missing) this.notice = `Layer "${sel.layerId}" is no longer in the scene.`;
     this.canvasDirty = true;
@@ -1432,11 +2160,7 @@ export class App {
 
   private toggleMute(): void {
     this.sound.setMuted(!this.sound.isMuted);
-    try {
-      localStorage.setItem(MUTED_KEY, this.sound.isMuted ? '1' : '0');
-    } catch {
-      // storage unavailable; the setting lasts until reload
-    }
+    writePref(MUTED_KEY, this.sound.isMuted ? '1' : '0');
     this.uiDirty = true;
     this.schedule();
   }
@@ -1465,7 +2189,7 @@ export class App {
 
   /** What the scene on screen draws with beyond its file: its project's scenes and cast, and surfaces for compositing. */
   private world(): World {
-    return { ...this.entry?.world, surfaces: this.surfaces };
+    return { ...this.entry?.world, surfaces: this.surfaces, pictures: this.pictures };
   }
 
   private invalidate(): void {
@@ -1482,23 +2206,18 @@ export class App {
     this.raf = 0;
     if (this.hoverDirty) this.probeHover();
     if (this.clock.tick(now)) {
-      this.meter.record(now);
       this.canvasDirty = true;
       this.uiDirty = true;
       this.syncUrl();
     }
-    if (this.clock.playing && now - this.lastFpsUpdate >= 250) {
-      this.lastFpsUpdate = now;
-      this.uiDirty = true;
-    }
-    this.flushNow(now);
+    this.flushNow();
     if (this.clock.playing) this.schedule();
   };
 
-  private flushNow(now = performance.now()): void {
-    if (this.canvasDirty) this.drawNow();
+  private flushNow(): void {
+    if (this.canvasDirty && !this.ui.home) this.drawNow();
     this.syncSound();
-    if (this.uiDirty) this.syncUi(now);
+    if (this.uiDirty) this.syncUi();
     this.syncOverlay();
   }
 
@@ -1518,14 +2237,45 @@ export class App {
       version: this.version,
       fit: this.view.currentFit,
       selected: scene && this.layerId !== null && !this.clock.playing ? { layerId: this.layerId, partId: this.partId } : null,
-      hover: scene ? this.hoverLayer : null,
+      hover: scene && !this.clock.playing ? (this.rowHover ?? this.hoverLayer) : null,
+      guides: this.canvasDrag?.guides ?? null,
     });
     this.view.canvas.classList.toggle('is-over-layer', scene !== null && this.hoverLayer !== null);
+    this.view.canvas.classList.toggle('is-movable', scene !== null && this.overMovable && !this.canvasDrag);
+    this.safeZones.show(this.ui.layout.safeZones && scene !== null && (this.ui.header?.vertical ?? false));
+  }
+
+  /** Asks for the frame's pictures, and draws again when they arrive. */
+  private wantPictures(scene: Scene, frame: number, world: World): void {
+    const wanted = picturesAt(scene, frame, world);
+    const key = JSON.stringify(wanted);
+    if (wanted.length === 0 || key === this.picturesWanted) return;
+    this.picturesWanted = key;
+    this.picturesNext = wanted;
+    if (this.picturesBusy) return;
+    this.picturesBusy = true;
+    void this.decodePictures();
+  }
+
+  /** Decodes what the newest draw wanted, one at a time, skipping frames a scrub or playback has left behind. */
+  private async decodePictures(): Promise<void> {
+    while (this.picturesNext) {
+      const wanted = this.picturesNext;
+      this.picturesNext = null;
+      try {
+        await this.pictures.prepare(wanted);
+        this.errors.set('pictures', null);
+      } catch (err) {
+        this.errors.set('pictures', { title: 'A picture clip could not be read', lines: [err instanceof Error ? err.message : String(err)] });
+      }
+      this.invalidate();
+    }
+    this.picturesBusy = false;
   }
 
   private drawNow(): DrawResult {
     this.canvasDirty = false;
-    const scene = this.entry?.scene ?? null;
+    const scene = this.shownScene();
     const registry = this.entry?.registry ?? null;
     if (!scene || !registry) {
       this.view.clear();
@@ -1533,6 +2283,7 @@ export class App {
     }
     const frame = this.clock.frame;
     const world = this.world();
+    this.wantPictures(scene, frame, world);
     try {
       const drawn = this.view.draw((ctx) => render(ctx, scene, frame, registry, world));
       this.errors.set('render', null);
@@ -1549,25 +2300,31 @@ export class App {
     }
   }
 
-  private syncUi(now: number): void {
+  private syncUi(): void {
     this.uiDirty = false;
-    const scene = this.clock.timeline ? (this.entry?.scene ?? null) : null;
+    const scene = this.validScene();
     const ui = this.ui;
     ui.playing = this.clock.playing;
     ui.canPlay = scene !== null;
     const status = this.soundStatus === 'ready' && !this.sound.unlocked ? 'locked' : this.soundStatus;
     ui.sound = scene && status !== 'none' ? { status, muted: this.sound.isMuted } : null;
     ui.band = scene && this.range ? { range: this.range, frameCount: this.total } : null;
+    ui.keyEdit = !scene || this.entry?.kind === 'composition' ? 'off' : this.agentWorks() ? 'locked' : 'on';
     ui.shots = scene ? this.shotBands() : null;
     ui.sounds = scene ? this.soundBands(scene) : null;
     ui.usesMedia = scene !== null && mediaUsed(scene, this.entry?.world ?? {}).length > 0;
     ui.back = this.shotReturn ? { label: this.shotReturn.key.slice(this.shotReturn.key.indexOf('/') + 1), key: this.shotReturn.key } : null;
+    const span = this.selectedSpan();
+    ui.layerId = this.layerId;
+    ui.hoverLayer = this.rowHover ?? this.hoverLayer;
     ui.selection = {
       sceneId: scene ? (this.entry?.key ?? null) : null,
       layer: layerLabel(this.layerId, this.partId),
       shot: scene && this.layerId !== null ? (this.shots().find((s) => s.layerId === this.layerId)?.label ?? null) : null,
       range: scene ? this.range : null,
-      rangeText: scene ? describeRange(this.range, scene.fps, this.total) : null,
+      when: scene ? spanLabel(span, scene.fps) : '',
+      whenTitle: scene ? spanTitle(span) : '',
+      fps: scene?.fps ?? 1,
       frameCount: this.total,
       notice: this.notice,
     };
@@ -1582,14 +2339,48 @@ export class App {
       frameCount: this.total,
       timecode: formatTimecode(frame, scene.fps),
       endTimecode: formatTimecode(this.total, scene.fps),
+      clock: formatClock(frame, scene.fps),
+      endClock: formatClock(this.total, scene.fps),
+      seconds: this.total / scene.fps,
     };
-    ui.fps = { scene: scene.fps, measured: this.clock.playing ? this.meter.fps(now) : null };
+    ui.fps = scene.fps;
+  }
+
+  /** One row per layer, top of the stack first, so the background comes last. Worked out once per scene: a row never changes while it plays. */
+  private layerRows(scene: Scene): LayerRow[] {
+    return sceneLayers(scene)
+      .reverse()
+      .map((layer) => this.layerRow(layer, scene));
+  }
+
+  private layerRow(layer: Layer, scene: Scene): LayerRow {
+    const { fps } = scene;
+    const marks = keyMarks(layer.tracks, fps, this.total);
+    return {
+      id: layer.id,
+      keys: marks.map((m) => m.frame).filter((f) => f >= 0 && f < this.total),
+      overrides: (layer.overrides ?? []).map((o) => ({ from: o.from, to: o.to })),
+      faded: layer.tracks?.some((t) => t.param === 'opacity') ?? false,
+      bars: visibleSpans(layer, fps, this.total),
+      marks,
+      lanes: keyLanes(layer.tracks, fps, this.total),
+    };
+  }
+
+  /** A selected key an edit took away is no longer selected. */
+  private dropMissingKey(): void {
+    const key = this.ui.selectedKey;
+    if (!key) return;
+    const row = this.ui.layers.find((r) => r.id === key.layerId);
+    const marks = key.param === null ? row?.marks : row?.lanes.find((lane) => lane.param === key.param)?.keys;
+    if (!marks?.some((m) => m.frame === key.frame)) this.ui.selectedKey = null;
   }
 
   /** The shots for the scrubber, each in the lowest lane where it overlaps no other. Null without any. */
-  private shotBands(): { bands: ShotBand[]; lanes: number; frameCount: number } | null {
+  private shotBands(): { bands: ShotBand[]; lanes: number; frameCount: number; locked: boolean } | null {
     const shots = this.shots();
     if (shots.length === 0) return null;
+    const composition = this.entry?.kind === 'composition';
     const laneEnds: number[] = [];
     const bands = [...shots]
       .sort((a, b) => a.span.from - b.span.from)
@@ -1597,9 +2388,17 @@ export class App {
         let lane = laneEnds.findIndex((end) => end <= s.span.from);
         if (lane < 0) lane = laneEnds.push(0) - 1;
         laneEnds[lane] = s.span.to;
-        return { layerId: s.layerId, label: s.label, from: s.span.from, to: s.span.to, lane, selected: s.layerId === this.layerId };
+        return {
+          layerId: s.layerId,
+          label: s.label,
+          from: s.span.from,
+          to: s.span.to,
+          lane,
+          selected: s.layerId === this.layerId,
+          ...(composition ? { clip: { from: s.span.from, in: s.span.in, out: s.end, length: s.length } } : {}),
+        };
       });
-    return { bands, lanes: laneEnds.length, frameCount: this.total };
+    return { bands, lanes: laneEnds.length, frameCount: this.total, locked: this.agentWorks() };
   }
 
   /** The scene's own sound cues for the timeline, each in the lowest lane where it overlaps no other. Null without any. */
@@ -1637,6 +2436,8 @@ export class App {
   }
 
   private urlPosition(): UrlPosition {
+    // The library carries no scene, so a reload lands back on it.
+    if (this.ui.home) return { scene: null, frame: null };
     return { scene: this.entry?.key ?? null, frame: this.urlFrame(), ...this.urlSelection() };
   }
 
@@ -1689,9 +2490,11 @@ export class App {
       },
       seek(frame: number): number {
         if (typeof frame !== 'number' || Number.isNaN(frame)) throw new TypeError(`seek(frame) needs a number, got ${String(frame)}`);
+        app.setHome(false);
         return app.seekInternal(frame, true);
       },
       play(): void {
+        app.setHome(false);
         app.playInternal();
         app.flushNow();
       },
@@ -1708,11 +2511,11 @@ export class App {
         if (!Number.isInteger(frame) || frame < 0 || frame >= app.total) {
           throw new RangeError(`renderFrame: frame must be an integer in [0, ${app.total}) for scene "${app.entry?.key ?? scene.id}", got ${String(frame)}`);
         }
+        app.setHome(false);
         app.pauseInternal();
         app.clock.seek(frame);
-        app.meter.reset();
         const result = app.drawNow();
-        app.syncUi(performance.now());
+        app.syncUi();
         app.syncOverlay();
         app.requestHover();
         app.syncUrl();
@@ -1732,8 +2535,7 @@ export class App {
       get selection() {
         const scene = app.validScene();
         if (!scene) return null;
-        const from = app.range?.from ?? 0;
-        const to = app.range?.to ?? app.total;
+        const { from, to } = app.selectedSpan();
         const sceneId = app.entry!.key;
         if (app.layerId === null) return { sceneId, from, to };
         if (app.partId === null) return { sceneId, layerId: app.layerId, from, to };
@@ -1800,11 +2602,7 @@ export class App {
 }
 
 function readMuted(): boolean {
-  try {
-    return localStorage.getItem(MUTED_KEY) === '1';
-  } catch {
-    return false;
-  }
+  return readPref(MUTED_KEY) === '1';
 }
 
 /** Runs a studio call, turning a failure into its message for the panel. */
