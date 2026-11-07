@@ -5,6 +5,7 @@ import { isHexColour } from './pixel';
 import { baseRigId, variantsOf } from './registry';
 import { SCENE_LAYER_PARAMS } from './scene-layer';
 import { CUE_PARAMS } from './cue';
+import { parseWordRef } from './speech';
 import { frameCount, quantizeTime } from './time';
 import { BACKGROUND_ID, type Cast, type ParamSchema, type ParamSpec, type Rig, type RigRegistry, type Scene } from './types';
 
@@ -209,7 +210,7 @@ function truncate(text: string): string {
 const SCENE_FIELDS = ['id', 'fps', 'duration', 'size', 'seed', 'background', 'layers', 'audio', 'pixel', 'camera', 'markers'];
 const PIXEL_FIELDS = ['scale', 'palette', 'dither'];
 const CAMERA_FIELDS = ['x', 'y', 'zoom', 'tracks'];
-const MARKER_FIELDS = ['t', 'label'];
+const MARKER_FIELDS = ['t', 'label', 'word'];
 /** What a camera's tracks animate. */
 const CAMERA_OWNER: SchemaOwner = {
   id: 'camera',
@@ -220,9 +221,10 @@ const MASK_FIELDS = ['rig', 'params', 'tracks'];
 /** The background is a layer without an id; background.id gets its own message. */
 const BACKGROUND_FIELDS = LAYER_FIELDS.filter((f) => f !== 'id');
 const TRACK_FIELDS = ['param', 'keys'];
-const KEY_FIELDS = ['t', 'v', 'ease'];
+const KEY_FIELDS = ['t', 'v', 'ease', 'word'];
+const WORD_FIELDS = ['id', 'text', 'start', 'end', 'p'];
 const OVERRIDE_FIELDS = ['from', 'to', 'rig', 'params'];
-const AUDIO_FIELDS = ['id', 'generator', 'file', 'start', 'end', 'in', 'fadeIn', 'fadeOut', 'params', 'tracks'];
+const AUDIO_FIELDS = ['id', 'generator', 'file', 'start', 'end', 'in', 'fadeIn', 'fadeOut', 'params', 'tracks', 'words', 'script', 'lang'];
 /** Misspellings too far from the right name for the edit-distance hint. */
 const FIELD_ALIASES: Readonly<Record<string, string>> = { easing: 'ease' };
 
@@ -473,6 +475,44 @@ function checkCamera(env: Env, camera: unknown): void {
   checkTracks(env, camera.tracks, 'camera.tracks', CAMERA_OWNER);
 }
 
+/** A word anchor's shape (ADR 0016). A word that isn't there is an orphan the check tool reports, not an error, since a re-record can do that. */
+function checkWordRef(err: Env['err'], word: unknown, path: string): void {
+  if (word === undefined) return;
+  if (!(typeof word === 'string' && parseWordRef(word))) err(path, `must name a spoken word as "cueId#wordId", like "voice#w12", got ${show(word)}`);
+}
+
+/** A cue's words (ADR 0016): in order, not overlapping, with unique ids. */
+function checkWords(err: Env['err'], words: unknown, p: string): void {
+  if (!Array.isArray(words)) {
+    err(p, `must be a list like [{ "id": "w0", "text": "Hello", "start": 0.1, "end": 0.4 }], got ${show(words)}`);
+    return;
+  }
+  const seen = new Map<string, number>();
+  let previous: { start: number; end: number } | null = null;
+  words.forEach((word: unknown, i: number) => {
+    const path = `${p}[${i}]`;
+    if (!isObject(word)) {
+      err(path, `must be an object like { "id": "w0", "text": "Hello", "start": 0.1, "end": 0.4 }, got ${show(word)}`);
+      return;
+    }
+    checkFields(err, word, path, WORD_FIELDS);
+    if (!isNonEmptyString(word.id) || word.id.includes('#')) err(`${path}.id`, `must be a non-empty string without "#", got ${show(word.id)}`);
+    else if (seen.has(word.id)) err(`${path}.id`, `duplicate word id "${word.id}" (also ${p}[${seen.get(word.id)}]); word ids must be unique in a cue`);
+    else seen.set(word.id, i);
+    if (!isNonEmptyString(word.text)) err(`${path}.text`, `must be the word as it reads, got ${show(word.text)}`);
+    if (word.p !== undefined && !(typeof word.p === 'number' && word.p >= 0 && word.p <= 1)) err(`${path}.p`, `must be a number from 0 to 1, got ${show(word.p)}`);
+    const { start, end } = word;
+    const startOk = typeof start === 'number' && Number.isFinite(start) && start >= 0;
+    const endOk = typeof end === 'number' && Number.isFinite(end);
+    if (!startOk) err(`${path}.start`, `must be seconds into the file, 0 or more, got ${show(start)}`);
+    if (!endOk) err(`${path}.end`, `must be seconds into the file, got ${show(end)}`);
+    if (!startOk || !endOk) return;
+    if (end <= start) err(path, `needs start < end, got start ${start}, end ${end}`);
+    if (previous && start < previous.end - 1e-9) err(`${path}.start`, `starts at ${start}, before the word before it ends at ${previous.end}; words stay in order and don't overlap`);
+    previous = { start, end };
+  });
+}
+
 function checkMarkers(env: Env, markers: unknown): void {
   const { err, duration } = env;
   if (markers === undefined) return;
@@ -490,6 +530,7 @@ function checkMarkers(env: Env, markers: unknown): void {
     if (!(typeof marker.t === 'number' && Number.isFinite(marker.t) && marker.t >= 0)) err(`${path}.t`, `must be seconds, 0 or more, got ${show(marker.t)}`);
     else if (duration !== undefined && marker.t > duration) err(`${path}.t`, `is past the end of the scene, ${duration} s`);
     if (!isNonEmptyString(marker.label)) err(`${path}.label`, `must be a short name, got ${show(marker.label)}`);
+    checkWordRef(err, marker.word, `${path}.word`);
   });
 }
 
@@ -599,6 +640,7 @@ function checkTracks(env: Env, tracks: unknown, path: string, rig: SchemaOwner |
         return;
       }
       checkFields(err, key, kp, KEY_FIELDS);
+      checkWordRef(err, key.word, `${kp}.word`);
       const t = key.t;
       if (!(typeof t === 'number' && Number.isFinite(t))) {
         err(`${kp}.t`, `must be a finite number of seconds, got ${show(t)}`);
@@ -816,13 +858,16 @@ function checkAudio(env: Env, audio: unknown): void {
     } else if (isFile) {
       if (!isMediaPath(cue.file)) err(`${p}.file`, `must be a sound file in the studio folder's media/, like "media/voice.mp3", got ${show(cue.file)}`);
       if (cue.params !== undefined) err(`${p}.params`, 'a sound file takes no params; use tracks on volume for its loudness');
+      if (cue.words !== undefined) checkWords(err, cue.words, `${p}.words`);
+      if (cue.script !== undefined && typeof cue.script !== 'string') err(`${p}.script`, `must be what the voice says, as text, got ${show(cue.script)}`);
+      if (cue.lang !== undefined && !(typeof cue.lang === 'string' && /^[a-z]{2,3}$/.test(cue.lang))) err(`${p}.lang`, `must be a language code like "en" or "es", got ${show(cue.lang)}`);
       for (const key of ['in', 'fadeIn', 'fadeOut'] as const) {
         const v = cue[key];
         if (v !== undefined && !(typeof v === 'number' && Number.isFinite(v) && v >= 0)) err(`${p}.${key}`, `must be 0 or more seconds, got ${show(v)}`);
       }
     } else {
       if (!isNonEmptyString(cue.generator)) err(`${p}.generator`, `must be a non-empty string (a generator id), or give "file" for a sound file, got ${show(cue.generator)}`);
-      for (const key of ['in', 'fadeIn', 'fadeOut'] as const) if (cue[key] !== undefined) err(`${p}.${key}`, `only a sound file cue (with "file") takes ${key}`);
+      for (const key of ['in', 'fadeIn', 'fadeOut', 'words', 'script', 'lang'] as const) if (cue[key] !== undefined) err(`${p}.${key}`, `only a sound file cue (with "file") takes ${key}`);
     }
     const startOk = typeof cue.start === 'number' && Number.isFinite(cue.start);
     const endOk = typeof cue.end === 'number' && Number.isFinite(cue.end);

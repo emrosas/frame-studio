@@ -3,7 +3,7 @@
 // what. Pure, so it is unit tested without a browser. keys.ts is the keyboard.
 
 import { timeToFrame } from '../engine/time';
-import type { Layer, Track } from '../engine/types';
+import type { Key, Layer, Track } from '../engine/types';
 
 /** One key of one track, by its place in the track. */
 export interface KeyRef {
@@ -18,6 +18,8 @@ export interface KeyMark {
   /** Where it shows, inside [0, total]. */
   at: number;
   params: readonly string[];
+  /** True when a key here is tied to a spoken word (ADR 0016). */
+  anchored?: boolean;
 }
 
 /** A selected param's own row of diamonds, under its layer's row. */
@@ -42,15 +44,17 @@ const EPS = 1e-9;
 /** The diamonds for these tracks, in time order. */
 export function keyMarks(tracks: readonly Track[] | undefined, fps: number, total: number): KeyMark[] {
   const frames = new Map<number, string[]>();
+  const anchored = new Set<number>();
   for (const track of tracks ?? []) {
     for (const key of track.keys) {
       const frame = timeToFrame(key.t, fps);
       const params = frames.get(frame);
       if (!params) frames.set(frame, [track.param]);
       else if (!params.includes(track.param)) params.push(track.param);
+      if (key.word !== undefined) anchored.add(frame);
     }
   }
-  return [...frames].sort((a, b) => a[0] - b[0]).map(([frame, params]) => ({ frame, at: clamp(frame, 0, total), params }));
+  return [...frames].sort((a, b) => a[0] - b[0]).map(([frame, params]) => ({ frame, at: clamp(frame, 0, total), params, ...(anchored.has(frame) ? { anchored: true } : {}) }));
 }
 
 export function keyLanes(tracks: readonly Track[] | undefined, fps: number, total: number): KeyLane[] {
@@ -103,11 +107,17 @@ export function landKeys(tracks: readonly Track[], refs: readonly KeyRef[], fram
     const end = ends.get(track.param);
     if (!end) return track;
     const from = track.keys[end.first].t;
-    return { ...track, keys: track.keys.map((key, i) => (i >= end.first && i <= end.last ? { ...key, t: i === end.first ? time : tidy(time + key.t - from) } : key)) };
+    return { ...track, keys: track.keys.map((key, i) => (i >= end.first && i <= end.last ? { ...detached(key), t: i === end.first ? time : tidy(time + key.t - from) } : key)) };
   });
 }
 
 const tidy = (t: number) => Math.round(t * 1e6) / 1e6;
+
+/** A key moved by hand lets go of its word, or the word would put it straight back (ADR 0016). */
+function detached(key: Key): Key {
+  const { word: _word, ...rest } = key;
+  return rest;
+}
 
 /** `t` moved by whole frames. A key on a frame stays exactly on one. */
 function shifted(t: number, frames: number, fps: number): number {
@@ -139,7 +149,7 @@ export function shiftRange(tracks: readonly Track[], refs: readonly KeyRef[], fp
 export function shiftKeys(tracks: readonly Track[], refs: readonly KeyRef[], frames: number, fps: number): Track[] {
   return tracks.map((track) => {
     const moving = new Set(refs.flatMap((r) => (r.param === track.param ? [r.index] : [])));
-    return moving.size === 0 ? track : { ...track, keys: track.keys.map((key, i) => (moving.has(i) ? { ...key, t: shifted(key.t, frames, fps) } : key)) };
+    return moving.size === 0 ? track : { ...track, keys: track.keys.map((key, i) => (moving.has(i) ? { ...detached(key), t: shifted(key.t, frames, fps) } : key)) };
   });
 }
 
@@ -188,6 +198,17 @@ export function moveTarget(layer: Layer, target: KeyTarget, to: number, fps: num
   const { min, max } = shiftRange(tracks, refs, fps, total);
   const frames = min > max ? 0 : clamp(to, min, max);
   return { layer: frames === 0 ? layer : { ...layer, tracks: shiftKeys(tracks, refs, frames, fps) }, frame: null };
+}
+
+/** The layer with these keys tied to a spoken word, at its time (ADR 0016). */
+export function anchorKeys(layer: Layer, refs: readonly KeyRef[], word: string, t: number): Layer {
+  const tracks = (layer.tracks ?? []).map((track) => {
+    const anchoring = new Set(refs.flatMap((r) => (r.param === track.param ? [r.index] : [])));
+    if (anchoring.size === 0) return track;
+    const keys = track.keys.map((key, i) => (anchoring.has(i) ? { ...key, t, word } : key));
+    return { ...track, keys: [...keys].sort((a, b) => a.t - b.t) };
+  });
+  return { ...layer, tracks };
 }
 
 /** The layer without these keys. A track that loses its last key goes, and its value stays as the param, so the look doesn't jump. */

@@ -4,14 +4,20 @@
 // A version query on a module's URL passes to everything it imports, so
 // loading a rig again under a new version reloads its whole graph.
 //
+// A project's own code is held to project-code.ts here, whatever imports it asks
+// for, static or dynamic (ADR 0017). This isn't a sandbox: it's so code the user
+// was asked about can't pull in code they weren't.
+//
 // Install it first thing in every entry point that runs from source, before
-// importing anything under src/. Its own imports are Node built-ins only.
+// importing anything under src/. Its imports are Node built-ins, and
+// project-code.ts, which only has those.
 // Node only.
 
 import { existsSync, statSync } from 'node:fs';
 import { registerHooks } from 'node:module';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { homeOf, importRefusal } from './project-code.ts';
 
 let installed: string | null = null;
 
@@ -45,6 +51,8 @@ export function installLoader(builtins: string): void {
   registerHooks({
     resolve(specifier, context, next) {
       const parent = context.parentURL;
+      const from = parent?.startsWith('file:') ? fileURLToPath(parent) : null;
+      const home = from !== null ? homeOf(from) : null;
       const named = /^@frame-studio\/(.+)$/.exec(specifier);
       let path: string | null = null;
       if (named) path = join(root, named[1]);
@@ -52,6 +60,10 @@ export function installLoader(builtins: string): void {
         path = fileURLToPath(new URL(specifier, parent));
       }
       const found = path !== null ? findSource(path) : null;
+      if (home !== null) {
+        const refusal = importRefusal({ ...home, builtins: root }, from!, specifier, found);
+        if (refusal !== null) throw new Error(refusal);
+      }
       if (found === null || !found.endsWith('.ts')) return next(specifier, context);
       const url = pathToFileURL(found);
       if (parent?.startsWith('file:')) url.search = new URL(parent).search;

@@ -1,8 +1,21 @@
 # Progress
 
-Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards and the Footage / Threads switch.
+Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards, the Footage / Threads switch, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016).
 
 ## Done
+
+### M14.6: Provider keys, Generate Voice, Kokoro, folder trust (ADR 0017)
+
+- Keys live in `desktop/keys.ts`, main process only, as safeStorage ciphertext. They go in through a window of main's own. The bridge gives the page the provider, last four and date.
+- Generating stops at a native dialog, then main calls the pinned host and writes into `media/`. ElevenLabs is the first provider, tested against a fake host, since no real key was available. Its model, voices and $0.10 per 1,000 characters come from its docs and have never run against the real API.
+- Kokoro downloads on first use with pinned checksums, and runs in a child process. Real runs in Node and in the Electron server spoke Spanish; Whisper tiny transcribed "¿Por qué el lago se congela tan rápido en invierno?" with its accents. A build check keeps sherpa-onnx and espeak-ng out of the app.
+- `generate_voice` is the agents' way in, and it needs no key.
+- A project's code asks once before it loads. Without trust, the server serves built-ins only and the viewer says why a scene won't draw. Settings, from View or the app menu, holds the key rows and revokes trust.
+- A generated voice placed at the playhead gets words. ElevenLabs' timestamps go straight into the cue under the script's text; anything else starts the timing job, which reads the script and language from the cue. `lang` in `project.json` passes validation and reaches the sheet.
+- Word timing kept the voice names (`/voice`, `src/viewer/voice.ts`). Kokoro and Generate Voice's plumbing are speech (`/speech`, `src/viewer/speech.ts`), apart from `generate_voice` and VoiceSheet.
+- Trust was hardened after a council review. A planted `.frame-studio/requests` file used to run with full access, in a declined folder, with no card. Now only turns this server took run by themselves, and anything found on disk waits for Start at studio access. A declined folder has no agents. `tools/studio/project-code.ts` is one list for the hash, the Node loader and the module service, and imports leaving the code folders are refused. The server rechecks the approved hash right before it first reads the code. Servers the app didn't start load built-ins only without `--trust` or `FRAME_STUDIO_TRUST=1`. Revoking trust asks natively. A thread file's id has to match its file name, and `server.json` can only name this computer. ADR 0017's threat model lists what's closed and what isn't.
+- The voice job refuses to write if the cue's file changed, or an agent took the scene, while it listened. Offline and a missing whisper-cli say what to do, per app or repo. A punctuation-only script is a clear error. A failed key save returns a fixed message. `language_code` is off for Multilingual v2.
+- `check` warns when captions name a cue their scene lacks, and when a composition's cue has words no captions can reach. `tests/scenes.test.ts` proves a captions scene equal played, seeked and backwards.
 
 ### M1: Engine and viewer
 
@@ -880,6 +893,19 @@ One decision the spec left open. On disk a finished turn is just `your_turn`, so
 
 How it was checked: typecheck clean, 1444 unit tests and 163 browser tests (8 skipped: the packaged app's, which need `npm run desktop:build`). New unit tests cover the grouping, the card's words and the disk summary. An Electron test writes threads into another project's folder, lists them with no server there, filters them, clicks a card and lands on that scene and thread in one page load. Screenshots in Electron in light and dark, at 1440 and 1024 wide, caught the model name being squeezed before the scene's. The test "works a thread" failed once at a load average near 27, on a read of the queue right after the page showed the text; it passed on every rerun.
 
+### M14.6: Voice (ADR 0016)
+
+Captions keep time on their own now, and a key or marker can land on a spoken word.
+
+- Data. `AudioCue` has `words`, `script` and `lang`, in seconds into the file. `src/engine/speech.ts` has `cueWords`, `kit.speech` and the `anchorWords` pass, which runs in the library. The validator checks word order, ranges and ids.
+- The `captions` rig, in `word-highlight`, `pop-in` and `line`, in any typeface or the pixel font. Layout is `src/rigs/type/caption-layout.ts`, shared with the check tool. The safe-area numbers moved to `src/engine/safe-area.ts`. The pixel font gained Á É Í Ó Ú Ñ Ü ¿ ¡: an accented capital loses a row so a clear row sits under its accent, and `pixel-text` opens its line gap by one only when a line has an accent, so no existing scene moved.
+- The timing job in `tools/voice/`: whisper.cpp 1.9.5, model small q5, pinned by sha256. The render worker decodes to 16 kHz mono. The job runs from `align_voice` and from `POST /voice`, with a card for the download.
+- Measured against the samples in `out/voice-test`, every word of both ElevenLabs takes lands within 150 ms of faster-whisper small. `tests/browser/voice.test.ts` asserts that through the real binary. It skips where the binary, model or samples are missing, so a clean checkout or CI doesn't run it.
+- The kokoro Spanish reference merges "¿Por qué" into one word, so its word count differs from the script's. The script alignment gets it right, and the test asserts that instead of timing.
+- The packaged app builds whisper-cli into `Resources/bin/`, about 8 MB. It links only system libraries and carries the app's ad hoc signature, and `tests/browser/packaged.test.ts` times a voice through it with `align_voice`.
+- The voice row, with `src/viewer/voice.ts` for the arithmetic. Word labels take turns on two tiers, because at 65 px a second a word is narrower than its text.
+- The HTML embed test compares a cut typeface with a whole one, pixel for pixel. It caught captions measuring a space from a letter the cut had dropped, so `charactersOf` now always keeps a space.
+
 ## Next
 
 1. **Your own test of a complete creation**, with the MCP server in Claude Code:
@@ -907,9 +933,17 @@ How it was checked: typecheck clean, 1444 unit tests and 163 browser tests (8 sk
 
 ## Known issues
 
+- ElevenLabs has only run against a fake host: its voice list, model and price estimate still need a real key. The real path is one Generate from the app.
+- Kokoro's Spanish needs espeak-ng data, which is GPL. It arrives only through the optional download, never in the app. The maintainer accepted that on 2026-11-07, since the step is optional.
+- A scene can't read a composition's cue, so captions need the voice in a scene. The check tool warns.
+
 - Command-Z in the packaged app relies on the page handling the key before the Edit menu. Untested: the browser tests send keys to the page directly.
 
+- A turn you sent that was still waiting when the server stopped needs Start afterwards. The new server can't tell it from a planted one.
 - Safe-zone guides are approximations, not measured from each app.
+- Voice rows are read-only on a composition, as its keys are. Timing is scenes only in the viewer; `align_voice` takes either.
+- `voice.test.ts` needs the pinned whisper-cli, the model and sample voices outside the repo, and skips without them.
+- whisper-cli's first run on a machine takes about 18 s while Metal compiles.
 - A composition's check reads its own markers, not those inside its clips.
 - `check` has no progress over MCP, only in the viewer.
 - A video clip past its file's end holds the last frame.

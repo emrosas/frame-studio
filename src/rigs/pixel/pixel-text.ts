@@ -1,6 +1,6 @@
 import type { Rig } from '../../engine/types';
 import { bool, choice, col, num, readParams, str } from '../parts/params';
-import { GLYPH_HEIGHT, lineWidth, paintLine } from './font';
+import { ACCENT_HEIGHT, GLYPH_HEIGHT, hasAccent, lineWidth, paintLine } from './font';
 
 /** Bitmap text for pixel stages, on an optional card. */
 export const pixelText: Rig = {
@@ -26,7 +26,7 @@ export const pixelText: Rig = {
     const p = readParams(pixelText.params, raw);
     const size = Math.max(1, Math.round(p.number('size')));
     const lines = p.string('text').split('|');
-    const gap = 2 * size;
+    const gap = (lines.slice(1).some(hasAccent) ? ACCENT_HEIGHT + 1 : 2) * size;
     const height = lines.length * GLYPH_HEIGHT * size + (lines.length - 1) * gap;
     const widths = lines.map((l) => lineWidth(l) * size);
     const x = Math.round(p.number('x'));

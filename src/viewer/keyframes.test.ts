@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Layer, Track } from '../engine/types';
-import { deleteKeys, keyLanes, keyMarks, keysAt, keyTime, landRange, layerShiftRange, moveTarget, shiftLayer, shiftRange, type KeyTarget } from './keyframes';
+import { anchorKeys, deleteKeys, keyLanes, keyMarks, keysAt, keyTime, landRange, layerShiftRange, moveTarget, shiftLayer, shiftRange, type KeyTarget } from './keyframes';
 
 const FPS = 12;
 const TOTAL = 48;
@@ -181,5 +181,34 @@ describe('deleteKeys', () => {
   it('keeps other tracks, and non-numeric values', () => {
     const l: Layer = { id: 'a', rig: 'dot', tracks: [{ param: 'pose', keys: [{ t: 1, v: 'fly' }] }, track('x', 1)] };
     expect(deleteKeys(l, [{ param: 'pose', index: 0 }])).toEqual({ id: 'a', rig: 'dot', params: { pose: 'fly' }, tracks: [track('x', 1)] });
+  });
+});
+
+describe('word anchors (ADR 0016)', () => {
+  const FPS_ = 12;
+  const anchored: Layer = { id: 'a', rig: 'circle', tracks: [{ param: 'x', keys: [{ t: 1, v: 0, word: 'voice#w1' }, { t: 2, v: 1 }] }] };
+
+  it('marks the diamond of an anchored key', () => {
+    expect(keyMarks(anchored.tracks, FPS_, 48).map((m) => m.anchored ?? false)).toEqual([true, false]);
+  });
+
+  it('dragging a key lets go of its word', () => {
+    const { layer } = moveTarget(anchored, { kind: 'key', layerId: 'a', param: 'x', frame: 12 }, 15, FPS_, 48);
+    expect(layer.tracks![0].keys[0]).toEqual({ t: 1.25, v: 0 });
+    expect(keyMarks(layer.tracks, FPS_, 48)[0].anchored).toBeUndefined();
+  });
+
+  it('a key that lands where it was keeps its word', () => {
+    const { layer } = moveTarget(anchored, { kind: 'key', layerId: 'a', param: 'x', frame: 12 }, 12, FPS_, 48);
+    expect(layer.tracks![0].keys[0].word).toBe('voice#w1');
+  });
+
+  it('shifting a layer lets go too', () => {
+    expect(shiftLayer(anchored, 2, FPS_).tracks![0].keys[0].word).toBeUndefined();
+  });
+
+  it('anchors keys at the word, in time order', () => {
+    const next = anchorKeys(anchored, [{ param: 'x', index: 1 }], 'voice#w0', 0.5);
+    expect(next.tracks![0].keys.map((k) => [k.t, k.word])).toEqual([[0.5, 'voice#w0'], [1, 'voice#w1']]);
   });
 });

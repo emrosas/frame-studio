@@ -485,11 +485,13 @@ export function detectOnsets(channels: readonly Float32Array[]): number[] {
 export interface CheckMarker {
   t: number;
   label: string;
+  /** A marker on a spoken word lands on that word (ADR 0016), and a word in mid sentence starts no new sound, so word-sync checks it instead. */
+  word?: string;
 }
 
 export function checkMarkers(markers: readonly CheckMarker[], onsets: readonly number[], fps: number, from: number, to: number): CheckResult {
   const frameOf = (t: number) => Math.floor(t * fps + 1e-6);
-  const sync = markers.filter((m) => m.label.trimEnd().endsWith('!') && frameOf(m.t) >= from && frameOf(m.t) < to);
+  const sync = markers.filter((m) => m.word === undefined && m.label.trimEnd().endsWith('!') && frameOf(m.t) >= from && frameOf(m.t) < to);
   if (sync.length === 0) return { id: 'markers', status: 'pass', message: 'No sync markers to check.', value: 0 };
   const misses: { frame: number; message: string }[] = [];
   for (const marker of sync) {
@@ -523,6 +525,8 @@ export interface CheckInput {
    * A string says why it could not be rendered.
    */
   audio: readonly Float32Array[] | string | null;
+  /** More results for the report: the word checks (speech-check.ts). */
+  extra?: readonly CheckResult[];
 }
 
 function checkSound(input: CheckInput): CheckResult[] {
@@ -558,6 +562,7 @@ export function buildReport(input: CheckInput): CheckReport {
     checkFlashing(stats, fps, from),
     checkSparse(stats, fps, from),
     ...checkSound(input),
+    ...(input.extra ?? []),
   ];
   return { ok: checks.every((c) => c.status !== 'fail'), scene: input.scene, from, to, checks };
 }

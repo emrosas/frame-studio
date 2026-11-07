@@ -16,7 +16,34 @@ import { createDefaultRegistry } from '../src/rigs';
 const files = import.meta.glob<string>('/scenes/*.json', { eager: true, query: '?raw', import: 'default' });
 const registry = createDefaultRegistry();
 const generators = createDefaultGenerators();
-const paths = Object.keys(files).sort();
+/** A voice with its words and a captions layer reading them, inline so no sound file is needed. */
+const CAPTIONS_SCENE = JSON.stringify({
+  id: 'captions-test',
+  fps: 12,
+  duration: 3,
+  size: [1080, 1920],
+  seed: 3,
+  background: { rig: 'paper', params: { tone: '#f4efe6' } },
+  layers: [{ id: 'subs', rig: 'captions', depth: 0, params: { cue: 'voice', style: 'word-highlight' } }],
+  audio: [
+    {
+      id: 'voice',
+      file: 'media/voice.mp3',
+      start: 0.5,
+      end: 3,
+      words: [
+        { id: 'w0', text: 'Why', start: 0, end: 0.4 },
+        { id: 'w1', text: 'do', start: 0.4, end: 0.6 },
+        { id: 'w2', text: 'lakes', start: 0.6, end: 1.1 },
+        { id: 'w3', text: 'freeze?', start: 1.1, end: 1.6 },
+        { id: 'w4', text: 'Top', start: 1.8, end: 2 },
+        { id: 'w5', text: 'down.', start: 2, end: 2.4 },
+      ],
+    },
+  ],
+});
+const paths = [...Object.keys(files), '/fixtures/captions-test.json'].sort();
+files['/fixtures/captions-test.json'] = CAPTIONS_SCENE;
 
 function loadScene(path: string): Scene {
   const result = validateScene(JSON.parse(files[path]), registry, generators);
@@ -129,7 +156,7 @@ describe('scenes/*.json', () => {
 
   it.each(paths)('%s is named after its scene id', (path) => {
     const json = JSON.parse(files[path]) as { id?: unknown };
-    expect(path).toBe(`/scenes/${String(json.id)}.json`);
+    expect(path.replace('/fixtures/', '/scenes/')).toBe(`/scenes/${String(json.id)}.json`);
   });
 
   // Acceptance: scrubbing to any frame shows the same image as playing to it.
@@ -176,6 +203,12 @@ describe('scenes/*.json', () => {
       expect(frameLog(scrubbed, scene, frame), `frame ${frame}: scrubbed backwards vs played`).toBe(playedLogs.get(frame));
     }
   }, 30_000);
+
+  it('draws the captions fixture, or the test above proves nothing', () => {
+    const scene = loadScene('/fixtures/captions-test.json');
+    expect(frameLog(recorder(), scene, 20)).not.toBe(frameLog(recorder(), scene, 0));
+    expect(frameLog(recorder(), scene, 20)).not.toBe(frameLog(recorder(), scene, 30));
+  });
 
   it('checks a spread of frames on a heavy scene: ends, key, step and override boundaries, and mid-motion', () => {
     const scene = loadScene('/scenes/bear-test.json');

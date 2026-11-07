@@ -12,9 +12,9 @@ export function collectStrings(value: unknown, out = new Set<string>()): Set<str
   return out;
 }
 
-/** The characters of `strings`, with their capitals and lower case too, since the text rig can change case. */
+/** The characters of `strings`, with their capitals and lower case too, since the text rig can change case, and a space, which captions set between words that hold none. */
 export function charactersOf(strings: Iterable<string>): Set<string> {
-  const chars = new Set<string>();
+  const chars = new Set<string>([' ']);
   for (const s of strings) for (const variant of [s, s.toUpperCase(), s.toLowerCase()]) for (const c of variant) chars.add(c);
   return chars;
 }

@@ -55,6 +55,18 @@ async function viewerWindow(electron: ElectronApplication): Promise<Page> {
 
 const discovery = () => JSON.parse(readFileSync(join(folder, '.frame-studio/server.json'), 'utf8')) as { url: string; token: string };
 
+/** Sends a turn the way the viewer does: only a turn through the server's route runs by itself (ADR 0017). */
+async function sendTurn(prompt: string): Promise<{ id: number }> {
+  const { url, token } = discovery();
+  const res = await fetch(`${url}/__studio/requests`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ selection: { sceneId: 'hello', from: 0, to: 72 }, frame: 0, prompt, references: [], agent: 'fake', settings: { access: 'studio' } }),
+  });
+  expect(res.ok).toBe(true);
+  return ((await res.json()) as { request: { id: number } }).request;
+}
+
 beforeAll(() => {
   // The app opens the viewer the build made, as the packaged app does.
   execFileSync('npx', ['vite', 'build', '--logLevel', 'error'], { cwd: REPO, stdio: 'ignore' });
@@ -79,7 +91,7 @@ describe('the app', () => {
     expect(state.scenes).toEqual(['film-background', 'hello', 'meet', 'pip', 'together', 'film']);
     expect(state.errors).toEqual([]);
     // Only the bridge reaches the page: no Node, no Electron.
-    expect(state.bridge).toEqual(['boot', 'convertFilm', 'forgetProject', 'newProject', 'openFolder', 'openProject', 'poster', 'projects', 'reveal', 'setDraft', 'setPref', 'token']);
+    expect(state.bridge).toEqual(['boot', 'convertFilm', 'forgetProject', 'newProject', 'onOpenSettings', 'openFolder', 'openProject', 'poster', 'projects', 'reveal', 'setDraft', 'setPref', 'token', 'trust', 'voice']);
     expect(state.node).toBe('undefined');
     const tsconfig = JSON.parse(readFileSync(join(folder, 'tsconfig.json'), 'utf8')) as { compilerOptions: { paths: Record<string, string[]> } };
     expect(tsconfig.compilerOptions.paths['@frame-studio/*']).toEqual([`${join(REPO, 'src')}/*`]);
@@ -158,7 +170,7 @@ export const twinkle: Rig = {
       }),
     );
     const queue = new StudioQueue(join(folder, '.frame-studio'), async () => join(folder, 'scenes/hello.json'));
-    const request = await queue.create({ selection: { sceneId: 'hello', from: 0, to: 72 }, frame: 0, prompt: 'add a twinkle', references: [], agent: 'fake', settings: { access: 'studio' } });
+    const request = await sendTurn('add a twinkle');
     await expect.poll(async () => (await queue.get(request.id)).status, { timeout: 60_000 }).toBe('your_turn');
     expect((await queue.get(request.id)).turns[0].status).toBe('done');
     const layers = (JSON.parse(readFileSync(join(folder, 'scenes/hello.json'), 'utf8')) as { layers: { id: string; rig?: string }[] }).layers;
@@ -178,7 +190,7 @@ export const twinkle: Rig = {
     }, film);
     writeFileSync(join(folder, '.frame-studio/fake-agent.json'), JSON.stringify({ scripts: [{ match: 'take your time', steps: [{ say: 'Starting. ' }, { wait: 8000 }, { say: 'Finished.' }] }] }));
     const queue = new StudioQueue(join(folder, '.frame-studio'), async () => join(folder, 'scenes/hello.json'));
-    const slow = await queue.create({ selection: { sceneId: 'hello', from: 0, to: 72 }, frame: 0, prompt: 'take your time', references: [], agent: 'fake', settings: { access: 'studio' } });
+    const slow = await sendTurn('take your time');
     await expect.poll(async () => (await queue.get(slow.id)).status, { timeout: 30_000 }).toBe('working');
     const sample = discovery();
     const alive = () => fetch(`${sample.url}/__studio/files`, { headers: { Authorization: `Bearer ${sample.token}` } }).then((r) => r.ok, () => false);
@@ -259,7 +271,7 @@ export const twinkle: Rig = {
     await unfold('Sample');
     await group('Sample').getByRole('button', { name: 'hello', exact: true }).click();
     await onScreen('Sample');
-    const asking = await queue.create({ selection: { sceneId: 'hello', from: 0, to: 72 }, frame: 0, prompt: 'ask me', references: [], agent: 'fake', settings: { access: 'studio' } });
+    const asking = await sendTurn('ask me');
     await expect.poll(async () => (await queue.get(asking.id)).turns[0].waitingSince !== undefined, { timeout: 30_000 }).toBe(true);
 
     await unfold('My Film');

@@ -40,7 +40,7 @@ describe('the typeface converter', () => {
 describe('the typefaces an embed carries', () => {
   it('collects every string in the scene data, and each character in both cases', () => {
     expect([...collectStrings({ a: 'x', b: ['y', { c: 'z' }], d: 1 })]).toEqual(['x', 'y', 'z']);
-    expect([...charactersOf(['Ab'])].sort()).toEqual(['A', 'B', 'a', 'b']);
+    expect([...charactersOf(['Ab'])].sort()).toEqual([' ', 'A', 'B', 'a', 'b']);
   });
 
   it('keeps only the glyphs and kerning of the characters used', () => {

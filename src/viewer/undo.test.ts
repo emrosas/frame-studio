@@ -141,6 +141,40 @@ describe('EditHistory', () => {
   });
 });
 
+describe('words and markers on the stack (ADR 0016)', () => {
+  const words = (end: number) => [{ id: 'w0', text: 'hola', start: 0, end }];
+  const cue = (end: number) => ({ id: 'voice', file: 'media/a.mp3', start: 0, end: 4, words: words(end) });
+  const start = () => sceneState(scene({ start: 1 }, { audio: [cue(1)], markers: [{ t: 1, label: 'a' }] }));
+
+  it('takes a save of a cue\'s words as ours, and keeps the history', () => {
+    const h = new EditHistory();
+    h.sync('cut', start());
+    h.begin();
+    h.record('cut', { layerId: 'audio/voice', before: { words: words(1) }, after: { words: words(2) } });
+    h.end();
+    h.sync('cut', sceneState(scene({ start: 1 }, { audio: [cue(2)], markers: [{ t: 1, label: 'a' }] })));
+    expect(h.canUndo).toBe(true);
+  });
+
+  it('a change to a cue beyond its words still ends the history', () => {
+    const h = new EditHistory();
+    h.sync('cut', start());
+    h.record('cut', edit(1, 2));
+    h.sync('cut', sceneState(scene({ start: 1 }, { audio: [{ ...cue(1), start: 1 }], markers: [{ t: 1, label: 'a' }] })));
+    expect(h.canUndo).toBe(false);
+  });
+
+  it('an anchored key that moved with its word is not somebody else\'s edit', () => {
+    const anchored = (t: number) => scene({ start: 1, tracks: [{ param: 'x', keys: [{ t, v: 1, word: 'voice#w0' }] }] });
+    expect(sceneState(anchored(1)).layers.get('one')).toBe(sceneState(anchored(2)).layers.get('one'));
+  });
+
+  it('sets a target\'s own fields', () => {
+    expect(layerSet({ words: words(1) }, { words: words(2) }, 'audio/voice')).toEqual({ words: words(2) });
+    expect(layerSet({ markers: [] }, { markers: [{ t: 1, label: 'a' }] }, 'markers/')).toEqual({ markers: [{ t: 1, label: 'a' }] });
+  });
+});
+
 describe('layerKey', () => {
   it("ignores the id, a clip's sound and field order", () => {
     expect(layerKey({ id: 'a', rig: 'x', params: {} })).toBe(layerKey({ params: {}, rig: 'x' }));

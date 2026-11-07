@@ -1,5 +1,7 @@
 // Runs the agents that live inside the studio server (ADR 0006). It claims
-// threads meant for them from the queue, one working thread per scene, and
+// threads meant for them from the queue, one working thread per scene, but only
+// turns this server took through its own routes in this session: a pending turn
+// found on disk, at boot or later, waits for the user's click (ADR 0017). It
 // works each turn through a provider: it builds the prompt, hands the
 // provider the studio tools over HTTP, logs and pushes everything the turn
 // does, asks the user through approval cards when the access rules say so,
@@ -34,6 +36,7 @@ import type { Action, AgentProvider, TurnHandle, TurnOutcome } from './types.ts'
 /** Studio tools that write a scene, by the argument that names it. */
 const SCENE_WRITERS: Record<string, (args: Record<string, unknown>) => unknown> = {
   update_scene: (a) => a.id,
+  align_voice: (a) => a.sceneId,
   apply_to_selection: (a) => (a.selection as { sceneId?: unknown } | undefined)?.sceneId,
 };
 /** Studio tools that write an M9 project's project.json, by the argument that names it. Without one, the folder's: no project to wait on. */
@@ -77,7 +80,11 @@ export interface RunnerOptions {
   sceneInfo: (sceneId: string) => Promise<SceneInfo & { rigs?: string[] }>;
   /** How long a project.json edit waits for the project's other threads. Defaults to PROJECT_WAIT_MS. */
   projectWaitMs?: number;
+  /** False once the folder lost its trust: nothing more starts. */
+  enabled?: () => boolean;
 }
+
+const turnKey = (thread: StudioRequest) => `${thread.id}:${thread.turns.length - 1}`;
 
 /** A turn's events on disk (NNNN/turn-K.jsonl) and on the way to the viewer. Text deltas are joined for up to 80 ms. */
 export class TurnLog {
@@ -125,13 +132,15 @@ export class TurnLog {
     this.writes = this.writes.then(async () => {
       await mkdir(join(this.file, '..'), { recursive: true });
       await appendFile(this.file, `${JSON.stringify(event)}\n`);
+    }).catch(() => {
+      // The folder went away under a turn that was ending. The event already reached the pages.
     });
   }
 
   /** Waits for everything appended so far to reach the disk. */
   async flush(): Promise<void> {
     this.flushText();
-    await this.writes.catch(() => {});
+    await this.writes;
   }
 }
 
@@ -185,6 +194,8 @@ export class AgentRunner {
   private disposed = false;
   private timer: ReturnType<typeof setInterval> | null = null;
   private readonly refreshing = new Map<AgentId, Promise<AgentStatus>>();
+  /** The turns this server took, with the settings they came with, kept here so a change to the file can't alter them. */
+  private readonly sent = new Map<string, TurnSettings>();
 
   constructor(options: RunnerOptions) {
     this.options = options;
@@ -212,6 +223,23 @@ export class AgentRunner {
     this.timer = setInterval(() => this.kick(), KICK_MS);
     this.timer.unref?.();
     this.kick();
+  }
+
+  /** A turn the user sent through this server, or started by hand: the runner may work it. */
+  allow(thread: StudioRequest): void {
+    if (thread.agent === 'external') return;
+    this.sent.set(turnKey(thread), currentTurn(thread).settings ?? { access: 'studio' });
+    this.kick();
+  }
+
+  /** Whether a pending turn came through this server. One that didn't waits for a click. */
+  isAllowed(thread: StudioRequest): boolean {
+    return this.sent.has(turnKey(thread));
+  }
+
+  /** Whether this server can run the thread's agent at all. */
+  runs(agent: AgentId): boolean {
+    return this.providers.has(agent);
   }
 
   /**
@@ -274,15 +302,15 @@ export class AgentRunner {
   }
 
   private async tick(): Promise<void> {
-    if (this.options.mcpUrl() === null) return;
-    const waiting = (await this.options.queue.list()).filter((r) => r.status === 'pending' && this.providers.has(r.agent));
+    if (this.options.mcpUrl() === null || this.options.enabled?.() === false) return;
+    const waiting = (await this.options.queue.list()).filter((r) => r.status === 'pending' && this.providers.has(r.agent) && this.isAllowed(r));
     if (waiting.length === 0) return;
     const ready: AgentId[] = [];
     for (const id of new Set(waiting.map((r) => r.agent))) {
       if ((await this.status(this.providers.get(id)!)).ready) ready.push(id);
     }
     for (;;) {
-      const claimed = await this.options.queue.claimNext(this.session, ready);
+      const claimed = await this.options.queue.claimNext(this.session, ready, (r) => this.isAllowed(r));
       if (!claimed) return;
       void this.run(claimed);
     }
@@ -295,8 +323,8 @@ export class AgentRunner {
   private async run(thread: StudioRequest): Promise<void> {
     const { queue } = this.options;
     const k = thread.turns.length - 1;
-    const turn = thread.turns[k];
-    const settings: TurnSettings = turn.settings ?? { access: 'studio' };
+    const settings: TurnSettings = this.sent.get(turnKey(thread)) ?? { access: 'studio' };
+    this.sent.delete(turnKey(thread));
     const log = new TurnLog(queue.threadDir(thread.id), k, (e) => this.pushEvent(thread.id, k, e));
     await log.resume();
     const provider = this.providers.get(thread.agent)!;

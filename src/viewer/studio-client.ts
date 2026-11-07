@@ -10,17 +10,23 @@ import {
   CHECK_EVENT,
   EXPORT_EVENT,
   QUEUE_EVENT,
+  SPEECH_EVENT,
   THUMB_EVENT,
   TURN_EVENT,
+  VOICE_EVENT,
+  type VoiceEvent,
+  type VoiceStatus,
   type AgentStatus,
   type ApprovalDecision,
   type ClipEdit,
   type LayerChange,
   type LayerEdit,
   type CurrentSelection,
+  type KokoroStatus,
   type NewRequest,
   type NewScene,
   type NewVideo,
+  type PlacedVoice,
   type QuestionAnswers,
   type Reply,
   type StudioRequest,
@@ -98,8 +104,8 @@ export class StudioClient {
   }
 
   /** The agents a thread can go to, with whether each is ready. `fresh` skips the server's short cache. */
-  async agents(fresh = false): Promise<AgentStatus[]> {
-    return (await call<{ agents: AgentStatus[] }>(`/agents${fresh ? '?fresh' : ''}`)).agents;
+  async agents(fresh = false): Promise<{ agents: AgentStatus[]; agentsOff?: string }> {
+    return call<{ agents: AgentStatus[]; agentsOff?: string }>(`/agents${fresh ? '?fresh' : ''}`);
   }
 
   async create(request: NewRequest): Promise<StudioRequest> {
@@ -117,9 +123,9 @@ export class StudioClient {
     return (await call<{ file: string }>(`/media?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': type }, body: file })).file;
   }
 
-  /** Adds a cue that plays a sound file in a scene, from `start` seconds. */
-  async placeSound(scene: string, file: string, start: number): Promise<void> {
-    await call('/sounds', jsonBody({ scene, file, start }));
+  /** Adds a cue that plays a sound file in a scene, from `start` seconds, and returns it. A generated voice brings its script and any words. */
+  async placeSound(scene: string, file: string, start: number, voice?: PlacedVoice): Promise<{ id: string; words?: unknown[] } | null> {
+    return (await call<{ cue?: { id: string; words?: unknown[] } }>('/sounds', jsonBody({ scene, file, start, voice }))).cue ?? null;
   }
 
   /** Creates an empty scene; returns its id as the library keys it. */
@@ -173,6 +179,11 @@ export class StudioClient {
 
   async act(id: number, action: RequestAction): Promise<void> {
     await call(`/requests/${id}/${action}`, jsonBody({}));
+  }
+
+  /** Starts a turn found on disk (ADR 0017), at the settings the user chose here. */
+  async start(id: number, settings: TurnSettings): Promise<void> {
+    await call(`/requests/${id}/start`, jsonBody({ settings }));
   }
 
   /** Try again: reverts the newest turn and asks again, with an edited prompt, references and settings. */
@@ -231,6 +242,44 @@ export class StudioClient {
   /** Calls `listener` with every check event: progress, then the report, or an error. */
   onCheck(listener: (event: CheckEvent) => void): () => void {
     return this.on(CHECK_EVENT, listener);
+  }
+
+  /** Whether a timing job can run now, or needs the model first (ADR 0016). */
+  voiceStatus(): Promise<VoiceStatus> {
+    return call<VoiceStatus>('/voice');
+  }
+
+  async startVoice(job: { scene: string; cue: string; script?: string }): Promise<string> {
+    return (await call<{ id: string }>('/voice', jsonBody(job))).id;
+  }
+
+  async cancelVoice(id: string): Promise<void> {
+    await call(`/voice/${encodeURIComponent(id)}/cancel`, jsonBody({}));
+  }
+
+  /** Calls `listener` with every timing event: progress, then the word count, or an error. */
+  onVoice(listener: (event: VoiceEvent) => void): () => void {
+    return this.on(VOICE_EVENT, listener);
+  }
+
+  /** Kokoro on this computer (ADR 0017). */
+  async speechStatus(): Promise<KokoroStatus> {
+    return (await call<{ kokoro: KokoroStatus }>('/speech')).kokoro;
+  }
+
+  /** Starts Kokoro's download; progress and the outcome come as speech events. */
+  async installSpeech(): Promise<KokoroStatus> {
+    return (await call<{ kokoro: KokoroStatus }>('/speech/install', jsonBody({}))).kokoro;
+  }
+
+  /** Speaks with Kokoro into media/. Returns the file's path for cues. */
+  async generateSpeech(text: string, lang: string, voice: string): Promise<string> {
+    return (await call<{ file: string }>('/speech/generate', jsonBody({ text, lang, voice }))).file;
+  }
+
+  /** Calls `listener` with Kokoro's download progress, then how it ended. */
+  onSpeech(listener: (event: { done?: number; total?: number; finished?: boolean; error?: string }) => void): () => void {
+    return this.on(SPEECH_EVENT, listener);
   }
 
   /** Copies an image into references/ and returns its repo-relative path. */

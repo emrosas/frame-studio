@@ -8,6 +8,7 @@
 
 import type { GeneratorRegistry } from '../audio/types';
 import type { CompositionValidation, ProjectContext, ProjectFile, ProjectValidation, SchemaOwner, ValidationResult } from '../engine';
+import { anchorWords } from '../engine/speech';
 import type { Cast, Rig, RigRegistry, Scene, World } from '../engine/types';
 
 export type ValidateScene = (input: unknown, registry?: RigRegistry, generators?: GeneratorRegistry, project?: ProjectContext) => ValidationResult;
@@ -36,6 +37,8 @@ export interface FolderProject {
   name?: string;
   fps?: number;
   size?: [number, number];
+  /** The language voices and captions start from, such as "es". */
+  lang?: string;
   cast?: Record<string, { rig: string; params?: Record<string, unknown> }>;
 }
 
@@ -92,6 +95,8 @@ export interface SceneLibrary {
   folder?: { file: string; project: FolderProject | null; errors: readonly string[] } | null;
   /** The studio folder's sound files (ADR 0012), when the library came from a studio server. */
   media?: readonly { file: string; bytes: number; modified: number }[];
+  /** Source files of the folder's own that stayed unloaded, since it was opened without trust (ADR 0017). */
+  withheldCode?: number;
 }
 
 function message(err: unknown): string {
@@ -190,7 +195,7 @@ export function buildLibrary(
     if (parsed) {
       try {
         const result = validate(json, registry ?? undefined, generators ?? undefined, sceneContext);
-        if (result.ok) scene = result.scene;
+        if (result.ok) scene = anchorWords(result.scene);
         else entryErrors.push(...result.errors);
       } catch (err) {
         entryErrors.push(`validator threw: ${message(err)}`);
@@ -264,7 +269,7 @@ function buildCompositions(
       if (taken) errors.push(`id: "${stem}" is already ${taken.file}; a project's scenes and compositions share ids, so rename one`);
       const result = tools.validateComposition!(json, registry ?? undefined, generators ?? undefined, { id: '', cast, scenes: lengths });
       if (!result.ok) errors.push(...result.errors);
-      else if (errors.length === 0) scene = result.scene;
+      else if (errors.length === 0) scene = anchorWords(result.scene);
     } catch (err) {
       errors.push(`invalid JSON: ${message(err)}`);
     }
@@ -369,7 +374,7 @@ function buildProjects(
         if (declared !== stem) errors.push(`id: must be "${stem}", the file's name, got ${declared === null ? 'none' : `"${declared}"`}`);
         try {
           const result = validate(p.json, registry ?? undefined, generators ?? undefined, context);
-          if (result.ok) scene = errors.length === 0 ? result.scene : null;
+          if (result.ok) scene = errors.length === 0 ? anchorWords(result.scene) : null;
           else errors.push(...result.errors);
         } catch (err) {
           errors.push(`validator threw: ${message(err)}`);

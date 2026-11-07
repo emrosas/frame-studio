@@ -20,13 +20,17 @@ import {
   checkNewScene,
   checkNewVideo,
   checkRetry,
+  checkSettings,
   CHECK_EVENT,
+  checkPlacedVoice,
   EXPORT_EVENT,
   LIBRARY_EVENT,
   MAX_REFERENCE_BYTES,
   QUEUE_EVENT,
   REFERENCE_TYPES,
+  SPEECH_EVENT,
   THUMB_EVENT,
+  VOICE_EVENT,
   type AgentStatus,
   type ApprovalDecision,
   type ClipEdit,
@@ -37,22 +41,27 @@ import {
   type NewRequest,
   type NewScene,
   type NewVideo,
+  type PlacedVoice,
   type QuestionAnswers,
   type Reply,
+  type StudioRequest,
   type TurnSettings,
 } from '../../src/studio/protocol.ts';
 import { buildEmbed } from '../bundle/embed.ts';
+import { kokoro } from '../voice/kokoro.ts';
+import { saveVoiceFile } from '../voice/save.ts';
 import { listMedia, mediaInfo, saveMedia, serveMedia } from './media.ts';
 import { listRenders, serveRender } from './renders.ts';
 import { Thumbs } from './thumbs.ts';
 import { createSerial } from '../mcp/tools.ts';
 import { withoutId, type Workspace } from '../mcp/workspace.ts';
 import { entryPath, loadModules, readSceneFiles, sceneLibrary, writeFileAtomic } from '../scene-files.ts';
+import { voiceStatus } from '../voice/align.ts';
 import { runCheck } from './check.ts';
 import { STUDIO_INSTRUCTIONS } from './agents/instructions.ts';
 import { createProviders } from './agents/providers.ts';
 import { AgentRunner, readTurnEvents } from './agents/runner.ts';
-import { CodeHost } from './code.ts';
+import { CodeHost, withheldCode } from './code.ts';
 import { convertFilm } from './convert.ts';
 import { EventHub } from './events.ts';
 import type { StudioFolder } from './folder.ts';
@@ -60,6 +69,7 @@ import { body, checkLocal, checkOrigin, HttpError, json, send } from './http.ts'
 import { McpEndpoint } from './mcp-http.ts';
 import { MODULES_PATH, ModuleService } from './modules.ts';
 import { Pairing } from './pairing.ts';
+import { isImportable } from './project-code.ts';
 import { electronWorker } from './electron-worker.ts';
 import { RenderPool } from './render-pool.ts';
 import { StudioQueue } from './queue.ts';
@@ -206,7 +216,14 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         throw new HttpError(409, err instanceof Error ? err.message : String(err));
       }
     });
-  const agents = options.agents ?? false;
+  // No trust, no agents: an agent can write the code the user just declined to run (ADR 0017).
+  const agents = (options.agents ?? false) && !folder.untrusted;
+  const AGENTS_OFF = "You opened this project without its code, so the studio's agents are off. Trust the project to turn them on.";
+  const agentsOff = () => (folder.untrusted && options.agents ? AGENTS_OFF : null);
+  /** Refuses a turn for a studio agent while they're off. */
+  const needAgents = (agent: unknown) => {
+    if (folder.untrusted && agent !== undefined && agent !== 'external') throw new HttpError(409, AGENTS_OFF);
+  };
   const runner = new AgentRunner({
     queue,
     providers: agents ? createProviders(folder.studio) : [],
@@ -215,6 +232,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     mcpUrl: () => (url ? `${url}/__studio/mcp` : null),
     push: (event, data) => events.send(event, data),
     instructions: async () => STUDIO_INSTRUCTIONS,
+    enabled: () => !folder.untrusted,
     sceneInfo: async (sceneId) => {
       const mods = await loadModules(code);
       const entry = mods.library.findEntry(await sceneLibrary(mods, folder), sceneId);
@@ -249,7 +267,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   const relevant = (base: string, file: string): 'files' | 'code' | null => {
     const rel = relative(base, file).split(sep).join('/');
     if (/^(scenes|compositions)\/[^/]+\.json$/.test(rel) || rel === 'project.json' || /^projects\/[^/]+\/[^/]+\.json$/.test(rel) || /^media\//.test(rel)) return 'files';
-    if (/\.ts$/.test(rel) && (/^(rigs|audio)\//.test(rel) || /^projects\/[^/]+\/rigs\//.test(rel))) return 'code';
+    if (isImportable(rel) && (/^(rigs|audio)\//.test(rel) || /^projects\/[^/]+\/rigs\//.test(rel))) return 'code';
     return null;
   };
   try {
@@ -276,6 +294,10 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     }
   }
 
+  /** Threads as pages see them: a pending turn the runner may not take says so. The field is never read from a file. */
+  const shownThreads = (requests: StudioRequest[]) =>
+    requests.map(({ held: _, ...thread }) => (thread.status === 'pending' && thread.agent !== 'external' && !runner.isAllowed(thread) ? { ...thread, held: true } : thread));
+
   // Push the queue when .frame-studio/requests changes.
   let queueTimer: ReturnType<typeof setTimeout> | null = null;
   const pushQueue = () => {
@@ -284,7 +306,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       queueTimer = null;
       runner.kick();
       try {
-        events.send(QUEUE_EVENT, { requests: await queue.list() });
+        events.send(QUEUE_EVENT, { requests: shownThreads(await queue.list()) });
       } catch {
         // The next change pushes again.
       }
@@ -432,6 +454,8 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
 
   const checks = new Map<string, AbortController>();
   let checkCount = 0;
+  const voices = new Map<string, AbortController>();
+  let voiceCount = 0;
 
   // ---- static files for the viewer ----
 
@@ -462,7 +486,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     checkLocal(req);
     if (req.method === 'GET' && path === '/health') {
       const authorized = pairing.allows(req);
-      return send(res, 200, { ok: true, ...(authorized ? { folder: folder.root, pid: process.pid } : {}) });
+      return send(res, 200, { ok: true, ...(authorized ? { folder: folder.root, pid: process.pid, untrusted: folder.untrusted === true } : {}) });
     }
     checkOrigin(req);
     if (req.method === 'POST' && path === '/pair') {
@@ -482,7 +506,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       return;
     }
     if (req.method === 'GET' && path === '/files') {
-      return send(res, 200, { generation, folder: folder.root, files: await readSceneFiles(folder), media: await listMedia(folder) });
+      return send(res, 200, { generation, folder: folder.root, files: await readSceneFiles(folder), media: await listMedia(folder), withheldCode: await withheldCode(folder) });
     }
     // Sound files (ADR 0012): the list with lengths, a file's bytes, and uploads streamed to media/.
     if (req.method === 'GET' && path === '/media') return send(res, 200, { media: await mediaInfo(folder) });
@@ -493,6 +517,26 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       if (!type.startsWith('audio/') && !type.startsWith('application/octet-stream')) throw new HttpError(415, 'Send the sound file as audio/* or application/octet-stream.');
       const saved = await saveMedia(folder, url.searchParams.get('name') ?? 'sound', req);
       return send(res, 201, { file: saved });
+    }
+    // Kokoro (ADR 0017): is it here, fetch it, speak. No route here ever sees a key; those stay in the app's main process.
+    if (req.method === 'GET' && path === '/speech') return send(res, 200, { kokoro: kokoro.status() });
+    if (req.method === 'POST' && path === '/speech/install') {
+      kokoro
+        .install((done, total) => events.send(SPEECH_EVENT, { done, total }))
+        .then(() => events.send(SPEECH_EVENT, { finished: true }))
+        .catch((err: unknown) => events.send(SPEECH_EVENT, { error: err instanceof Error ? err.message : String(err) }));
+      return send(res, 202, { kokoro: kokoro.status() });
+    }
+    if (req.method === 'POST' && path === '/speech/generate') {
+      const input = await json<{ text?: unknown; lang?: unknown; voice?: unknown }>(req);
+      if (typeof input?.text !== 'string' || typeof input.lang !== 'string' || (input.voice !== undefined && typeof input.voice !== 'string')) throw new HttpError(400, 'Send { text, lang, voice? }.');
+      const { text, lang, voice } = input;
+      const bytes = await Promise.resolve()
+        .then(() => kokoro.speak(text, lang, voice))
+        .catch((err: unknown) => {
+          throw new HttpError(409, err instanceof Error ? err.message : String(err));
+        });
+      return send(res, 201, { file: await saveVoiceFile(folder.root, 'kokoro', '.wav', bytes) });
     }
     // Posters: where each scene's stands, starting any that are missing, and the files themselves, named by content.
     if (req.method === 'GET' && path === '/thumbs') return send(res, 200, { thumbs: await thumbs.list() });
@@ -642,14 +686,37 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       if (await agentWorks(input.scene)) throw new HttpError(409, 'An agent is working on this scene, so it stays put until the agent finishes.');
       return send(res, 200, await created(() => ws().then((w) => w.editLayer(input.scene, input.layer, input.set))));
     }
+    // Timing a voice (ADR 0016): the same job as align_voice, and the model it may need first.
+    if (req.method === 'GET' && path === '/voice') return send(res, 200, await voiceStatus(folder.builtins));
+    if (req.method === 'POST' && path === '/voice') {
+      const input = await json<{ scene?: unknown; cue?: unknown; script?: unknown }>(req);
+      const { scene, cue, script } = input ?? {};
+      if (typeof scene !== 'string' || typeof cue !== 'string' || (script !== undefined && typeof script !== 'string')) throw new HttpError(400, 'Send { scene, cue, script? }.');
+      if (await agentWorks(scene)) throw new HttpError(409, 'An agent is working on this scene, so it stays put until the agent finishes.');
+      const id = `voice-${++voiceCount}`;
+      const abort = new AbortController();
+      voices.set(id, abort);
+      ws()
+        .then((w) => w.alignVoice(scene, cue, { script, signal: abort.signal, onProgress: (p) => events.send(VOICE_EVENT, { id, ...p }) }))
+        .then((result) => events.send(VOICE_EVENT, { id, words: result.words }))
+        .catch((err: unknown) => events.send(VOICE_EVENT, { id, error: abort.signal.aborted ? 'Cancelled.' : err instanceof Error ? err.message : String(err) }))
+        .finally(() => voices.delete(id));
+      return send(res, 202, { id });
+    }
+    if (req.method === 'POST' && parts[0] === 'voice' && parts[2] === 'cancel') {
+      voices.get(parts[1])?.abort();
+      return send(res, 200, { ok: true });
+    }
     if (req.method === 'POST' && path === '/sounds') {
       // Add at playhead: a cue playing a sound file, from the viewer's Media list (ADR 0012).
-      const input = await json<{ scene?: unknown; file?: unknown; start?: unknown }>(req);
+      const input = await json<{ scene?: unknown; file?: unknown; start?: unknown; voice?: unknown }>(req);
       if (typeof input?.scene !== 'string' || typeof input.file !== 'string' || typeof input.start !== 'number' || !Number.isFinite(input.start)) {
-        throw new HttpError(400, 'Send { scene, file, start }.');
+        throw new HttpError(400, 'Send { scene, file, start, voice? }.');
       }
-      const { scene, file, start } = input;
-      return send(res, 201, await created(() => ws().then((w) => w.placeSound(scene, file, start))));
+      const { scene, file, start, voice } = input;
+      const problem = voice === undefined ? null : checkPlacedVoice(voice);
+      if (problem) throw new HttpError(400, problem);
+      return send(res, 201, await created(() => ws().then((w) => w.placeSound(scene, file, start, voice as PlacedVoice | undefined))));
     }
     // Converting an M9 film into a project folder of its own (ADR 0013), beside this one unless `to` says where.
     const converting = /^\/projects\/([^/]+)\/convert$/.exec(path);
@@ -674,8 +741,11 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     }
 
     // The request queue (ADR 0003, ADR 0006).
-    if (req.method === 'GET' && path === '/queue') return send(res, 200, { requests: await queue.list() });
-    if (req.method === 'GET' && path === '/agents') return send(res, 200, { agents: [EXTERNAL, ...(await runner.statuses(url.searchParams.has('fresh')))] });
+    if (req.method === 'GET' && path === '/queue') return send(res, 200, { requests: shownThreads(await queue.list()) });
+    if (req.method === 'GET' && path === '/agents') {
+      const off = agentsOff();
+      return send(res, 200, { agents: [EXTERNAL, ...(await runner.statuses(url.searchParams.has('fresh')))], ...(off ? { agentsOff: off } : {}) });
+    }
     if (req.method === 'GET' && path === '/selection') return send(res, 200, { selection: await queue.readSelection() });
     if (req.method === 'PUT' && path === '/selection') {
       const selection = await json<Omit<CurrentSelection, 'updatedAt'> | null>(req);
@@ -691,7 +761,10 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       const input = await json<NewRequest>(req);
       const problem = checkNewRequest(input);
       if (problem) throw new HttpError(400, problem);
-      return send(res, 201, { request: await queue.create(input) });
+      needAgents(input.agent);
+      const request = await queue.create(input);
+      runner.allow(request);
+      return send(res, 201, { request });
     }
     if (req.method === 'POST' && path === '/requests/clear') return send(res, 200, { removed: await queue.clearFinished() });
     const id = parts[0] === 'requests' && parts.length >= 3 ? Number(parts[1]) : NaN;
@@ -717,9 +790,27 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         const input = await json<Reply>(req);
         const problem = checkNewRequest(input, { reply: true });
         if (problem) throw new HttpError(400, problem);
-        return send(res, 201, { request: await queue.reply(id, input) });
+        needAgents((await queue.get(id)).agent);
+        const request = await queue.reply(id, input);
+        runner.allow(request);
+        return send(res, 201, { request });
       }
       if (action === 'settle') return send(res, 200, { request: await queue.settle(id) });
+      if (action === 'start') {
+        // A click on a turn found on disk (ADR 0017). Access is the click's: the file's never counts.
+        const input = await json<{ settings?: TurnSettings } | null>(req);
+        const settings = input?.settings ?? { access: 'studio' as const };
+        const problem = checkSettings(settings);
+        if (problem) throw new HttpError(400, problem);
+        const { agent } = await queue.get(id);
+        needAgents(agent);
+        if (!runner.runs(agent)) throw new HttpError(409, `No agent here can work request #${id}.`);
+        const request = await queue.startHeld(id, settings).catch((err: unknown) => {
+          throw new HttpError(409, err instanceof Error ? err.message : String(err));
+        });
+        runner.allow(request);
+        return send(res, 200, { request });
+      }
       if (action === 'stop') {
         if (!(await runner.stop(id))) throw new HttpError(409, `No agent in the studio is working on request #${id}.`);
         return send(res, 200, { ok: true });
@@ -740,12 +831,13 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         const input = await json<{ prompt?: string; references?: string[]; settings?: TurnSettings } | null>(req);
         const problem = checkRetry(input);
         if (problem) throw new HttpError(400, problem);
-        return send(res, 201, {
-          request: await queue.retry(id, input?.prompt, {
-            ...(input?.references ? { references: input.references } : {}),
-            ...(input?.settings ? { settings: input.settings } : {}),
-          }),
+        needAgents((await queue.get(id)).agent);
+        const request = await queue.retry(id, input?.prompt, {
+          ...(input?.references ? { references: input.references } : {}),
+          ...(input?.settings ? { settings: input.settings } : {}),
         });
+        runner.allow(request);
+        return send(res, 201, { request });
       }
     }
     if (req.method === 'POST' && Number.isInteger(id) && parts[2] === 'approvals' && parts.length === 4) {

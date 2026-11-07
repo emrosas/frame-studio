@@ -8,11 +8,12 @@
 // our saves wrote, and nothing else in the file may change. Any other change
 // (an agent's edit, a hand edit of the file) ends the history, since the
 // inverse of an edit is no longer known to be right. Pure, so it is unit tested
-// without a browser.
+// without a browser. A cue's words and the markers go through the same stack,
+// under the ids protocol.ts gives them (ADR 0016).
 
 import type { Layer, Scene } from '../engine/types';
 import { BACKGROUND_ID } from '../engine/types';
-import { LAYER_EDIT_FIELDS, type LayerChange } from '../studio/protocol';
+import { cueTarget, editFields, MARKERS_TARGET, type LayerChange } from '../studio/protocol';
 import type { FrameRange } from './selection';
 
 type LayerJson = LayerChange['before'];
@@ -23,34 +24,47 @@ export interface LayerRecord extends LayerChange {
   spans?: { before: FrameRange; after: FrameRange };
 }
 
+/** Leaves out an anchored key's or marker's t: the file holds the last one known, the library the word's (ADR 0016). */
+function withoutAnchoredTime(this: unknown, key: string, value: unknown): unknown {
+  return key === 't' && typeof (this as { word?: unknown }).word === 'string' ? undefined : value;
+}
+
 /** A layer's JSON for comparing. Its id is its name here, and a clip's `sound` isn't on the layer it renders as. Field order doesn't count. */
 export function layerKey(layer: object): string {
   const { id: _id, sound: _sound, ...rest } = layer as Record<string, unknown>;
-  return JSON.stringify(Object.keys(rest).sort().map((field) => [field, rest[field]]));
+  return JSON.stringify(Object.keys(rest).sort().map((field) => [field, rest[field]]), withoutAnchoredTime);
 }
 
 /** What a scene holds, for telling our saves from anyone else's edit. */
 export interface SceneState {
-  /** Everything outside its layers. */
+  /** Everything outside its layers, and outside the words and markers a hand edit can change. */
   rest: string;
+  /** Layers by id, with cues' words and the markers under their edit targets. */
   layers: ReadonlyMap<string, string>;
 }
 
 export function sceneState(scene: Scene): SceneState {
   const layers = new Map(scene.layers.map((layer) => [layer.id, layerKey(layer)]));
   if (scene.background) layers.set(BACKGROUND_ID, layerKey(scene.background));
-  const { layers: _layers, background: _background, ...rest } = scene;
+  const { layers: _layers, background: _background, markers, ...rest } = scene;
   // A video clip's own sound is a cue that follows it.
-  const audio = scene.audio?.filter((cue) => !layers.has(cue.id.replace(/:sound$/, '')));
-  return { rest: JSON.stringify({ ...rest, audio, ids: [...layers.keys()] }), layers };
+  const audio = scene.audio
+    ?.filter((cue) => !layers.has(cue.id.replace(/:sound$/, '')))
+    .map(({ words, ...cue }) => {
+      if (words) layers.set(cueTarget(cue.id), layerKey({ words }));
+      return cue;
+    });
+  const ids = [...layers.keys()];
+  if (markers) layers.set(MARKERS_TARGET, layerKey({ markers }));
+  return { rest: JSON.stringify({ ...rest, audio, ids: ids.filter((id) => id.indexOf('/') < 0) }), layers };
 }
 
-/** What turns one layer's JSON into another's: its changed fields, and null for a field that goes. */
-export function layerSet(from: object, to: object): Record<string, unknown> {
+/** What turns one target's JSON into another's: its changed fields, and null for a field that goes. */
+export function layerSet(from: object, to: object, target = ''): Record<string, unknown> {
   const a = from as Record<string, unknown>;
   const b = to as Record<string, unknown>;
   const set: Record<string, unknown> = {};
-  for (const field of LAYER_EDIT_FIELDS) {
+  for (const field of editFields(target)) {
     if (JSON.stringify(a[field]) !== JSON.stringify(b[field])) set[field] = b[field] ?? null;
   }
   return set;

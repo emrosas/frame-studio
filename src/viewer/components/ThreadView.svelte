@@ -28,6 +28,7 @@
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
+  import ModelPicker from './ModelPicker.svelte';
   import QuestionCard from './QuestionCard.svelte';
   import SelectionToken from './SelectionToken.svelte';
 
@@ -53,11 +54,13 @@
   let busy = $state(false);
   let retrying = $state(false);
   let stopFailed = $state(false);
-  // Replies start from the newest turn's settings; they can change between turns. The panel keys this
-  // component on the thread, so it starts fresh for each thread.
-  const initial = untrack(() => currentTurn(thread).settings);
+  // Replies start from the newest turn's model and effort; they can change between turns. Access is another
+  // matter: the turn's comes from a file, which anyone can write, so only full access you chose on this page carries
+  // on, and a turn nobody here sent starts from nothing. The panel keys this component on the thread, so it starts
+  // fresh for each thread.
+  const initial = untrack(() => (thread.held ? undefined : currentTurn(thread).settings));
   let settings = $state<TurnSettings>({
-    access: initial?.access ?? 'studio',
+    access: untrack(() => (ui.studio.fullAccess.includes(thread.id) ? 'full' : 'studio')),
     ...(initial?.model ? { model: initial.model } : {}),
     ...(initial?.effort ? { effort: initial.effort } : {}),
   });
@@ -68,6 +71,7 @@
   // The question card the working turn waits on (ADR 0011), shown above the actions.
   const asking = $derived(thread.status === 'working' ? foldTurn(ui.turnEvents[`${thread.id}:${thread.turns.length - 1}`] ?? []).asking : null);
   const external = $derived(thread.agent === 'external');
+  let heldAgent = $state(untrack(() => thread.agent));
   const agentLabel = $derived(ui.studio.agents.find((a) => a.id === thread.agent)?.label ?? thread.agent);
   const agentReady = $derived(external || (ui.studio.agents.find((a) => a.id === thread.agent)?.ready ?? false));
   const canReply = $derived(thread.status === 'your_turn' || thread.status === 'settled' || thread.status === 'cancelled');
@@ -190,7 +194,7 @@
               </ul>
             {/if}
             <p class="ask-meta">
-              {askLabel(turn.ask.selection)}{turn.attempt && turn.attempt > 1 ? ` · attempt ${turn.attempt}` : ''}{settingsText(turn.settings) ? ` · ${settingsText(turn.settings)}` : ''}
+              {askLabel(turn.ask.selection)}{turn.attempt && turn.attempt > 1 ? ` · attempt ${turn.attempt}` : ''}{settingsText(turn.settings) && !(thread.held && k === thread.turns.length - 1) ? ` · ${settingsText(turn.settings)}` : ''}
             </p>
           </div>
 
@@ -275,8 +279,19 @@
       {/key}
     {/if}
     {#if problem}<p class="panel-note is-error" role="status">{problem}</p>{/if}
-    {#if thread.status === 'pending' && !agentReady}
+    {#if thread.status === 'pending' && !external && ui.studio.agentsOff}
+      <p class="panel-note" role="status">{ui.studio.agentsOff}</p>
+    {:else if thread.status === 'pending' && !agentReady}
       <p class="panel-note" role="status">{agentLabel} isn't ready, so this waits. Pick it in a new thread to see why.</p>
+    {/if}
+    {#if thread.held && thread.status === 'pending' && !external && !ui.studio.agentsOff}
+      <div class="thread-held" role="group" aria-label="Turn waiting to start">
+        <p class="panel-note" role="status">Nobody sent this from here. It came from a file in the project, so nothing happens until you've read it and press Start.</p>
+        <div class="row">
+          <ModelPicker bind:agent={heldAgent} bind:settings agents={ui.studio.agents} fixed onrefresh={() => actions.refreshAgents()} />
+          <button type="button" class="btn is-primary is-small" disabled={busy} onclick={() => run(() => actions.start(thread.id, $state.snapshot(settings)))}>Start</button>
+        </div>
+      </div>
     {/if}
     <div class="thread-actions">
       {#if thread.status === 'working'}

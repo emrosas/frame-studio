@@ -2,7 +2,8 @@
   One sound cue on the timeline (ADR 0012), in a row under the clips: its id
   when that fits, and for a sound file its waveform over the seconds of the file
   the cue plays. The waveform comes once the file has decoded for the scene's
-  sound. Read-only.
+  sound. Read-only, but for Timing on a sound file without words (ADR 0016),
+  which gets it a voice row.
 -->
 <script lang="ts">
   import { labelFits } from '../timeline';
@@ -36,4 +37,7 @@
     <svg class="waveform" viewBox="0 0 {BUCKETS} 1" preserveAspectRatio="none" aria-hidden="true"><path d={path} /></svg>
   {/if}
   {#if labelFits(band.id, px)}<span class="sound-label">{band.id}</span>{/if}
+  {#if band.canTime && px >= 64}
+    <button type="button" class="sound-time" title="Find when each word is said, for captions and word anchors" onpointerdown={(e) => e.stopPropagation()} onclick={() => actions.timeVoice(band.id)}>Timing</button>
+  {/if}
 </div>

@@ -11,15 +11,18 @@ import { installLoader } from './studio/loader.ts';
 installLoader(join(REPO, 'src'));
 const { chmod, mkdir, readFile, writeFile } = await import('node:fs/promises');
 const { parseArgs } = await import('node:util');
-const { studioFolder } = await import('./studio/folder.ts');
+const { studioFolder, trustsCode } = await import('./studio/folder.ts');
 const { newToken } = await import('./studio/pairing.ts');
 const { startStudioServer } = await import('./studio/server.ts');
 
-const { values } = parseArgs({ options: { port: { type: 'string' }, folder: { type: 'string' } } });
-const folder = studioFolder(values.folder ?? REPO);
+const { values } = parseArgs({ options: { port: { type: 'string' }, folder: { type: 'string' }, trust: { type: 'boolean' } } });
+const root = values.folder ?? REPO;
+// The repo counts as trusted; another folder needs --trust or FRAME_STUDIO_TRUST=1 (ADR 0017).
+const folder = studioFolder(root, { untrusted: !trustsCode(root, values.trust) });
 await mkdir(folder.studio, { recursive: true });
 const tokenFile = join(folder.studio, 'dev-token');
-let token = (await readFile(tokenFile, 'utf8').catch(() => '')).trim();
+// Only the repo's own: a token found in someone else's folder is one they know.
+let token = values.folder ? '' : (await readFile(tokenFile, 'utf8').catch(() => '')).trim();
 if (token.length < 16) {
   token = newToken();
   await writeFile(tokenFile, `${token}\n`, { mode: 0o600 });

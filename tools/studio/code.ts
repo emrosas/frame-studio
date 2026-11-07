@@ -4,13 +4,13 @@
 // load imports everything again under a new version, since Node can't forget a
 // module; the old copies stay in memory. Node only.
 
-import { readdir } from 'node:fs/promises';
-import { join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type { AudioGenerator } from '../../src/audio/types.ts';
 import type { Rig } from '../../src/engine/types.ts';
 import type { StudioFolder } from './folder.ts';
 import { installLoader } from './loader.ts';
+import { checkApproval, fileRefusal, filmRigs, guardProject, projectCode, sourceFiles as listSources } from './project-code.ts';
 
 /** Where a rig or generator is defined: its file and export name. */
 export interface Definition {
@@ -45,18 +45,22 @@ export function isGenerator(value: unknown): value is AudioGenerator {
   return typeof v === 'object' && v !== null && typeof v.id === 'string' && typeof v.schedule === 'function' && typeof v.params === 'object';
 }
 
-/** TypeScript sources under `dir`, tests and test helpers left out, sorted. None when it doesn't exist. */
+/** TypeScript sources under `dir` the studio loads by itself, tests and test helpers left out, sorted. */
 export async function sourceFiles(dir: string): Promise<string[]> {
-  const out: string[] = [];
-  for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
-    const path = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name !== 'testing' && entry.name !== 'node_modules' && !entry.name.startsWith('.')) out.push(...(await sourceFiles(path)));
-    } else if (entry.name.endsWith('.ts') && !entry.name.endsWith('.test.ts') && !entry.name.endsWith('.d.ts')) {
-      out.push(path);
-    }
-  }
-  return out.sort();
+  return listSources(dir);
+}
+
+/** How many of the folder's own files a server without trust leaves unloaded (ADR 0017). */
+export async function withheldCode(folder: StudioFolder): Promise<number> {
+  return folder.untrusted ? projectCode(folder.root).files : 0;
+}
+
+/** What a tool says after a scene fails on a server that left code out: how to let it in. Empty when it left nothing out. */
+export async function withheldNote(folder: StudioFolder): Promise<string> {
+  const count = await withheldCode(folder);
+  if (count === 0) return '';
+  const files = count === 1 ? '1 file' : `${count} files`;
+  return `\nThis folder's own code isn't loaded (${files} in rigs/ or audio/), so scenes that use its rigs or generators can't draw. Run it only if you trust the folder: pass --trust to the command, or set FRAME_STUDIO_TRUST=1 where it starts, or in the app choose Trust for this project.`;
 }
 
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -89,6 +93,7 @@ export class CodeHost {
   constructor(folder: StudioFolder) {
     this.folder = folder;
     installLoader(folder.builtins);
+    guardProject({ root: folder.root, builtins: folder.builtins });
   }
 
   /** Forgets what was loaded, so the next load reads every file again. */
@@ -138,6 +143,12 @@ export class CodeHost {
     const found = new Map<string, Definition & { index: boolean }>();
     for (const dir of dirs) {
       for (const file of await sourceFiles(dir)) {
+        const home = { root: this.folder.root, builtins: this.folder.builtins };
+        const refusal = file.startsWith(`${this.folder.builtins}/`) ? null : fileRefusal(home, file);
+        if (refusal !== null) {
+          errors.push(refusal);
+          continue;
+        }
         let mod: Record<string, unknown>;
         try {
           mod = await this.importFile(file, version);
@@ -158,7 +169,7 @@ export class CodeHost {
   }
 
   private async loadNow(version: number): Promise<LoadedCode> {
-    const { builtins, rigs, audio, projects } = this.folder;
+    const { builtins, rigs, audio, root } = this.folder;
     const errors: string[] = [];
     const builtinRigsMod = await this.importFile(join(builtins, 'rigs/index.ts'), version);
     const builtinAudioMod = await this.importFile(join(builtins, 'audio/index.ts'), version);
@@ -166,15 +177,18 @@ export class CodeHost {
     const builtinGenerators = [...((builtinAudioMod.allGenerators as readonly AudioGenerator[]) ?? [])];
     const builtinRigDefs = await this.collect([join(builtins, 'rigs')], isRig, version, errors);
     const builtinGenDefs = await this.collect([join(builtins, 'audio')], isGenerator, version, errors);
-    const folderRigs = await this.collect([rigs], isRig, version, errors);
-    const folderGenerators = await this.collect([audio], isGenerator, version, errors);
+    // An untrusted folder's code never loads (ADR 0017): built-ins only. Code that changed since the user was asked is untrusted.
+    checkApproval(this.folder);
+    const untrusted = this.folder.untrusted === true;
+    const folderRigs = await this.collect(untrusted ? [] : [rigs], isRig, version, errors);
+    const folderGenerators = await this.collect(untrusted ? [] : [audio], isGenerator, version, errors);
     const projectRigs: Record<string, Rig[]> = {};
     const projectRigDefinitions: Record<string, Map<string, Definition>> = {};
-    for (const entry of await readdir(projects, { withFileTypes: true }).catch(() => [])) {
-      if (!entry.isDirectory()) continue;
-      const own = await this.collect([join(projects, entry.name, 'rigs')], isRig, version, errors);
-      if (own.values.length > 0) projectRigs[entry.name] = own.values;
-      projectRigDefinitions[entry.name] = own.definitions;
+    for (const dir of untrusted ? [] : filmRigs(root)) {
+      const id = basename(dirname(dir));
+      const own = await this.collect([dir], isRig, version, errors);
+      if (own.values.length > 0) projectRigs[id] = own.values;
+      projectRigDefinitions[id] = own.definitions;
     }
     return {
       builtinRigs,

@@ -3,13 +3,16 @@
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
 import type { CheckReport } from '../export/check';
-import type { AgentId, AgentStatus, ApprovalDecision, NewScene, NewVideo, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
+import type { AgentId, AgentStatus, ApprovalDecision, KokoroStatus, NewScene, NewVideo, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { OpenTarget, ProjectEntry, UpdateState } from './desktop';
 import type { KeyLane, KeyMark, KeyTarget, SelectedKey } from './keyframes';
 import { readPref } from './prefs';
 import type { FrameRange } from './selection';
 import type { ClipPlace, VisibleSpan } from './timeline';
 import type { RequestAction } from './studio-client';
+import type { GeneratedVoice } from './speech';
+import type { VoiceLine } from './voice';
+import type { SpokenWord } from '../engine/types';
 
 export interface SceneOption {
   key: string;
@@ -64,6 +67,10 @@ export interface SceneHeader {
 export interface MarkerTick {
   frame: number;
   label: string;
+  /** Its place in the scene's markers. */
+  index?: number;
+  /** It lands on a spoken word (ADR 0016). */
+  anchored?: boolean;
 }
 
 /** A file in out/, for the library's Renders. */
@@ -94,7 +101,15 @@ export interface SoundBand {
   lane: number;
   /** For a sound file: the file, and the seconds of it the cue plays, for its waveform. */
   file?: { path: string; from: number; to: number };
+  /** A sound file with no words yet can be timed (ADR 0016). */
+  canTime?: boolean;
 }
+
+/** A timing job on screen (ADR 0016): asking to fetch the model first, working, or why it stopped. */
+export type VoiceJob =
+  | { status: 'ask'; cue: string; bytes: number; name: string }
+  | { status: 'working'; cue: string; id: string | null; stage: string; done: number; total: number }
+  | { status: 'error'; cue: string; message: string };
 
 /** A layer's row on the timeline, in frames: its bar, its keys and its overrides. */
 export interface LayerRow {
@@ -211,6 +226,26 @@ export interface ViewerActions {
   importMedia(files: File[]): Promise<string | null>;
   /** Places a sound file at the playhead of the scene on screen. Returns an error message, or null. */
   placeSound(file: string): Promise<string | null>;
+  /** Times a sound cue's words, asking first if that means a download (ADR 0016). */
+  timeVoice(cueId: string): void;
+  /** Yes to the download the card asks about. */
+  confirmVoice(): void;
+  /** Stops a timing job, or puts the card away. */
+  cancelVoice(): void;
+  /** Saves a cue's words after a drag or a text edit. Resolves false if it was refused. */
+  saveWords(cueId: string, words: readonly SpokenWord[]): Promise<boolean>;
+  /** Ties the selected key or marker to a spoken word. */
+  anchorToWord(cueId: string, wordId: string): void;
+  /** Marks a marker as what Delete, Anchor and the arrows would act on. */
+  selectMarker(index: number | null): void;
+  /** Kokoro on this computer (ADR 0017). */
+  speechStatus(): Promise<KokoroStatus>;
+  /** Starts Kokoro's download, which reports through ui.speechInstall. */
+  installSpeech(): Promise<KokoroStatus>;
+  /** Speaks with Kokoro into media/. */
+  generateSpeech(text: string, lang: string, voice: string): Promise<{ file: string } | { error: string }>;
+  /** Keeps what a voice was generated from, so the cue placed from it gets words: the provider's, or the timing job's. */
+  alignVoice(voice: GeneratedVoice): void;
   /** The loudest sample in each of `buckets` slices of seconds [from, to) of a file the scene plays, for its waveform. */
   waveform(file: string, from: number, to: number, buckets: number): Promise<Float32Array | null>;
   /** Creates an empty scene and shows it. Returns an error message, or null. */
@@ -281,6 +316,8 @@ export interface ViewerActions {
   requestAction(id: number, action: RequestAction): Promise<string | null>;
   /** Try again: reverts the newest turn and asks again, with an edited prompt, new images and settings. */
   retry(id: number, prompt: string, files: File[], settings?: TurnSettings): Promise<string | null>;
+  /** Starts a turn found on disk, at these settings. Returns an error message, or null. */
+  start(id: number, settings: TurnSettings): Promise<string | null>;
   /** "Revert to here" on a turn, or with no turn, the whole thread. Returns an error message, or null. */
   revert(id: number, turn?: number): Promise<string | null>;
   /** Answers a question card, or skips it with null. Returns an error message, or null. */
@@ -330,6 +367,10 @@ export interface StudioState {
   error: string | null;
   /** The external agent and the agents the studio runs, as the picker offers them. */
   agents: AgentStatus[];
+  /** Why the studio's own agents are off here, when they are: the project opened without its code (ADR 0017). */
+  agentsOff: string | null;
+  /** Threads you gave full access from this page. A reply starts from studio access in any other: what a file says never counts. */
+  fullAccess: number[];
   /** The thread open in the agent panel, or null for a new thread. */
   open: number | null;
 }
@@ -415,6 +456,18 @@ export class ViewerUi {
   media = $state<MediaItem[]>([]);
   /** What the last import or Add at playhead did, for the Media list. */
   mediaNote = $state<{ text: string; error: boolean } | null>(null);
+  /** The Generate Voice sheet is up (ADR 0017). */
+  voiceOpen = $state(false);
+  /** Settings is up. */
+  settingsOpen = $state(false);
+  /** Kokoro's download while it runs. */
+  speechInstall = $state<{ done: number; total: number } | null>(null);
+  /** Why the last download failed. */
+  speechInstallError = $state<string | null>(null);
+  /** project.json's language. */
+  projectLang = $state<string | null>(null);
+  /** Source files of this project's own left unloaded, since it opened without trust. */
+  withheldCode = $state(0);
   /** The scene on screen plays sound files, so the HTML export can offer to carry them. */
   usesMedia = $state(false);
   /** The scene's sound cues on the timeline, or null without any. */
@@ -447,6 +500,11 @@ export class ViewerUi {
   selectedKey = $state.raw<SelectedKey | null>(null);
   /** Whether keys can be edited: on, locked while an agent works on the scene, or off where the timeline shows clips. */
   keyEdit = $state<'on' | 'locked' | 'off'>('off');
+  /** The sound cues with words, as voice rows under the layers (ADR 0016). */
+  voices = $state<readonly VoiceLine[]>([]);
+  voiceJob = $state<VoiceJob | null>(null);
+  /** Which marker is selected, by its place in `markers`. */
+  selectedMarker = $state<number | null>(null);
   /** The rows of the scene on screen, top of the stack first, then the background. */
   layers = $state.raw<LayerRow[]>([]);
   /** The right-click menu, when it's open. */
@@ -454,7 +512,7 @@ export class ViewerUi {
   /** The token shows its From and To fields. */
   rangeEditing = $state(false);
   errors = $state<ErrorBlock[]>([]);
-  studio = $state<StudioState>({ requests: [], now: Date.now(), error: null, agents: [], open: null });
+  studio = $state<StudioState>({ requests: [], now: Date.now(), error: null, agents: [], agentsOff: null, fullAccess: [], open: null });
   /**
    * Which side columns show, as last left (Viewer.svelte saves it). The App reads it, so a thread that ends while
    * the agent panel is hidden still gets its notice.

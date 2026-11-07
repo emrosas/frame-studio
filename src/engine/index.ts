@@ -17,6 +17,8 @@ export { render, drawLayer, assertFrame, resetContextState, cameraView, type Cam
 export { quantize, stageSize } from './pixel';
 export { isImageFile, isPictureFile, isVideoFile, picturesAt, picturesUsed, pictureTime, type PictureRequest } from './picture';
 export { PASS_THROUGH, onlyParts } from './kit';
+export { anchorWords, cueWords, parseWordRef, sceneWords, unanchoredWords, wordRef, wordTime, type OrphanAnchor } from './speech';
+export { safeArea, SAFE_INSET, type SafeArea } from './safe-area';
 export { hitTest, type HitCandidate, type HitResult, type HitTestOptions } from './hit-test';
 export { isMediaPath, validateScene, type ProjectContext, type SchemaOwner, type ValidationResult } from './validate';
 export { sceneGraphErrors, validateFolderProject, validateProject, type FolderProjectFile, type ProjectFile, type ProjectValidation } from './project';

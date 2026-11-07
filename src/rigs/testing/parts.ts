@@ -71,6 +71,7 @@ export function drawRecorded(rig: Rig, o: DrawOptions = {}): Recorded {
         rec.log.push({ op: 'call', name: MARK, args: [id, 'end'] });
       }
     },
+    speech: () => [],
   };
   const params = { ...defaultParams(rig), ...o.params };
   rig.draw(ctx, params, o.t ?? 0, createRng(o.seed ?? 42, o.key ?? 'layer'), o.stage ?? STAGE, kit);

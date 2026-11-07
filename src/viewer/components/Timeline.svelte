@@ -26,6 +26,10 @@
   and it stays locked while an agent works there. Sound stays read-only. The
   range input underneath keeps the frame on the keyboard and in the
   accessibility tree.
+
+  A cue with words gets a row of its own under the layers, VoiceRow.svelte, and
+  a sound file without them offers Timing (ADR 0016). A marker's click selects it,
+  so a word's right-click can anchor it.
 -->
 <script lang="ts">
   import type { KeyMark, KeyTarget, SelectedKey } from '../keyframes';
@@ -34,6 +38,9 @@
   import type { LayerRow, ShotBand, SoundBand as SoundBandData, ViewerActions, ViewerUi } from '../ui.svelte';
   import Popover from './Popover.svelte';
   import SoundBand from './SoundBand.svelte';
+  import VoiceCard from './VoiceCard.svelte';
+  import VoiceRow from './VoiceRow.svelte';
+  import type { WordChip } from '../voice';
 
   let { ui, actions }: { ui: ViewerUi; actions: ViewerActions } = $props();
 
@@ -132,7 +139,7 @@
   /** What a dragged range edge lands on: markers, clip and sound edges, and these frames of the row itself. */
   function snapTargets(own: readonly number[]): number[] {
     const edges = (bands: readonly { from: number; to: number }[] | undefined) => (bands ?? []).flatMap((b) => [b.from, b.to]);
-    return [...ui.markers.map((m) => m.frame), ...edges(ui.shots?.bands), ...edges(ui.sounds?.bands), ...own];
+    return [...ui.markers.map((m) => m.frame), ...edges(ui.shots?.bands), ...edges(ui.sounds?.bands), ...edges(ui.voices), ...own];
   }
 
   /**
@@ -235,7 +242,7 @@
   }
 
   function keyTitle(mark: KeyMark): string {
-    const when = `${mark.params.join(', ')} at ${formatClock(mark.at, fps)}.`;
+    const when = `${mark.params.join(', ')} at ${formatClock(mark.at, fps)}${mark.anchored ? ', on a spoken word' : ''}.`;
     return canEditKeys ? `${when} Drag to move, click then Delete to remove.` : ui.keyEdit === 'locked' ? `${when} An agent is working here, so keys stay put.` : when;
   }
 
@@ -245,6 +252,17 @@
   }
 
   const isSelectedKey = (layerId: string, param: string | null, mark: KeyMark) => ui.selectedKey?.layerId === layerId && ui.selectedKey.param === param && ui.selectedKey.frame === mark.frame;
+
+  // ---- words ----
+
+  /** The word a right-click is on. */
+  let wordMenu = $state<{ x: number; y: number; cue: string; chip: WordChip } | null>(null);
+  const anchorName = $derived(ui.selectedKey ? 'key' : ui.selectedMarker !== null ? 'marker' : null);
+
+  function openWordMenu(e: MouseEvent, cue: string, chip: WordChip): void {
+    if (!canEditKeys) return;
+    wordMenu = { x: Math.min(e.clientX + 8, window.innerWidth - 228), y: Math.min(e.clientY, window.innerHeight - 44), cue, chip };
+  }
 
   /** Up and Down move through the rows. Everything else is the viewer's. */
   function rowKeys(e: KeyboardEvent): void {
@@ -358,6 +376,7 @@
     class="key-mark"
     class:is-selected={isSelectedKey(layerId, param, mark)}
     class:is-fixed={!canEditKeys}
+    class:is-anchored={mark.anchored}
     tabindex="-1"
     aria-label={keyTitle(mark)}
     title={keyTitle(mark)}
@@ -385,14 +404,14 @@
       {#if ui.markers.length > 0}
         <div class="ruler-markers">
           {#each ui.markers as marker, i (`${marker.frame}-${marker.label}`)}
-            <span class="marker" class:is-sync={marker.label.endsWith('!')} class:is-crowded={!labelled[i]} style="left: {percent(marker.frame)}%">
+            <span class="marker" class:is-sync={marker.label.endsWith('!')} class:is-crowded={!labelled[i]} class:is-selected={marker.index !== undefined && ui.selectedMarker === marker.index} class:is-anchored={marker.anchored} style="left: {percent(marker.frame)}%">
               <button
                 type="button"
                 tabindex="-1"
                 title={marker.label}
                 onpointerdown={(e) => e.stopPropagation()}
                 onclick={(e) => {
-                  ui.selectedKey = null;
+                  actions.selectMarker(marker.index ?? null);
                   actions.scrub(marker.frame);
                   e.currentTarget.blur();
                 }}><span class="marker-label">{marker.label}</span></button
@@ -526,6 +545,27 @@
         {/each}
       </div>
     {/if}
+    {#each ui.voices as voice (voice.cue.id)}
+      <div class="tl-section">
+        <div class="tl-heads" aria-hidden="true"><span class="row-head" title={voice.label}>Voice</span></div>
+        <div class="voices">
+          <VoiceRow
+            {voice}
+            {ui}
+            {actions}
+            {fps}
+            {total}
+            px={spanPx}
+            ready={ui.sound?.status === 'ready' || ui.sound?.status === 'locked'}
+            editable={canEditKeys}
+            {boundaryAt}
+            {startSpan}
+            {follow}
+            onmenu={(e, chip) => openWordMenu(e, voice.cue.id, chip)}
+          />
+        </div>
+      </div>
+    {/each}
     {#if ui.sounds}
       {@const sounds = ui.sounds}
       <div class="tl-section">
@@ -554,6 +594,27 @@
         >
       </div>
     </Popover>
+  {/if}
+
+  {#if wordMenu}
+    <Popover label="Word" role="menu" class="stack-menu" style="left: {wordMenu.x}px; top: {wordMenu.y}px; width: 220px" onclose={() => (wordMenu = null)}>
+      <div class="menu-list">
+        <button
+          type="button"
+          role="menuitem"
+          class="menu-item"
+          disabled={anchorName === null}
+          onclick={() => {
+            if (wordMenu) actions.anchorToWord(wordMenu.cue, wordMenu.chip.id);
+            wordMenu = null;
+          }}>{anchorName ? `Anchor selected ${anchorName} here` : 'Select a key or marker to anchor'}</button
+        >
+      </div>
+    </Popover>
+  {/if}
+
+  {#if ui.voiceJob}
+    <VoiceCard job={ui.voiceJob} {actions} />
   {/if}
 
   <div class="tl-overlay" aria-hidden="true">

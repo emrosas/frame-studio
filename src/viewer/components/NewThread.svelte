@@ -100,6 +100,7 @@
 
 <footer class="panel-foot">
   {#if ui.studio.error}<p class="panel-note is-error">{ui.studio.error}</p>{/if}
+  {#if ui.studio.agentsOff}<p class="panel-note" role="status">{ui.studio.agentsOff}</p>{/if}
   {#if status}<p class="composer-status" class:is-error={status.error} role="status">{status.text}</p>{/if}
   <Composer
     bind:value={prompt}

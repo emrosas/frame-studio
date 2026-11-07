@@ -505,6 +505,58 @@ A short beep for UI moments and hits. Each blip starts exactly on a frame.
 | `every` | number | 0 | 0 to 60 | Seconds between blips. 0 plays one blip at the cue start. Repeats snap to frames and are at least a frame apart. |
 | `gain` | number | 0.3 | 0 to 1 | Loudness. |
 
+### Words, captions and anchors
+
+A sound file cue can carry what it says (ADR 0016). `align_voice`, or Timing on the timeline, writes them:
+
+```json
+{ "id": "voice", "file": "media/voice.mp3", "start": 1, "end": 10, "lang": "es",
+  "script": "¿Por qué un lago no se congela?",
+  "words": [
+    { "id": "w0", "text": "¿Por", "start": 0, "end": 0.16, "p": 0.91 },
+    { "id": "w1", "text": "qué", "start": 0.16, "end": 0.36, "p": 0.9 }
+  ] }
+```
+
+`start` and `end` are seconds into the file, so moving or trimming the cue carries the words. They stay in order and don't overlap, and ids are unique in the cue with no `#`. `p` is how sure the timing was. `p: 0` marks a script word Whisper didn't hear, whose time is a guess.
+
+With a script, words and punctuation come from it. Without one they're what Whisper heard, so give the script when you have it. The timing job needs `whisper-cli`: `npm run voice:setup` in the repo, and the app ships it. Its first run downloads the model, about 190 MB, to `~/.frame-studio/models/`, and after that it works offline. What Whisper heard is kept beside the file as `media/<file>.words.json`, a cache that's safe to delete.
+
+The `captions` rig reads them:
+
+```json
+{ "id": "subs", "rig": "captions", "depth": 0, "params": { "cue": "voice", "style": "word-highlight" } }
+```
+
+| Param | Default | Meaning |
+| --- | --- | --- |
+| `cue` | `voice` | The id of a cue in this scene with words. It has to be this scene's: put the voice in the scene that shows its captions. |
+| `style` | `word-highlight` | `word-highlight` lights the word being said. `pop-in` shows each word as it's said. `line` shows the page plain. |
+| `font` | `inter-bold` | A typeface id, or `pixel` for the bitmap font on a pixel stage. |
+| `size` | 0 | Font size in stage pixels, or stage pixels per font pixel for `pixel`. 0 picks one for the stage. |
+| `color`, `highlight` | `#ffffff`, `#ffd23f` | The text, and the word being said. |
+| `stroke`, `strokeWidth` | `#111111`, 10 | The outline. Typefaces only. |
+| `position` | `bottom` | `top`, `middle` or `bottom` of the safe area. On a vertical stage that's what TikTok, Reels and Shorts leave clear. |
+| `offsetX`, `offsetY` | 0 | Moves the block, in stage pixels. |
+| `width` | 0 | Line width. 0 is as wide as the safe area allows, centred on the stage. |
+| `lines` | 2 | Most lines on a page. |
+| `case` | `none` | `none`, `upper` or `lower`. |
+| `opacity` | 1 | Opacity. |
+
+A page breaks at a sentence, at a pause, past a clause once it's full, and when the next word wouldn't fit. It holds a moment after its last word. An HTML export keeps captions when it leaves the sound out, and carries only the glyphs they use.
+
+A clip renders the same inside its composition and alone, so a scene can't read a composition's cue. A voice on a composition can't have captions. Put it in a scene, with the captions layer, and place that scene. `check` warns about both sides of this: a captions layer naming a cue its scene doesn't have, and a composition cue whose words nothing can reach.
+
+A key or marker lands on a word by naming it beside its `t`:
+
+```json
+{ "param": "opacity", "keys": [{ "t": 8.38, "v": 1, "word": "voice#w23" }] }
+```
+
+The word's time overwrites `t` wherever a scene loads, so the key follows when the word moves or the cue does. The `t` in the file is the last one known. After a re-record, words that match by text keep their ids. A key on a word that went keeps its last `t`, and `check` reports it as an orphan. On the timeline an anchored key is a hollow diamond, and dragging it by hand detaches it.
+
+A rig reads a cue's words with `kit.speech(cueId)`, in scene seconds, trimmed and shifted as the cue plays them.
+
 ## Projects and compositions
 
 A project is a folder (ADR 0013). Everything a piece uses lives in it, and the app's sidebar lists your projects. Its parts:
@@ -656,6 +708,8 @@ npm run export -- --scene bear-test --target gif --from 00:02:00 --to 00:04:00
 npm run contact-sheet -- --scene bear-test --every 6      # out/bear-test/contact-sheet-...png
 npm run export -- --scene bear-test --target html         # out/bear-test/bear-test.html
 ```
+
+These commands load built-ins only in a folder that isn't the repo, unless the running app already trusts it. To load the folder's own rigs and generators, add `--trust`, or set `FRAME_STUDIO_TRUST=1` (ADR 0017). Do that for folders you trust: rigs are code. `npm run dev --folder` takes the same flag.
 
 A scene in an old film takes its qualified id, `--scene bears-story/film`, and its files go to `out/bears-story/film/`. `--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
 

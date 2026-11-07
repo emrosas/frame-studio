@@ -12,7 +12,9 @@ import { hasAudio, mediaUsed, renderSceneAudio, SAMPLE_RATE, samplesPerFrame } f
 import { MediaStore } from './media';
 import { formatTimecode, frameCount, hitTest, picturesAt, render, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
 import { createSurfaces } from '../embed/surfaces';
+import { speechChecks } from '../export/speech-check';
 import { mediaUrl } from './media';
+import { SPEECH_RATE, speechWav } from './speech-wav';
 import { PictureStore } from '../export/pictures';
 import {
   buildReport,
@@ -289,6 +291,17 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       }
       throw new Error(`unknown export target ${JSON.stringify(target)}; use mp4 or gif`);
     },
+    async writeSpeech(file, sinkId) {
+      const res = await fetch(mediaUrl(file), { cache: 'no-store' });
+      if (!res.ok) throw new Error(`Can't read ${file}: the studio server answered ${res.status}.`);
+      // decodeAudioData resamples to its context's rate.
+      const decoded = await new OfflineAudioContext({ numberOfChannels: 1, length: 1, sampleRate: SPEECH_RATE }).decodeAudioData(await res.arrayBuffer());
+      const bytes = speechWav(Array.from({ length: decoded.numberOfChannels }, (_, c) => decoded.getChannelData(c)), SPEECH_RATE);
+      const sink = hostSink(sinkId);
+      await sink.write(bytes, 0);
+      await sink.close?.();
+      return decoded.duration;
+    },
     async check(options = {}): Promise<CheckReport> {
       const { scene: s } = need();
       const r = range(options.from, options.to);
@@ -322,7 +335,8 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
           audio = err instanceof Error ? err.message : String(err);
         }
       }
-      return buildReport({ scene: entry?.key ?? s.id, fps: s.fps, duration: s.duration, width: s.size[0], height: s.size[1], ...r, frames, loop: options.loop, markers: s.markers, audio });
+      const extra = speechChecks(s, need().registry, world, r.from, r.to, entry?.kind === 'composition');
+      return buildReport({ scene: entry?.key ?? s.id, fps: s.fps, duration: s.duration, width: s.size[0], height: s.size[1], ...r, frames, loop: options.loop, markers: s.markers, audio, extra });
     },
     async contactSheet(sinkId, options = {}): Promise<ContactSheetResult> {
       const { scene: s } = need();

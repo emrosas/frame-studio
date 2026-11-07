@@ -114,6 +114,11 @@ export interface StudioRequest {
   /** The provider's own session id, so a reply resumes the same conversation. */
   session?: string;
   settledAt?: string;
+  /**
+   * From the studio server only, never a file: a pending turn nobody sent through this server, found on disk.
+   * It waits for the user to read it and press Start (ADR 0017).
+   */
+  held?: boolean;
 }
 
 /** What the viewer sends to start a thread. */
@@ -218,6 +223,37 @@ export const EXPORT_EVENT = 'frame-studio:export';
 
 /** Pushed as a viewer check goes: progress, then the report, or an error. */
 export const CHECK_EVENT = 'frame-studio:check';
+/** Pushed as a timing job goes (ADR 0016): progress, then done with its word count, or an error. */
+export const VOICE_EVENT = 'frame-studio:voice';
+/** What a timing job needs (ADR 0016). */
+export interface VoiceStatus {
+  binary: boolean;
+  model: boolean;
+  modelBytes: number;
+  modelName: string;
+}
+export type VoiceEvent = { id: string } & ({ stage: string; done: number; total: number } | { words: number } | { error: string });
+
+/** Kokoro's download (ADR 0017): { done, total } while it runs, then { finished: true } or { error }. */
+export const SPEECH_EVENT = 'frame-studio:speech';
+
+/** What a generated voice brings to the cue placed from it (ADR 0017). `words` come from a provider that times its own speech. */
+export interface PlacedVoice {
+  /** The text it was asked to say, which supplies a cue's words (ADR 0016). */
+  script: string;
+  lang: string;
+  words?: readonly { text: string; start: number; end: number }[];
+}
+
+/** What's wrong with a sent PlacedVoice, or null. */
+export function checkPlacedVoice(value: unknown): string | null {
+  const voice = value as Partial<PlacedVoice> | null;
+  if (typeof voice !== 'object' || voice === null || typeof voice.script !== 'string' || typeof voice.lang !== 'string') return 'A placed voice needs { script, lang, words? }.';
+  if (voice.words === undefined) return null;
+  const fine = Array.isArray(voice.words) && voice.words.every((w) => typeof w?.text === 'string' && Number.isFinite(w.start) && Number.isFinite(w.end));
+  return fine ? null : 'A placed voice\'s words need { text, start, end } each.';
+}
+
 /** A poster finished in the background: its scene key and file name under .frame-studio/thumbs/. */
 export const THUMB_EVENT = 'frame-studio:thumb';
 
@@ -282,6 +318,20 @@ const LEGACY_STATUS: Record<string, { thread: ThreadStatus; turn: TurnStatus }> 
  * and one status; they read as one-turn threads for the external agent.
  */
 export function normalizeRequest(raw: unknown): StudioRequest {
+  return normalized(raw);
+}
+
+/**
+ * A thread as read from file number `id`, or null when it isn't one. A file in a folder comes from anyone, and
+ * the id goes into paths, so it has to be the file's own number. Viewers then get the shape they rely on.
+ */
+export function readThread(raw: unknown, id: number): StudioRequest | null {
+  const thread = normalized(raw);
+  if (thread.id !== id || typeof thread.sceneId !== 'string' || !AGENT_IDS.includes(thread.agent) || !Array.isArray(thread.turns) || thread.turns.length === 0) return null;
+  return thread.turns.every((t) => typeof t === 'object' && t !== null && typeof t.ask === 'object' && t.ask !== null && typeof t.ask.prompt === 'string') ? thread : null;
+}
+
+function normalized(raw: unknown): StudioRequest {
   const r = raw as Record<string, unknown>;
   if (Array.isArray(r.turns)) return r as unknown as StudioRequest;
   const legacy = r as {
@@ -578,6 +628,16 @@ export interface ClipEdit {
 /** The fields of a layer or clip a hand edit may change (ADR 0015). */
 export const LAYER_EDIT_FIELDS = ['params', 'tracks', 'overrides', 'mask', 'start', 'in', 'out'];
 
+/**
+ * What else takes a hand edit, by the id it goes under in place of a layer's (ADR 0016): a cue's words as
+ * "audio/<cue>", and the markers as "markers/". Layer ids can't hold a "/", so these never meet one.
+ */
+export const cueTarget = (cueId: string): string => `audio/${cueId}`;
+export const MARKERS_TARGET = 'markers/';
+export const isLayerTarget = (id: string): boolean => !id.includes('/');
+/** The fields a target's edit may change. */
+export const editFields = (target: string): readonly string[] => (target === MARKERS_TARGET ? ['markers'] : target.startsWith('audio/') ? ['words'] : LAYER_EDIT_FIELDS);
+
 /** A hand edit of one layer or clip: each field in `set` is replaced whole, and null removes it (ADR 0015). */
 export interface LayerEdit {
   /** The scene or composition, as the library keys it, so "<project>/<scene>" for an old film's. */
@@ -692,8 +752,9 @@ export function checkLayerEdit(input: unknown): string | null {
   if (typeof input.scene !== 'string' || input.scene === '') return 'scene must be a scene id';
   if (typeof input.layer !== 'string' || input.layer === '') return 'layer must be a layer id';
   if (!isObject(input.set)) return 'set must be an object of fields to change';
-  const unknown = Object.keys(input.set).find((field) => !LAYER_EDIT_FIELDS.includes(field));
-  return unknown === undefined ? null : `set can't change "${unknown}"; it takes ${LAYER_EDIT_FIELDS.join(', ')}`;
+  const fields = editFields(input.layer);
+  const unknown = Object.keys(input.set).find((field) => !fields.includes(field));
+  return unknown === undefined ? null : `set can't change "${unknown}"; it takes ${fields.join(', ')}`;
 }
 
 const QUESTION_ANSWER_LIMIT = 2000;
@@ -709,4 +770,24 @@ export function checkAnswers(questions: readonly AgentQuestion[], answers: unkno
     if (!q.multiSelect && a.length > 1) return `question "${q.header}" takes one answer`;
   }
   return null;
+}
+
+/** A voice a generator offers (ADR 0017). */
+export interface VoiceChoice {
+  id: string;
+  label: string;
+  /** Language codes it speaks. */
+  langs: readonly string[];
+  detail?: string;
+}
+
+/** Kokoro on this computer (ADR 0017): `bytes` is the whole download. */
+export interface KokoroStatus {
+  state: 'missing' | 'installing' | 'ready' | 'unsupported';
+  bytes: number;
+  voices: readonly VoiceChoice[];
+  /** Bytes so far, while installing. */
+  done?: number;
+  /** Why the last download failed. */
+  error?: string;
 }

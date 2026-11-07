@@ -8,6 +8,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { NewComposition, NewScene } from '../../src/studio/protocol.ts';
 import type { StudioQueue } from '../studio/queue.ts';
+import { KOKORO_VOICES, MAX_VOICE_TEXT } from '../voice/kokoro.ts';
 import type { Workspace } from './workspace.ts';
 
 const frame = z
@@ -240,6 +241,20 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
   );
 
   server.registerTool(
+    'generate_voice',
+    {
+      title: 'Generate a voice with Kokoro',
+      description: `Speaks text with Kokoro, on this computer, into media/, and returns the file with its path for a cue and its length. It needs no key and works offline once the user has downloaded Kokoro from the Generate Voice sheet; until then it says so. Voices: ${KOKORO_VOICES.map((v) => `${v.id} (${v.langs.join(', ')})`).join(', ')}. Paid providers aren't here: their keys stay with the user, in the app. For a file the user made elsewhere, use import_media.`,
+      inputSchema: {
+        text: z.string().min(1).max(MAX_VOICE_TEXT).describe('What to say'),
+        lang: z.enum(['en', 'es']).describe('The language: en or es'),
+        voice: z.string().optional().describe("A Kokoro voice for that language; the language's first voice when left out"),
+      },
+    },
+    tool('generate_voice', async (w, { text: words, lang, voice }: { text: string; lang: string; voice?: string }) => text(await w.generateVoice(words, lang, voice))),
+  );
+
+  server.registerTool(
     'render_frame',
     {
       title: 'Render a frame',
@@ -288,7 +303,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'Check a video',
       description:
-        "Measures a scene or composition, for what you can't watch or hear. Renders every frame of [from, to) at reduced size, reads the rendered audio, and returns { ok, checks: [{ id, status, message, frames?, value? }] }. status is pass, warn or fail; ok is false when any check failed; frames are [from, to) ranges to look at. Checks: format, duration, black, freeze (identical frames over 1.5 s), opening (static first second, or a fade from blank), loop-seam (the last frame's distance from the first, judged only with loop: true), flashing (over 3 full-screen flashes a second), sparse (nearly one colour over 3 s), loudness (warns outside -18 to -12 LUFS), true-peak (warns above -1 dBTP), dropouts (over 1 s of silence between sounds), and markers (a marker whose label ends in !, like \"hit!\", needs a sound to start within 2 frames). Saves the report to .frame-studio/checks/<id>.json. Run it before calling a film done.",
+        "Measures a scene or composition, for what you can't watch or hear. Renders every frame of [from, to) at reduced size, reads the rendered audio, and returns { ok, checks: [{ id, status, message, frames?, value? }] }. status is pass, warn or fail; ok is false when any check failed; frames are [from, to) ranges to look at. Checks: format, duration, black, freeze (identical frames over 1.5 s), opening (static first second, or a fade from blank), loop-seam (the last frame's distance from the first, judged only with loop: true), flashing (over 3 full-screen flashes a second), sparse (nearly one colour over 3 s), loudness (warns outside -18 to -12 LUFS), true-peak (warns above -1 dBTP), dropouts (over 1 s of silence between sounds), markers (a marker whose label ends in !, like \"hit!\", needs a sound to start within 2 frames), and word checks: word-sync, word-orphans, caption-cues (captions naming a cue their scene lacks, or a composition cue whose words nothing can reach), caption-speed and caption-safe. Saves the report to .frame-studio/checks/<id>.json. Run it before calling a film done.",
       inputSchema: {
         sceneId,
         from: frame.optional().describe('First frame, included. Defaults to 0'),
@@ -298,6 +313,21 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
       annotations: { readOnlyHint: true },
     },
     tool('check', async (w, { sceneId: id, from, to, loop }: { sceneId: string; from?: number | string; to?: number | string; loop?: boolean }) => text(await w.check(id, { from, to, loop }))),
+  );
+
+  server.registerTool(
+    'align_voice',
+    {
+      title: 'Time a voice',
+      description:
+        "Finds when each word is said in a sound file cue, and writes the words into the cue: { id, text, start, end, p }, seconds into the file. Give script when you know what's said: words and punctuation then come from it, and only the timing from the sound. A cue with a script keeps it for next time. The language comes from the cue's lang, else project.json's, else it's detected. Timing again after a re-record keeps the ids of the words the takes share, so keys anchored to them follow, and returns any anchor left without a word in orphans. The first run downloads a 190 MB model. Captions read these words (rig captions), and a key or marker takes \"word\": \"cueId#wordId\" beside its t to land on one.",
+      inputSchema: {
+        sceneId,
+        cueId: z.string().describe('The id of a sound file cue in that scene'),
+        script: z.string().optional().describe('What the voice says, punctuation included'),
+      },
+    },
+    tool('align_voice', async (w, { sceneId: id, cueId, script }: { sceneId: string; cueId: string; script?: string }) => text(await w.alignVoice(id, cueId, { script }))),
   );
 
   server.registerTool(

@@ -47,7 +47,9 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `list_projects()` | The films made before compositions, in `projects/<id>/` (ADR 0007): name, fps, size, main scene, cast, scenes by qualified id, own rigs, and any errors. The viewer can convert each into a project folder of its own. |
 | `list_media()` | The sound files in `media/` (ADR 0012), each with its path for a cue, size and, from its header, duration in seconds, channels and sample rate. A cue plays one with `{ "id", "file", "start", "end", "in"?, "fadeIn"?, "fadeOut"?, "tracks"? }`; `docs/SCENES.md`, "Sound files". |
 | `import_media(path)` | Copies a sound file from a path on this computer into `media/`, named after it and numbered if taken, and returns its path and duration. Agents in the studio ask first for a file outside the studio folder. |
+| `generate_voice(text, lang, voice?)` | Speaks text with Kokoro, on this computer, into `media/` (ADR 0017), and returns the file with its path for a cue and its length. `lang` is `en` or `es`, and without `voice` it takes that language's first voice. Needs no key, and works offline once the user has downloaded Kokoro from the Generate Voice sheet; until then it says so. Paid providers are not here: their keys stay with the user, in the app. Once it's a cue, `align_voice` with the same text gives it words. |
 | `list_generators()` | Each audio generator's param schema, for the scene's `audio` cues. |
+| `align_voice(sceneId, cueId, script?)` | Times the words of a sound file cue and writes them into the cue as `words: [{ id, text, start, end, p? }]`, seconds into the file (ADR 0016). Give `script` when you know what's said: words and punctuation then come from it, timing from the sound, and the cue keeps it for next time. The language is the cue's `lang`, else `project.json`'s, else detected. Timing again after a re-record keeps the ids of the words the takes share. Returns `{ file, cue, words, language, script, orphans }`, where `orphans` lists anchors left without a word. The first run downloads a 190 MB model and needs `whisper-cli` (`npm run voice:setup`; the app ships it). |
 | `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` (`out/<project>/<scene>/` in an old film) and returns a preview up to `maxWidth` wide (1280 by default). |
 | `render_contact_sheet(sceneId, from?, to?, every?, columns?)` | A labelled grid of every Nth frame, returned as an image and written to `out/<scene>/`. |
 | `check(sceneId, from?, to?, loop?)` | Measures a scene or composition, for what an agent can't watch or hear. Renders every frame of `[from, to)` at reduced size in the render worker, reads the rendered audio, and returns `{ ok, scene, from, to, checks: [{ id, status, message, frames?, value? }], file }`. `status` is `pass`, `warn` or `fail`, `ok` is false when any check failed, and `frames` are `[from, to)` ranges. The report is saved to `.frame-studio/checks/<id>.json`, and the viewer's Check video button runs the same job. The checks are listed below. |
@@ -80,7 +82,12 @@ Frames are measured at 320 pixels on the long side. Sound checks read the same r
 | `loudness` | Integrated LUFS by BS.1770-4: K-weighting, with the absolute and relative gates. | Warns outside -18 to -12 LUFS. |
 | `true-peak` | dBTP, approximated by 4x oversampling. | Warns above -1 dBTP. |
 | `dropouts` | Silence under -60 dBFS between two sounds. | Warns on over 1 s. |
-| `markers` | Markers whose label ends in `!`, like `hit!`, against sounds that start in the audio buffer. | Fails when no sound starts within 2 frames, and names the nearest. |
+| `markers` | Markers whose label ends in `!`, like `hit!`, against sounds that start in the audio buffer. Markers on a word go to `word-sync` instead. | Fails when no sound starts within 2 frames, and names the nearest. |
+
+| `word-sync` | Keys and markers anchored to a word (ADR 0016), by the frame each shows on. | Fails when one lands over 2 frames from its word, as a `stepFps` layer can hold it. Warns when the word's timing was a guess (`p` under 0.5). |
+| `word-orphans` | Anchors whose word is gone, re-recorded away or trimmed off. | Warns on any, with the time each keeps. |
+| `caption-speed` | Characters a second for each page of `captions`, spaces included. | Warns over 20 in English and other languages, over 17 in Spanish. |
+| `caption-safe` | Each page's box against the safe area. | Warns when a page leaves it. Fails when captions read a cue with no words. |
 
 A composition is checked as it plays, against its own `markers`. Markers inside the scenes it places aren't read.
 
@@ -105,6 +112,7 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 - **Questions.** When a request leaves a choice that changes the result, such as a typeface or a layout, the agent asks with a card above the thread's actions (ADR 0011): up to four questions, each with a few options, the recommended one first. Click an option or press its number; a single choice moves on, and the last one sends. Type an answer of your own instead, or with the options where you can pick several. Skip lets the agent decide. The turn waits while the card is open, and Stop closes it. Claude asks with its own AskUserQuestion tool and Codex with request_user_input, which the studio switches on; it's experimental in Codex.
 - **Stop** ends the agent's turn and keeps what it changed so far. If the studio server stops mid-turn (the app quits, say), the turn shows as interrupted, and your next reply resumes the agent's session.
 - Claude gets the studio tools in the studio server's own process. Codex reaches them at `/__studio/mcp` on the studio server, with a token per turn passed in its environment. Transcripts and thumbnails live next to the request in `.frame-studio/requests/`.
+- **Turns found on disk.** The studio's agents only work turns the server took from the viewer in that session. A pending turn found in `.frame-studio/requests/`, from someone else's folder or a restart, waits in its thread with a Start button, and runs at studio access unless you pick otherwise there (ADR 0017). A project opened without its code runs no agents at all, and says so.
 - The access rules keep a well-meaning agent inside the lines; they are not a sandbox. Rig and generator code an agent writes runs in the studio server and the browser.
 - The studio server listens on 127.0.0.1 only, and every caller pairs with it (see the notes below). Programs on this computer that can read your files are trusted, as they are by any dev server.
 
@@ -115,11 +123,14 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 3. `apply_to_selection` for a change over some frames, or `update_scene` for a change to the whole scene. Sound is `update_scene` on the scene's `audio` cues, with generators from `list_generators`. The agent can't hear it, so place cues by frame: a cue starts on the frame its `start` falls in.
 4. `render_frame` or `render_contact_sheet` again to check it. Frames outside the edited range are untouched.
 5. `check`, and fix what fails. Warnings are judgment calls.
+
+To follow a voice: `align_voice` with the script, a `captions` layer on the cue, then `update_scene` to put `"word": "voice#w12"` beside the `t` of any key or marker that should land on a word. Words are in `get_scene`, under the cue.
 6. `export` when it looks right.
 
 ## Notes
 
 - Without an app or `npm run dev` open on the folder, the first tool call starts a studio server, and the first render starts Electron's render worker, a few seconds in all. Later calls reuse them.
+- A server the shim starts loads built-ins only, so a folder someone sent you can't run code because an agent looked at it (ADR 0017). A scene that needs the folder's own rigs says how to allow them: add `--trust` to the MCP command, or set `FRAME_STUDIO_TRUST=1` in its environment. The repo counts as trusted. With `--trust`, the shim won't reuse a running server that was opened without the folder's code.
 - Tools run one at a time, even when the agent calls several at once, because they share one render worker and the scene files.
 - Writes go through the scene validator first, and scene files are written in the studio's format: two-space indents, with short objects and arrays on one line.
 - The server watches the studio folder's `project.json`, `scenes/`, `compositions/`, `projects/`, `rigs/`, `audio/` and `media/`, and in the repo `src/`. Edits the agent makes to those files directly, without the tools, show up in the next render, and in the open viewer without a reload.
