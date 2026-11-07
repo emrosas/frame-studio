@@ -16,6 +16,7 @@ import { init, parse } from 'es-module-lexer';
 import { sourceFiles } from './code.ts';
 import type { StudioFolder } from './folder.ts';
 import { findSource } from './loader.ts';
+import { checkApproval, fileRefusal, importRefusal } from './project-code.ts';
 
 /** Where the service serves modules from: the built-ins, or the studio folder. */
 type Scope = 'b' | 'f';
@@ -71,7 +72,8 @@ export class ModuleService {
     const b = under(builtins);
     if (b !== null && /^(engine|rigs|audio)\//.test(b)) return { scope: 'b', path: b };
     const f = under(root);
-    // An untrusted folder's code is never served (ADR 0017).
+    // An untrusted folder's code is never served (ADR 0017), and code that changed since the user was asked is untrusted.
+    checkApproval(this.folder);
     if (f === null || this.folder.untrusted) return null;
     const project = under(projects);
     const code = under(rigs) !== null || under(audio) !== null || (project !== null && /^[^/]+\/rigs\//.test(project));
@@ -86,6 +88,11 @@ export class ModuleService {
   }
 
   private async compile(file: string): Promise<Compiled> {
+    // A link is read through, so a project file is checked for where it really is before anything of it leaves.
+    if (this.allowed(file)?.scope === 'f') {
+      const refusal = fileRefusal(this.folder, file);
+      if (refusal !== null) throw new Error(refusal);
+    }
     const info = await stat(file);
     const cached = this.compiled.get(file);
     if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached;
@@ -105,11 +112,16 @@ export class ModuleService {
   /** The file an import names, or an error saying why it can't be served. */
   private resolve(specifier: string, from: string): string {
     const named = /^@frame-studio\/(.+)$/.exec(specifier);
+    const project = this.allowed(from)?.scope === 'f';
     let path: string;
     if (named) path = join(this.folder.builtins, named[1]);
     else if (specifier.startsWith('./') || specifier.startsWith('../')) path = join(dirname(from), specifier);
     else throw new Error(`imports "${specifier}", which is not a relative path or an @frame-studio/ name; rigs and generators take no packages`);
     const file = findSource(path);
+    if (project) {
+      const refusal = importRefusal(this.folder, from, specifier, file);
+      if (refusal !== null) throw new Error(refusal);
+    }
     if (!file || !file.endsWith('.ts')) throw new Error(`imports "${specifier}", and there is no such file`);
     if (!this.allowed(file)) throw new Error(`imports "${specifier}", which is outside the rigs, generators and engine`);
     return file;
@@ -206,6 +218,7 @@ export class ModuleService {
   }
 
   async manifest(): Promise<ModuleManifest> {
+    checkApproval(this.folder);
     const { builtins, rigs, audio, projects, untrusted } = this.folder;
     const urls = async (files: string[]) => Promise.all(files.map((f) => this.url(f)));
     const projectRigs: Record<string, string[]> = {};

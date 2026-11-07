@@ -114,6 +114,11 @@ export interface StudioRequest {
   /** The provider's own session id, so a reply resumes the same conversation. */
   session?: string;
   settledAt?: string;
+  /**
+   * From the studio server only, never a file: a pending turn nobody sent through this server, found on disk.
+   * It waits for the user to read it and press Start (ADR 0017).
+   */
+  held?: boolean;
 }
 
 /** What the viewer sends to start a thread. */
@@ -313,6 +318,20 @@ const LEGACY_STATUS: Record<string, { thread: ThreadStatus; turn: TurnStatus }> 
  * and one status; they read as one-turn threads for the external agent.
  */
 export function normalizeRequest(raw: unknown): StudioRequest {
+  return normalized(raw);
+}
+
+/**
+ * A thread as read from file number `id`, or null when it isn't one. A file in a folder comes from anyone, and
+ * the id goes into paths, so it has to be the file's own number. Viewers then get the shape they rely on.
+ */
+export function readThread(raw: unknown, id: number): StudioRequest | null {
+  const thread = normalized(raw);
+  if (thread.id !== id || typeof thread.sceneId !== 'string' || !AGENT_IDS.includes(thread.agent) || !Array.isArray(thread.turns) || thread.turns.length === 0) return null;
+  return thread.turns.every((t) => typeof t === 'object' && t !== null && typeof t.ask === 'object' && t.ask !== null && typeof t.ask.prompt === 'string') ? thread : null;
+}
+
+function normalized(raw: unknown): StudioRequest {
   const r = raw as Record<string, unknown>;
   if (Array.isArray(r.turns)) return r as unknown as StudioRequest;
   const legacy = r as {

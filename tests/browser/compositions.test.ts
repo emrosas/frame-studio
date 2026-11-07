@@ -30,7 +30,7 @@ async function connect(folder: string): Promise<Client> {
   await client.connect(
     new StdioClientTransport({
       command: process.execPath,
-      args: [join(ROOT, 'tools/mcp/server.ts'), '--folder', folder],
+      args: [join(ROOT, 'tools/mcp/server.ts'), '--folder', folder, '--trust'],
       cwd: ROOT,
       stderr: 'pipe',
       env: { ...(process.env as Record<string, string>), FRAME_STUDIO_DIR: STUDIO },

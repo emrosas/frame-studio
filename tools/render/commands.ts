@@ -21,7 +21,8 @@ import { parseArgs } from 'node:util';
 import { buildEmbed } from '../bundle/embed.ts';
 import { writeFileAtomic } from '../scene-files.ts';
 import { connectStudio } from '../studio/connect.ts';
-import { studioFolder } from '../studio/folder.ts';
+import { withheldNote } from '../studio/code.ts';
+import { studioFolder, trustsCode } from '../studio/folder.ts';
 import { openStudio, writeViaSink, type Studio } from './studio.ts';
 
 const USAGE = `Usage:
@@ -44,6 +45,7 @@ const { values } = parseArgs({
     columns: { type: 'string' },
     out: { type: 'string' },
     folder: { type: 'string' },
+    trust: { type: 'boolean' },
     silent: { type: 'boolean' },
     media: { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
@@ -82,7 +84,9 @@ if (values.silent && (command !== 'export' || target === 'gif')) fail(`--silent 
 const every = positiveInt('every', values.every);
 const columns = positiveInt('columns', values.columns);
 
-const folder = studioFolder(resolve(values.folder ?? process.cwd()));
+const root = resolve(values.folder ?? process.cwd());
+// Built-ins only until told otherwise (ADR 0017): this may be a folder somebody sent.
+const folder = studioFolder(root, { untrusted: !trustsCode(root, values.trust) });
 const pad = (n: number) => String(n).padStart(5, '0');
 const outPath = (fallback: string) => (values.out !== undefined ? resolve(values.out) : resolve(folder.root, fallback));
 const shown = (path: string) => relative(process.cwd(), path) || path;
@@ -163,7 +167,8 @@ if (command === 'export' && target === 'html') {
     studio = await openStudio(values.scene ?? '', { transport: connected.transport, onProgress: progress });
     await run(studio);
   } catch (err) {
-    process.stderr.write(`${err instanceof Error ? err.message : String(err)}\n`);
+    const note = connected.untrusted ? await withheldNote(folder) : '';
+    process.stderr.write(`${err instanceof Error ? err.message : String(err)}${note}\n`);
     process.exitCode = 1;
   } finally {
     await studio?.close();

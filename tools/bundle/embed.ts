@@ -16,15 +16,17 @@
 // disk. Node only; runs as TypeScript through Node's type stripping.
 
 import { readFile, stat } from 'node:fs/promises';
-import { join, relative, sep } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { rolldown, type Plugin } from 'rolldown';
 import { parseAst } from 'rolldown/parseAst';
 import { transformSync } from 'rolldown/utils';
 import type { Scene, World } from '../../src/engine/types.ts';
 import type { Typeface } from '../../src/rigs/type/typeface.ts';
 import { loadModules, sceneLibrary } from '../scene-files.ts';
-import type { CodeHost } from '../studio/code.ts';
+import { withheldNote, type CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
+import { findSource } from '../studio/loader.ts';
+import { codeFolderOf, importRefusal } from '../studio/project-code.ts';
 import { collectStrings, typefacesFor } from '../type/subset.ts';
 import { CAPTION_FACE } from '../../src/rigs/type/caption-face.ts';
 
@@ -72,6 +74,21 @@ export interface EmbedBuildOptions {
 const MAX_INLINE_MEDIA = 200 * 1024 * 1024;
 
 const ENTRY = 'virtual:frame-studio-embed';
+
+/** Holds a project's rigs to the loader's rules here too (ADR 0017), since an import() a rig never ran at load still lands in the file. */
+function guardPlugin(folder: StudioFolder): Plugin {
+  return {
+    name: 'frame-studio-project-imports',
+    resolveId(id, importer) {
+      if (!importer || codeFolderOf(folder.root, importer) === null) return null;
+      const named = /^@frame-studio\/(.+)$/.exec(id);
+      const path = named ? join(folder.builtins, named[1]) : id.startsWith('.') ? join(dirname(importer), id) : null;
+      const refusal = importRefusal(folder, importer, id, path === null ? null : findSource(path));
+      if (refusal !== null) throw new Error(refusal);
+      return null;
+    },
+  };
+}
 
 function entryPlugin(code: string): Plugin {
   return {
@@ -179,7 +196,7 @@ async function bundle(code: string, folder: StudioFolder, extra: Plugin | null =
     input: ENTRY,
     platform: 'browser',
     logLevel: 'silent',
-    plugins: [entryPlugin(code), ...(extra ? [extra] : []), stripDescriptionsPlugin(folder)],
+    plugins: [guardPlugin(folder), entryPlugin(code), ...(extra ? [extra] : []), stripDescriptionsPlugin(folder)],
     resolve: { alias: { '@frame-studio': folder.builtins } },
   });
   try {
@@ -270,7 +287,7 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
   if (!entry) throw new Error(`No scene "${sceneKey}". Scenes: ${lib.entries.map((e) => e.key).join(', ')}`);
   const project = entry.project !== null ? lib.projects.find((p) => p.id === entry.project) : undefined;
   const problems = [...lib.errors, ...entry.errors, ...(project?.errors ?? []).map((e) => `${project!.file}: ${e}`)];
-  if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors, so it cannot be exported:\n${problems.join('\n')}`);
+  if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors, so it cannot be exported:\n${problems.join('\n')}${await withheldNote(folder)}`);
   // A silent export drops the cues, the placed scenes' too, so the embed carries no audio code at all.
   // Without media, the sound files' cues go too (ADR 0012), and the build says which files it left out.
   const leftOut = new Set<string>();

@@ -13,12 +13,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { KeyStore, type KeyCipher } from '../../desktop/keys';
-import { projectCode } from '../../desktop/trust';
+import { projectCode } from '../../tools/studio/project-code';
 import { CodeHost, withheldCode } from '../../tools/studio/code';
 import { studioFolder } from '../../tools/studio/folder';
 import { ModuleService } from '../../tools/studio/modules';
 import { Kokoro, KOKORO_VOICES, kokoroManifest, type KokoroManifest } from '../../tools/voice/kokoro';
 import { isLoopback, pinnedFetch } from '../../tools/voice/pinned';
+import { missingWhisper } from '../../tools/voice/align';
+import { ensureModel } from '../../tools/voice/whisper';
+import { REPO } from '../../tools/studio/folder';
 import { elevenlabs, wordsFromAlignment } from '../../tools/voice/providers/elevenlabs';
 import { saveVoiceFile } from '../../tools/voice/save';
 import { estimate, finished, ProviderError, type Generated, type Pending } from '../../tools/voice/types';
@@ -27,6 +30,33 @@ const dir = mkdtempSync(join(tmpdir(), 'frame-studio-voice-'));
 afterAll(() => rmSync(dir, { recursive: true, force: true }));
 
 const KEY = 'sk_test_0123456789abcdef_WXYZ';
+
+describe('the timing job says what to do', () => {
+  it('sends a developer to voice:setup and tells an app user to reinstall', () => {
+    expect(missingWhisper(join(REPO, 'src'))).toMatch(/npm run voice:setup/);
+    const app = missingWhisper('/Applications/Frame Studio.app/Contents/Resources/builtins');
+    expect(app).toMatch(/damaged/);
+    expect(app).toMatch(/Reinstall/);
+    expect(app).not.toMatch(/voice:setup/);
+  });
+
+  it('turns a failed download into plain words', async () => {
+    const home = process.env.FRAME_STUDIO_HOME;
+    process.env.FRAME_STUDIO_HOME = mkdtempSync(join(tmpdir(), 'frame-studio-offline-'));
+    const real = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new TypeError('fetch failed');
+    };
+    try {
+      await expect(ensureModel()).rejects.toThrow("Couldn't download the speech model. Check your connection.");
+    } finally {
+      globalThis.fetch = real;
+      rmSync(process.env.FRAME_STUDIO_HOME, { recursive: true, force: true });
+      if (home === undefined) delete process.env.FRAME_STUDIO_HOME;
+      else process.env.FRAME_STUDIO_HOME = home;
+    }
+  });
+});
 
 describe('the ElevenLabs provider', () => {
   const request = { kind: 'voice' as const, text: '¿Por qué?', lang: 'es', voice: 'pNInz6obpgDQGcFmaJgB' };
@@ -42,7 +72,7 @@ describe('the ElevenLabs provider', () => {
     })) as Generated;
     expect(calls[0].path).toBe('/v1/text-to-speech/pNInz6obpgDQGcFmaJgB/with-timestamps?output_format=mp3_44100_128');
     expect(calls[0].init.headers['xi-api-key']).toBe(KEY);
-    expect(JSON.parse(calls[0].init.body!)).toEqual({ text: '¿Por qué?', model_id: 'eleven_multilingual_v2', language_code: 'es' });
+    expect(JSON.parse(calls[0].init.body!)).toEqual({ text: '¿Por qué?', model_id: 'eleven_multilingual_v2' });
     expect(Buffer.from(made.bytes).toString()).toBe('mp3 bytes');
     expect(made.ext).toBe('.mp3');
     expect(made.words).toEqual([

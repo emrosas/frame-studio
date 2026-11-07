@@ -21,7 +21,7 @@ import { createProject, hasAgentWork, listProjects, projectPoster, WARM_MS, warm
 import { appPaths } from './paths.ts';
 import { adoptShellPath } from './shell-path.ts';
 import { checkForUpdates, checkFromMenu, installUpdate, openReleaseNotes, startUpdates, type UpdateState, updatesEnabled, updateState } from './updater.ts';
-import { projectCode } from './trust.ts';
+import { projectCode } from '../tools/studio/project-code.ts';
 import { registerVoice } from './voice.ts';
 import { openWorkerWindow } from './worker.ts';
 
@@ -139,12 +139,15 @@ function childEnv(): Record<string, string> {
 // ---- the studio server ----
 
 /** Starts the studio server on `folder` and waits until it listens. */
-async function startServer(folder: string, token: string, trusted: boolean): Promise<{ server: UtilityProcess; url: string }> {
+async function startServer(folder: string, token: string, trust: Trust, codeChanged: () => void): Promise<{ server: UtilityProcess; url: string }> {
   const server = utilityProcess.fork(
     paths.server,
-    ['--folder', folder, '--viewer', paths.viewer, '--builtins', paths.builtins, '--agents', '--discovery', '--worker', 'app', ...(trusted ? [] : ['--untrusted'])],
+    ['--folder', folder, '--viewer', paths.viewer, '--builtins', paths.builtins, '--agents', '--discovery', '--worker', 'app', ...(trust.trusted ? ['--code-hash', trust.hash] : ['--untrusted'])],
     { env: childEnv(), stdio: 'pipe', serviceName: 'Frame Studio server' },
   );
+  server.on('message', (message: { codeChanged?: unknown }) => {
+    if (message.codeChanged === true) codeChanged();
+  });
   server.stdout?.on('data', (chunk: Buffer) => serverLog?.write(chunk));
   server.stderr?.on('data', (chunk: Buffer) => serverLog?.write(chunk));
   // The token goes by message, never on the command line.
@@ -237,18 +240,36 @@ async function askTrust(dir: string, files: number): Promise<boolean> {
   return response === 0;
 }
 
-/** Whether `dir`'s code may load: none to load, trusted as it stands, or the user says so now. */
-async function decideTrust(dir: string): Promise<boolean> {
+/** Whether `dir`'s code may load, and the code that answer is about. The server holds it to that hash. */
+interface Trust {
+  trusted: boolean;
+  hash: string;
+}
+
+/** None to load, trusted as it stands, or the user says so now. */
+async function decideTrust(dir: string): Promise<Trust> {
   const real = await realpath(dir);
   const code = projectCode(real);
-  if (code.files === 0 || settings.trust?.[real]?.hash === code.hash) return true;
-  if (declined.get(real) === code.hash) return false;
+  const { hash } = code;
+  if (code.files === 0 || settings.trust?.[real]?.hash === hash) return { trusted: true, hash };
+  if (declined.get(real) === hash) return { trusted: false, hash };
   if (await askTrust(dir, code.files)) {
-    trustNow(real, code.hash);
-    return true;
+    trustNow(real, hash);
+    return { trusted: true, hash };
   }
-  declined.set(real, code.hash);
-  return false;
+  declined.set(real, hash);
+  return { trusted: false, hash };
+}
+
+/**
+ * The server found the code isn't what the user approved: it changed between asking and loading (ADR 0017). The
+ * server has refused it. Reopening asks about the code as it is now. It no longer counts as trusted, so closing
+ * this session can't bless the change.
+ */
+function codeChanged(target: Session): void {
+  log(`the code in ${target.folder} changed after it was approved`);
+  target.trusted = false;
+  if (sessions.get(target.folder) === target) report(openFolder(target.folder, { restart: true }));
 }
 
 /** Opens run one at a time, so a double click can't start two servers. */
@@ -276,11 +297,16 @@ async function openFolderNow(folder: string, options: { restart?: boolean; targe
   // A project still running in the background comes back as it is, its agents mid-turn.
   if (!target) {
     await writeTsconfig(dir, paths.builtins).catch((err: unknown) => log(`tsconfig: ${String(err)}`));
-    const trusted = await decideTrust(dir);
+    const trust = await decideTrust(dir);
     const token = randomBytes(24).toString('base64url');
     let started: { server: UtilityProcess; url: string };
+    let opened: Session | null = null;
+    let changed = false;
     try {
-      started = await startServer(dir, token, trusted);
+      started = await startServer(dir, token, trust, () => {
+        changed = true;
+        if (opened) codeChanged(opened);
+      });
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       log(why);
@@ -288,15 +314,17 @@ async function openFolderNow(folder: string, options: { restart?: boolean; targe
       return why;
     }
     const worker = openWorkerWindow(started.url, token);
-    const opened: Session = { folder: dir, url: started.url, token, server: started.server, worker, stopping: false, trusted };
-    target = opened;
-    sessions.set(dir, opened);
+    const here: Session = { folder: dir, url: started.url, token, server: started.server, worker, stopping: false, trusted: trust.trusted };
+    opened = here;
+    target = here;
+    sessions.set(dir, here);
     started.server.once('exit', (code) => {
-      if (opened.stopping) return;
+      if (here.stopping) return;
       log(`studio server for ${dir} exited (${code})`);
-      if (session === opened) scheduleRestart(dir, opened);
-      else stopSession(opened);
+      if (session === here) scheduleRestart(dir, here);
+      else stopSession(here);
     });
+    if (changed) codeChanged(here);
   }
   const previous = session;
   session = target;
@@ -660,7 +688,18 @@ function registerIpc(): void {
   });
   ipcMain.handle('frame-studio:trust-revoke', async (event, path: unknown) => {
     const folder = viewerProject(event);
-    if (!folder || typeof path !== 'string' || !settings.trust?.[path]) return null;
+    const parent = main;
+    if (!folder || typeof path !== 'string' || !settings.trust?.[path] || !parent) return null;
+    // A page can ask for this, and it can stop another project's agent, so the answer comes from a dialog no page can draw.
+    const { response } = await dialog.showMessageBox(parent, {
+      type: 'warning',
+      message: `Stop trusting ${basename(path)}?`,
+      detail: 'Its code stops loading, and if the project is open it closes and reopens without it, which stops any agent working there.',
+      buttons: ['Stop Trusting', 'Cancel'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+    if (response !== 0) return null;
     settings.trust = Object.fromEntries(Object.entries(settings.trust).filter(([p]) => p !== path));
     await saveSettings();
     const open = [...sessions.values()].find((s) => existsSync(s.folder) && realpathSync(s.folder) === path);

@@ -7,8 +7,9 @@
 
 import { readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { writeFileAtomic } from '../scene-files.ts';
+import { REPO } from '../studio/folder.ts';
 import { ensureModel, fileSha256, findWhisper, modelReady, transcribe, WHISPER_MODEL, WHISPER_VERSION, type Transcript } from './whisper.ts';
 import { alignScript, carryWordIds, type HeardWord } from './words.ts';
 import type { SpokenWord } from '../../src/engine/types.ts';
@@ -38,6 +39,13 @@ interface CacheFile {
 
 export const cachePath = (root: string, file: string): string => join(root, `${file}.words.json`);
 
+/** What to do about a missing whisper-cli. The app ships its own, so there a missing one means a damaged app. */
+export function missingWhisper(builtins: string): string {
+  return resolve(builtins) === resolve(REPO, 'src')
+    ? `whisper-cli ${WHISPER_VERSION} isn't installed. Run npm run voice:setup.`
+    : "The app's speech timing tool is missing, so Frame Studio is damaged. Reinstall the app.";
+}
+
 export interface HearOptions {
   root: string;
   builtins: string;
@@ -63,7 +71,7 @@ export async function hear(options: HearOptions): Promise<Transcript> {
     return { language: cached.language, words: cached.words };
   }
   const binary = await findWhisper(options.builtins);
-  if (!binary) throw new Error(`whisper-cli ${WHISPER_VERSION} isn't installed. Run npm run voice:setup.`);
+  if (!binary) throw new Error(missingWhisper(options.builtins));
   await ensureModel({ signal, onProgress: (done, total) => onProgress?.({ stage: 'download', done, total }) });
   onProgress?.({ stage: 'decode', done: 0, total: 1 });
   const wav = join(tmpdir(), `frame-studio-voice-${process.pid}-${sha256.slice(0, 12)}.wav`);

@@ -7,6 +7,8 @@ import { ProviderError, type GeneratedWord, type Provider } from '../types.ts';
 
 const MODEL = 'eleven_multilingual_v2';
 const FORMAT = 'mp3_44100_128';
+/** Models that take language_code. The API refuses it on Multilingual v2, which finds the language itself. */
+const TAKES_LANGUAGE: ReadonlySet<string> = new Set(['eleven_turbo_v2_5', 'eleven_flash_v2_5']);
 
 interface Alignment {
   characters: string[];
@@ -55,7 +57,7 @@ export const elevenlabs: Provider = {
     const res = await http(`/v1/text-to-speech/${encodeURIComponent(request.voice)}/with-timestamps?output_format=${FORMAT}`, {
       method: 'POST',
       headers: { 'xi-api-key': key, 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({ text: request.text, model_id: MODEL, language_code: request.lang }),
+      body: JSON.stringify({ text: request.text, model_id: MODEL, ...(TAKES_LANGUAGE.has(MODEL) ? { language_code: request.lang } : {}) }),
     });
     if (!res.ok) throw new ProviderError('ElevenLabs', res.status);
     const answer = (await res.json()) as { audio_base64?: unknown; alignment?: Alignment | null };

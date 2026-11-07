@@ -161,6 +161,7 @@ function alignLetters(a: string, b: string): Int32Array {
  * the heard word. A script word with too little lined up shares the time around it by its length, with p 0.
  */
 export function alignScript(script: string, heard: readonly HeardWord[]): HeardWord[] {
+  if (plainLetters(script) === '') throw new Error('That script has no words in it, only punctuation.');
   const texts = script.split(/\s+/).filter((t) => plainLetters(t) !== '' || /\S/.test(t));
   // Punctuation standing alone, like a dash, hangs on the word before it.
   const merged: string[] = [];

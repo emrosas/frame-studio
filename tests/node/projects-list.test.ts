@@ -99,7 +99,7 @@ describe('projectStatus', () => {
   it('counts a studio agent as working only while its server runs', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'fs-status-'));
     mkdirSync(join(dir, '.frame-studio', 'requests'), { recursive: true });
-    const thread = { id: 1, sceneId: 'a', status: 'working', agent: 'claude', createdAt: new Date().toISOString(), turns: [{ prompt: 'x', status: 'working', selection: { sceneId: 'a', from: 0, to: 1 }, frame: 0, references: [], claimedAt: new Date().toISOString() }] };
+    const thread = { id: 1, sceneId: 'a', status: 'working', agent: 'claude', createdAt: new Date().toISOString(), turns: [{ ask: { prompt: 'x', selection: { sceneId: 'a', from: 0, to: 1 }, frame: 0, references: [], at: new Date().toISOString() }, status: 'working', claimedAt: new Date().toISOString() }] };
     writeFileSync(join(dir, '.frame-studio', 'requests', '0001.json'), JSON.stringify(thread));
     expect((await projectStatus(dir, true)).working).toBe(1);
     expect((await projectStatus(dir, false)).working).toBe(0);

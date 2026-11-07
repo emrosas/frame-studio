@@ -530,7 +530,7 @@ The `captions` rig reads them:
 
 | Param | Default | Meaning |
 | --- | --- | --- |
-| `cue` | `voice` | The id of a cue in this scene with words. |
+| `cue` | `voice` | The id of a cue in this scene with words. It has to be this scene's: put the voice in the scene that shows its captions. |
 | `style` | `word-highlight` | `word-highlight` lights the word being said. `pop-in` shows each word as it's said. `line` shows the page plain. |
 | `font` | `inter-bold` | A typeface id, or `pixel` for the bitmap font on a pixel stage. |
 | `size` | 0 | Font size in stage pixels, or stage pixels per font pixel for `pixel`. 0 picks one for the stage. |
@@ -544,6 +544,8 @@ The `captions` rig reads them:
 | `opacity` | 1 | Opacity. |
 
 A page breaks at a sentence, at a pause, past a clause once it's full, and when the next word wouldn't fit. It holds a moment after its last word. An HTML export keeps captions when it leaves the sound out, and carries only the glyphs they use.
+
+A clip renders the same inside its composition and alone, so a scene can't read a composition's cue. A voice on a composition can't have captions. Put it in a scene, with the captions layer, and place that scene. `check` warns about both sides of this: a captions layer naming a cue its scene doesn't have, and a composition cue whose words nothing can reach.
 
 A key or marker lands on a word by naming it beside its `t`:
 
@@ -706,6 +708,8 @@ npm run export -- --scene bear-test --target gif --from 00:02:00 --to 00:04:00
 npm run contact-sheet -- --scene bear-test --every 6      # out/bear-test/contact-sheet-...png
 npm run export -- --scene bear-test --target html         # out/bear-test/bear-test.html
 ```
+
+These commands load built-ins only in a folder that isn't the repo, unless the running app already trusts it. To load the folder's own rigs and generators, add `--trust`, or set `FRAME_STUDIO_TRUST=1` (ADR 0017). Do that for folders you trust: rigs are code. `npm run dev --folder` takes the same flag.
 
 A scene in an old film takes its qualified id, `--scene bears-story/film`, and its files go to `out/bears-story/film/`. `--out` picks another path. `--to` is excluded, like every frame range, so `--to 00:08:00` on an 8 second scene means "to the end". The contact sheet takes `--every` and `--columns`, and without `--every` it shows about 24 frames.
 

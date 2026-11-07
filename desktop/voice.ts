@@ -13,7 +13,7 @@ import { isLoopback, pinnedFetch } from '../tools/voice/pinned.ts';
 import { providers } from '../tools/voice/providers/index.ts';
 import { saveVoiceFile } from '../tools/voice/save.ts';
 import { estimate, finished, ProviderError, type GeneratedWord, type Provider } from '../tools/voice/types.ts';
-import { KeyStore } from './keys.ts';
+import { KeyRefused, KeyStore } from './keys.ts';
 
 export interface VoiceHost {
   /** The project on screen, if this came from the main frame of the viewer window; null from anything else. */
@@ -117,7 +117,10 @@ export function registerVoice(host: VoiceHost): void {
     try {
       await store.save(open.provider.id, key);
     } catch (err) {
-      return err instanceof Error ? err.message : 'The key could not be saved.';
+      // KeyRefused's words are fixed. Any other message might quote the key, so only the kind of error reaches the log.
+      if (err instanceof KeyRefused) return err.message;
+      host.log(`could not save a key for ${open.provider.id} (${err instanceof Error ? err.name : 'unknown'})`);
+      return 'The key could not be saved.';
     }
     host.log(`saved a key for ${open.provider.id}`);
     open.done(true);

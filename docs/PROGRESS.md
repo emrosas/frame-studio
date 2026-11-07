@@ -13,6 +13,9 @@ Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards, the 
 - A project's code asks once before it loads. Without trust, the server serves built-ins only and the viewer says why a scene won't draw. Settings, from View or the app menu, holds the key rows and revokes trust.
 - A generated voice placed at the playhead gets words. ElevenLabs' timestamps go straight into the cue under the script's text; anything else starts the timing job, which reads the script and language from the cue. `lang` in `project.json` passes validation and reaches the sheet.
 - Word timing kept the voice names (`/voice`, `src/viewer/voice.ts`). Kokoro and Generate Voice's plumbing are speech (`/speech`, `src/viewer/speech.ts`), apart from `generate_voice` and VoiceSheet.
+- Trust was hardened after a council review. A planted `.frame-studio/requests` file used to run with full access, in a declined folder, with no card. Now only turns this server took run by themselves, and anything found on disk waits for Start at studio access. A declined folder has no agents. `tools/studio/project-code.ts` is one list for the hash, the Node loader and the module service, and imports leaving the code folders are refused. The server rechecks the approved hash right before it first reads the code. Servers the app didn't start load built-ins only without `--trust` or `FRAME_STUDIO_TRUST=1`. Revoking trust asks natively. A thread file's id has to match its file name, and `server.json` can only name this computer. ADR 0017's threat model lists what's closed and what isn't.
+- The voice job refuses to write if the cue's file changed, or an agent took the scene, while it listened. Offline and a missing whisper-cli say what to do, per app or repo. A punctuation-only script is a clear error. A failed key save returns a fixed message. `language_code` is off for Multilingual v2.
+- `check` warns when captions name a cue their scene lacks, and when a composition's cue has words no captions can reach. `tests/scenes.test.ts` proves a captions scene equal played, seeked and backwards.
 
 ### M1: Engine and viewer
 
@@ -932,6 +935,7 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 
 - Command-Z in the packaged app relies on the page handling the key before the Edit menu. Untested: the browser tests send keys to the page directly.
 
+- A turn you sent that was still waiting when the server stopped needs Start afterwards. The new server can't tell it from a planted one.
 - Safe-zone guides are approximations, not measured from each app.
 - Voice rows are read-only on a composition, as its keys are. Timing is scenes only in the viewer; `align_voice` takes either.
 - `voice.test.ts` needs the pinned whisper-cli, the model and sample voices outside the repo, and skips without them.

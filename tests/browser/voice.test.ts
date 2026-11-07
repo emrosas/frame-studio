@@ -151,6 +151,48 @@ describe.skipIf(!canListen)('timing real voices', () => {
     expect(after.audio[0].words.length).toBeGreaterThan(0);
   });
 
+  it("won't write words over a cue that now plays another file", async () => {
+    await timed('swapped-meanwhile', 'eleven-en.mp3', 'en', LINES.en);
+    const scene = read('swapped-meanwhile');
+    delete scene.audio[0].words;
+    write('swapped-meanwhile', scene);
+    const swapped = { ...scene, audio: [{ ...scene.audio[0], file: 'media/eleven-es.mp3' }] };
+    await expect(
+      (await workspace()).alignVoice('swapped-meanwhile', 'voice', {
+        onProgress: ({ stage }) => {
+          if (stage === 'write') write('swapped-meanwhile', swapped);
+        },
+      }),
+    ).rejects.toThrow(/changed to another sound file/);
+    expect(read('swapped-meanwhile').audio[0].words).toBeUndefined();
+  });
+
+  it("won't write words into a scene an agent took while it listened", async () => {
+    await timed('taken-meanwhile', 'eleven-en.mp3', 'en', LINES.en);
+    const scene = read('taken-meanwhile');
+    delete scene.audio[0].words;
+    write('taken-meanwhile', scene);
+    const w = await workspace();
+    // Taken after the words were heard, before they're written: the first thing the job does once it has them.
+    const heard = w.queue.list.bind(w.queue);
+    let reads = 0;
+    w.queue.list = async () => {
+      if (++reads === 2) {
+        await w.queue.create({ selection: { sceneId: 'taken-meanwhile', from: 0, to: 1 }, frame: 0, prompt: 'mine now', references: [] });
+        await w.queue.claimNext('mcp-test');
+      }
+      return heard();
+    };
+    try {
+      await expect(w.alignVoice('taken-meanwhile', 'voice')).rejects.toThrow(/An agent took/);
+    } finally {
+      w.queue.list = heard;
+    }
+    const [thread] = (await heard()).filter((r) => r.sceneId === 'taken-meanwhile');
+    await w.queue.cancel(thread.id);
+    expect(read('taken-meanwhile').audio[0].words).toBeUndefined();
+  });
+
   it('a voice from the Generate Voice sheet, placed at the playhead, gets the sheet\'s words from the timing job', async () => {
     process.env.FRAME_STUDIO_FAKE_KOKORO = '1';
     try {

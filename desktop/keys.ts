@@ -37,6 +37,9 @@ interface KeyFile {
 
 const LONGEST = 512;
 
+/** A key refused for a reason written here, in fixed words that never quote it. Anything else that fails says nothing. */
+export class KeyRefused extends Error {}
+
 export class KeyStore {
   private readonly file: string;
   private readonly cipher: KeyCipher;
@@ -75,9 +78,9 @@ export class KeyStore {
 
   async save(provider: string, key: string): Promise<void> {
     const problem = this.refusal();
-    if (problem) throw new Error(problem);
+    if (problem) throw new KeyRefused(problem);
     const clean = key.trim();
-    if (clean.length < 8 || clean.length > LONGEST || !/^[\x21-\x7e]+$/.test(clean)) throw new Error('That doesn\'t look like an API key. Paste the whole key, with no spaces.');
+    if (clean.length < 8 || clean.length > LONGEST || !/^[\x21-\x7e]+$/.test(clean)) throw new KeyRefused('That doesn\'t look like an API key. Paste the whole key, with no spaces.');
     const file = await this.read();
     file.keys[provider] = { cipher: this.cipher.encryptString(clean).toString('base64'), last4: clean.slice(-4), added: new Date().toISOString().slice(0, 10) };
     await this.write(file);

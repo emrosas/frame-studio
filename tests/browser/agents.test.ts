@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { ROOT } from '../../tools/render/studio';
 import { launchBrowser } from './browser';
 import { startStudio, type TestStudio } from './studio-server';
+import type { NewRequest, Reply, StudioRequest } from '../../src/studio/protocol';
 import { StudioQueue } from '../../tools/studio/queue';
 import { readTurnEvents } from '../../tools/studio/agents/runner';
 
@@ -162,6 +163,15 @@ afterAll(async () => {
 async function expectText(locator: ReturnType<Page['locator']>, text: string, timeout = 15000): Promise<void> {
   await expect.poll(async () => (await locator.count()) > 0 && ((await locator.first().textContent()) ?? ''), { timeout }).toContain(text);
 }
+
+/** A turn through the server's route, as the viewer sends one. Only those run by themselves (ADR 0017). */
+async function route(path: string, body: unknown): Promise<StudioRequest> {
+  const res = await fetch(`${vite.server.url}/__studio${path}`, { method: 'POST', headers: { ...vite.auth, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  expect(res.ok).toBe(true);
+  return ((await res.json()) as { request: StudioRequest }).request;
+}
+const sendTurn = (input: NewRequest) => route('/requests', input);
+const replyTurn = (id: number, input: Reply) => route(`/requests/${id}/reply`, input);
 
 const panel = () => page.getByRole('complementary', { name: 'Agent' });
 const thread = () => panel().getByRole('region', { name: /^Request \d+$/ });
@@ -334,9 +344,9 @@ describe('an agent in the studio', () => {
 
   it('works one thread per scene at a time, and threads on other scenes in parallel', async () => {
     const selection = (sceneId: string) => ({ sceneId, layerId: 'ball', from: 0, to: 12 });
-    const one = await queue.create({ selection: selection(A), frame: 0, prompt: 'slow one', references: [], agent: 'fake', settings: { access: 'studio' } });
-    const two = await queue.create({ selection: selection(A), frame: 0, prompt: 'slow two', references: [], agent: 'fake', settings: { access: 'studio' } });
-    const three = await queue.create({ selection: selection(B), frame: 0, prompt: 'slow three', references: [], agent: 'fake', settings: { access: 'studio' } });
+    const one = await sendTurn({ selection: selection(A), frame: 0, prompt: 'slow one', references: [], agent: 'fake', settings: { access: 'studio' } });
+    const two = await sendTurn({ selection: selection(A), frame: 0, prompt: 'slow two', references: [], agent: 'fake', settings: { access: 'studio' } });
+    const three = await sendTurn({ selection: selection(B), frame: 0, prompt: 'slow three', references: [], agent: 'fake', settings: { access: 'studio' } });
     const status = async () => Object.fromEntries((await queue.list()).map((r) => [r.id, r.status]));
     await expect.poll(async () => [(await status())[one.id], (await status())[three.id]], { timeout: 10000 }).toEqual(['working', 'working']);
     expect((await status())[two.id]).toBe('pending');
@@ -344,6 +354,37 @@ describe('an agent in the studio', () => {
     await expect.poll(async () => (await status())[two.id], { timeout: 10000 }).toBe('your_turn');
     expect((await status())[one.id]).toBe('your_turn');
     expect((await status())[three.id]).toBe('your_turn');
+  });
+
+  it('holds a turn found on disk until you read it and press Start, at the access you choose', async () => {
+    const found = await queue.create({ selection: { sceneId: A, layerId: 'ball', from: 0, to: 12 }, frame: 0, prompt: 'slow found', references: [], agent: 'fake', settings: { access: 'full' } });
+    await page.goto(vite.paired(`?scene=${A}&thread=${found.id}`));
+    await thread().waitFor();
+    await expectText(thread().getByRole('group', { name: 'Turn waiting to start' }), 'Nobody sent this from here');
+    expect((await turn(1).textContent()) ?? '').not.toContain('full access');
+    await new Promise((done) => setTimeout(done, 1000));
+    expect((await queue.get(found.id)).status).toBe('pending');
+    await thread().getByRole('button', { name: 'Start' }).click();
+    await expect.poll(async () => (await queue.get(found.id)).status, { timeout: 10000 }).toBe('working');
+    expect((await queue.get(found.id)).turns[0].settings?.access).toBe('studio');
+    await expect.poll(async () => (await queue.get(found.id)).status, { timeout: 15000 }).toBe('your_turn');
+    await queue.revertTo(found.id, 0);
+    await openViewer();
+  });
+
+  it("starts a reply at studio access when the file says full, and keeps full access you chose yourself", async () => {
+    await send('slow chosen', { full: true });
+    const chosen = (await queue.list()).at(-1)!;
+    await expect.poll(async () => (await queue.get(chosen.id)).status, { timeout: 15000 }).toBe('your_turn');
+    await panel().getByRole('button', { name: 'Agent settings' }).click();
+    expect(await panel().getByRole('button', { name: 'Permissions' }).textContent()).toContain('Full access');
+    await page.keyboard.press('Escape');
+    await page.goto(vite.paired(`?scene=${A}&thread=${chosen.id}`));
+    await thread().waitFor();
+    await panel().getByRole('button', { name: 'Agent settings' }).click();
+    expect(await panel().getByRole('button', { name: 'Permissions' }).textContent()).toContain('Studio access');
+    await page.keyboard.press('Escape');
+    await openViewer();
   });
 
   it('stops a turn, keeping its edits, and hands the thread back', async () => {
@@ -358,13 +399,13 @@ describe('an agent in the studio', () => {
   });
 
   it('marks a turn interrupted when the studio server stops, and resumes the session on the next reply', async () => {
-    const t = await queue.create({ selection: { sceneId: B, layerId: 'ball', from: 0, to: 12 }, frame: 0, prompt: 'long wait', references: [], agent: 'fake', settings: { access: 'studio' } });
+    const t = await sendTurn({ selection: { sceneId: B, layerId: 'ball', from: 0, to: 12 }, frame: 0, prompt: 'long wait', references: [], agent: 'fake', settings: { access: 'studio' } });
     await expect.poll(async () => (await queue.get(t.id)).status, { timeout: 10000 }).toBe('working');
     await vite.close();
     await expect.poll(async () => (await queue.get(t.id)).turns[0].status, { timeout: 10000 }).toBe('interrupted');
     await startServer();
     await openViewer();
-    await queue.reply(t.id, { selection: { sceneId: B, layerId: 'ball', from: 0, to: 12 }, frame: 0, prompt: 'slow reply', references: [] });
+    await replyTurn(t.id, { selection: { sceneId: B, layerId: 'ball', from: 0, to: 12 }, frame: 0, prompt: 'slow reply', references: [] });
     await expect.poll(async () => (await queue.get(t.id)).status, { timeout: 15000 }).toBe('your_turn');
     const events = await readTurnEvents(join(queue.threadDir(t.id), 'turn-1.jsonl'));
     expect(events.some((e) => e.type === 'status' && e.message.startsWith(`Fake agent resumed fake-${t.id}`))).toBe(true);
@@ -377,7 +418,7 @@ describe('an agent in the studio', () => {
 describe('agents in a project (ADR 0007)', () => {
   const read = (name: string) => readFileSync(join(PROJECT_DIR, name), 'utf8');
   const start = (sceneId: string, prompt: string) =>
-    queue.create({ selection: { sceneId: `${P}/${sceneId}`, from: 0, to: 12 }, frame: 0, prompt, references: [], agent: 'fake', settings: { access: 'studio' } });
+    sendTurn({ selection: { sceneId: `${P}/${sceneId}`, from: 0, to: 12 }, frame: 0, prompt, references: [], agent: 'fake', settings: { access: 'studio' } });
   const status = async (id: number) => (await queue.get(id)).status;
 
   it('works threads on two shots at once, lets the film thread recut, holds a cast edit until the shots are done, and reverts both files', async () => {
@@ -396,7 +437,7 @@ describe('agents in a project (ADR 0007)', () => {
     expect(recut.layers.find((l) => l.id === 'pip')?.start).toBe(3.5);
 
     // The cast edit waits for meet's thread, which is still working.
-    await queue.reply(cut.id, { selection: { sceneId: `${P}/film`, from: 0, to: 12 }, frame: 0, prompt: 'project recast', references: [] });
+    await replyTurn(cut.id, { selection: { sceneId: `${P}/film`, from: 0, to: 12 }, frame: 0, prompt: 'project recast', references: [] });
     await expect.poll(async () => (await readTurnEvents(join(queue.threadDir(cut.id), 'turn-1.jsonl'))).some((e) => e.type === 'status' && /waits until no other request there is working/.test(e.message)), { timeout: 10000 }).toBe(true);
     expect(read('project.json')).toBe(cast);
     expect(await status(hold.id)).toBe('working');

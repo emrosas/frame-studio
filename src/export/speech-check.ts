@@ -1,6 +1,6 @@
 // The checks that read words (ADR 0016): do anchors sit on their words, has any
-// lost its word, can captions be read in the time they stay up, and do they stay
-// inside the safe area. Numbers from the scene alone, so no pixels are drawn
+// lost its word, can captions reach their words, can they be read in the time
+// they stay up, and do they stay inside the safe area. Numbers from the scene alone, so no pixels are drawn
 // here. Never imported by the runtime.
 
 import { quantizeTime } from '../engine/time';
@@ -133,6 +133,46 @@ function captionLayers(scene: Scene, registry: RigRegistry, world: World): Capti
   });
 }
 
+/** The cues a captions layer needs and a scene lacks, in `scene` and everything it places. */
+function missingCues(scene: Scene, registry: RigRegistry, world: World): { id: string; cue: string; scene: string }[] {
+  const out: { id: string; cue: string; scene: string }[] = [];
+  const seen = new Set<Scene>();
+  const visit = (s: Scene) => {
+    if (seen.has(s)) return;
+    seen.add(s);
+    for (const layer of sceneLayers(s)) {
+      const shot = layer.scene !== undefined ? world.scenes?.get(layer.scene) : undefined;
+      if (shot) visit(shot);
+      if (layer.scene !== undefined || layer.file !== undefined) continue;
+      try {
+        const resolved = resolveLayer(layer, s, 0, registry, world);
+        const cue = String(resolved.params.cue);
+        if (resolved.rig.id === 'captions' && !s.audio?.some((c) => c.id === cue)) out.push({ id: layer.id, cue, scene: s.id });
+      } catch {
+        // A layer that won't resolve is the validator's to report.
+      }
+    }
+  };
+  visit(scene);
+  return out;
+}
+
+/**
+ * Whether captions can reach their words. A clip renders the same inside its composition and alone, so a scene
+ * can't read a composition's cue, and a voice placed on a composition has words no captions can show.
+ */
+export function checkCaptionCues(scene: Scene, registry: RigRegistry, world: World, composition: boolean): CheckResult {
+  const missing = missingCues(scene, registry, world);
+  const stranded = composition ? (scene.audio ?? []).filter((cue) => (cue.words?.length ?? 0) > 0) : [];
+  const count = missing.length + stranded.length;
+  if (count === 0) return { id: 'caption-cues', status: 'pass', message: 'Every caption has its cue.', value: 0 };
+  const lines = [
+    ...missing.map((m) => `Captions "${m.id}" in "${m.scene}" name cue "${m.cue}", which that scene doesn't have`),
+    ...stranded.map((cue) => `Cue "${cue.id}" on this composition has words no captions can reach`),
+  ];
+  return { id: 'caption-cues', status: 'warn', message: `${lines.join('. ')}. A scene can't read a composition's cue, so put the voice in the scene with its captions.`, value: count };
+}
+
 const pageFrames = (page: CaptionPage, fps: number): [number, number] => [Math.floor(page.start * fps + 1e-6), Math.max(Math.floor(page.start * fps + 1e-6) + 1, Math.ceil(page.end * fps - 1e-6))];
 
 function readingLimit(scene: Scene, cueId: string): number {
@@ -173,7 +213,8 @@ export function checkCaptionSafe(scene: Scene, layers: readonly CaptionLayer[], 
   const [width, height] = stageSize(scene);
   const area = safeArea(width, height);
   if (layers.length === 0) return { id: 'caption-safe', status: 'pass', message: 'There are no captions.', value: 0 };
-  const silent = layers.filter((l) => l.pages.length === 0);
+  // A cue that isn't there at all is caption-cues' to report, and align_voice wouldn't help.
+  const silent = layers.filter((l) => l.pages.length === 0 && scene.audio?.some((cue) => cue.id === l.cue));
   if (silent.length > 0) {
     return { id: 'caption-safe', status: 'fail', message: `${silent.map((l) => `Captions "${l.id}" read cue "${l.cue}", which has no words`).join('. ')}. Run align_voice on it.`, value: silent.length };
   }
@@ -198,7 +239,7 @@ export function checkCaptionSafe(scene: Scene, layers: readonly CaptionLayer[], 
 }
 
 /** Every word check, for the report. */
-export function speechChecks(scene: Scene, registry: RigRegistry, world: World, from: number, to: number): CheckResult[] {
+export function speechChecks(scene: Scene, registry: RigRegistry, world: World, from: number, to: number, composition = false): CheckResult[] {
   const layers = captionLayers(scene, registry, world);
-  return [checkWordSync(scene, from, to), checkOrphans(scene), checkReadingSpeed(scene, layers, from, to), checkCaptionSafe(scene, layers, from, to)];
+  return [checkWordSync(scene, from, to), checkOrphans(scene), checkCaptionCues(scene, registry, world, composition), checkReadingSpeed(scene, layers, from, to), checkCaptionSafe(scene, layers, from, to)];
 }

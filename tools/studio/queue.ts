@@ -29,7 +29,7 @@ import {
   currentTurn,
   firstRevertableTurn,
   isFinished,
-  normalizeRequest,
+  readThread,
   projectCheckpointFileName,
   projectOf,
   requestFileName,
@@ -159,9 +159,11 @@ export class StudioQueue {
     }
     const out: StudioRequest[] = [];
     for (const name of names) {
-      if (!REQUEST_FILE.test(name)) continue;
+      const number = REQUEST_FILE.exec(name)?.[1];
+      if (number === undefined) continue;
       try {
-        out.push(normalizeRequest(JSON.parse(await readFile(join(this.requestsDir, name), 'utf8'))));
+        const thread = readThread(JSON.parse(await readFile(join(this.requestsDir, name), 'utf8')), Number(number));
+        if (thread) out.push(thread);
       } catch {
         // Skip it; the next read will see the finished file.
       }
@@ -170,12 +172,16 @@ export class StudioQueue {
   }
 
   async get(id: number): Promise<StudioRequest> {
+    let raw: unknown;
     try {
-      return normalizeRequest(JSON.parse(await readFile(this.path(id), 'utf8')));
+      raw = JSON.parse(await readFile(this.path(id), 'utf8'));
     } catch (err) {
       if (isCode(err, 'ENOENT')) throw new Error(`There is no request #${id}.`);
       throw err;
     }
+    const thread = readThread(raw, id);
+    if (!thread) throw new Error(`There is no request #${id}: its file isn't a thread.`);
+    return thread;
   }
 
   private async write(request: StudioRequest): Promise<void> {
@@ -315,16 +321,16 @@ export class StudioQueue {
    * scene's lock, checkpoints the scene for the turn, and marks it working.
    * Null if another session won, or another thread is working on the scene.
    */
-  private take(request: StudioRequest, session: string): Promise<StudioRequest | null> {
-    return this.exclusive(request.id, () => this.takeNow(request, session));
+  private take(request: StudioRequest, session: string, may?: (thread: StudioRequest) => boolean): Promise<StudioRequest | null> {
+    return this.exclusive(request.id, () => this.takeNow(request, session, may));
   }
 
-  private async takeNow(request: StudioRequest, session: string): Promise<StudioRequest | null> {
+  private async takeNow(request: StudioRequest, session: string, may?: (thread: StudioRequest) => boolean): Promise<StudioRequest | null> {
     if (!(await this.createExclusive(this.path(request.id, 'claim'), session))) return null;
     let locked = false;
     try {
       const current = await this.get(request.id);
-      if (current.status !== 'pending' || currentTurn(current).status !== 'pending') {
+      if (current.status !== 'pending' || currentTurn(current).status !== 'pending' || (may && !may(current))) {
         await rm(this.path(request.id, 'claim'), { force: true });
         return null;
       }
@@ -366,14 +372,15 @@ export class StudioQueue {
   /**
    * Claims the oldest pending thread for one of `agents`, or returns null when none can go. A turn that
    * can't start (its scene is gone, say) fails with the reason, rather than holding up the threads after it.
+   * With `may`, only threads it accepts, as they stand when claimed.
    */
-  async claimNext(session: string, agents: readonly AgentId[] = ['external']): Promise<StudioRequest | null> {
+  async claimNext(session: string, agents: readonly AgentId[] = ['external'], may?: (thread: StudioRequest) => boolean): Promise<StudioRequest | null> {
     const all = await this.list();
     for (const request of all) {
-      if (request.status !== 'pending' || !agents.includes(request.agent)) continue;
+      if (request.status !== 'pending' || !agents.includes(request.agent) || (may && !may(request))) continue;
       if (all.some((r) => r.id !== request.id && r.sceneId === request.sceneId && r.status === 'working')) continue;
       try {
-        const claimed = await this.take(request, session);
+        const claimed = await this.take(request, session, may);
         if (claimed) return claimed;
       } catch (err) {
         await this.failPending(request.id, `Could not start: ${err instanceof Error ? err.message : String(err)}`).catch(() => {});
@@ -499,6 +506,24 @@ export class StudioQueue {
     });
   }
 
+  /**
+   * The user pressed Start on a pending turn found on disk (ADR 0017). It runs at the settings they chose, never
+   * the file's, and starts a fresh provider session, since the file named that one too.
+   */
+  startHeld(id: number, settings: TurnSettings): Promise<StudioRequest> {
+    return this.exclusive(id, async () => {
+      const thread = await this.get(id);
+      const k = thread.turns.length - 1;
+      if (thread.status !== 'pending' || thread.turns[k].status !== 'pending') throw new Error(`Request #${id} has no turn waiting to start.`);
+      const turns = [...thread.turns];
+      turns[k] = { ...turns[k], settings };
+      const { session: _, ...rest } = thread;
+      const next: StudioRequest = { ...rest, turns };
+      await this.write(next);
+      return next;
+    });
+  }
+
   /** Withdraws the newest turn before or while an agent works on it. A thread with nothing else in it is cancelled. */
   cancel(id: number): Promise<StudioRequest> {
     return this.exclusive(id, () => this.cancelNow(id));
@@ -603,7 +628,8 @@ export class StudioQueue {
     if (!isFinished(last)) throw new Error(`Request #${id}'s newest turn is still ${last.status}.`);
     // A turn with no checkpoint changed nothing to revert, e.g. one cancelled before any agent took it.
     const reverted = last.checkpointAt ? await this.revertNow(id, k) : thread;
-    const settings = change.settings ?? last.settings;
+    // Stored access is never carried over: full access is chosen for a turn, by whoever sends it.
+    const settings = change.settings ?? (last.settings ? { ...last.settings, access: 'studio' as const } : undefined);
     const turn = StudioQueue.turnFrom(
       { ...last.ask, prompt: prompt?.trim() ? prompt : last.ask.prompt, references: change.references ?? last.ask.references, ...(settings ? { settings } : {}) },
       (last.attempt ?? 1) + 1,

@@ -2,7 +2,13 @@
 // utility process, and it works from a terminal too.
 //
 //   node tools/studio/bin.ts --folder <studio folder> --viewer <built viewer dir>
-//     [--builtins <dir>] [--port 4753] [--agents] [--worker app|electron] [--discovery] [--untrusted]
+//     [--builtins <dir>] [--port 4753] [--agents] [--worker app|electron] [--discovery]
+//     [--trust | --untrusted | --code-hash <hash>]
+//
+// A server loads built-ins only unless told otherwise (ADR 0017). The app says
+// --code-hash with the hash the user approved, or --untrusted. From a terminal,
+// --trust or FRAME_STUDIO_TRUST=1 lets a folder's code load, and the repo counts
+// as trusted. --untrusted beats everything.
 //
 // The pairing token never goes on the command line. In a utility process it
 // comes as the first message from the parent, which gets { url } back once
@@ -23,11 +29,13 @@ const { values } = parseArgs({
     worker: { type: 'string' },
     discovery: { type: 'boolean' },
     untrusted: { type: 'boolean' },
+    trust: { type: 'boolean' },
+    'code-hash': { type: 'string' },
   },
 });
 const builtins = resolve(values.builtins ?? resolve(REPO, 'src'));
 installLoader(builtins);
-const { studioFolder } = await import('./folder.ts');
+const { studioFolder, trustsCode } = await import('./folder.ts');
 const { startStudioServer } = await import('./server.ts');
 
 interface ParentPort {
@@ -49,12 +57,19 @@ async function readToken(): Promise<string> {
 }
 
 if (!values.folder || !values.viewer) {
-  process.stderr.write('Usage: node tools/studio/bin.ts --folder <studio folder> --viewer <built viewer dir> [--builtins <dir>] [--port <n>] [--agents] [--worker app|electron] [--discovery] [--untrusted]\n');
+  process.stderr.write('Usage: node tools/studio/bin.ts --folder <studio folder> --viewer <built viewer dir> [--builtins <dir>] [--port <n>] [--agents] [--worker app|electron] [--discovery] [--trust | --untrusted | --code-hash <hash>]\n');
   process.exit(2);
 }
 const token = await readToken();
+const approved = values['code-hash'];
+const untrusted = values.untrusted === true || !(approved !== undefined || trustsCode(values.folder, values.trust));
 const server = await startStudioServer({
-  folder: studioFolder(values.folder, { builtins, untrusted: values.untrusted ?? false }),
+  folder: studioFolder(values.folder, {
+    builtins,
+    untrusted,
+    // The app re-asks when the code it asked about isn't the code here any more.
+    ...(approved !== undefined && !untrusted ? { approval: { hash: approved, refused: () => parent?.postMessage({ codeChanged: true }) } } : {}),
+  }),
   token,
   port: values.port ? Number(values.port) : undefined,
   viewer: { kind: 'static', dir: values.viewer },

@@ -335,7 +335,7 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
           audio = err instanceof Error ? err.message : String(err);
         }
       }
-      const extra = speechChecks(s, need().registry, world, r.from, r.to);
+      const extra = speechChecks(s, need().registry, world, r.from, r.to, entry?.kind === 'composition');
       return buildReport({ scene: entry?.key ?? s.id, fps: s.fps, duration: s.duration, width: s.size[0], height: s.size[1], ...r, frames, loop: options.loop, markers: s.markers, audio, extra });
     },
     async contactSheet(sinkId, options = {}): Promise<ContactSheetResult> {

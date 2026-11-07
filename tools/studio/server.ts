@@ -20,6 +20,7 @@ import {
   checkNewScene,
   checkNewVideo,
   checkRetry,
+  checkSettings,
   CHECK_EVENT,
   checkPlacedVoice,
   EXPORT_EVENT,
@@ -43,6 +44,7 @@ import {
   type PlacedVoice,
   type QuestionAnswers,
   type Reply,
+  type StudioRequest,
   type TurnSettings,
 } from '../../src/studio/protocol.ts';
 import { buildEmbed } from '../bundle/embed.ts';
@@ -67,6 +69,7 @@ import { body, checkLocal, checkOrigin, HttpError, json, send } from './http.ts'
 import { McpEndpoint } from './mcp-http.ts';
 import { MODULES_PATH, ModuleService } from './modules.ts';
 import { Pairing } from './pairing.ts';
+import { isImportable } from './project-code.ts';
 import { electronWorker } from './electron-worker.ts';
 import { RenderPool } from './render-pool.ts';
 import { StudioQueue } from './queue.ts';
@@ -213,7 +216,14 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         throw new HttpError(409, err instanceof Error ? err.message : String(err));
       }
     });
-  const agents = options.agents ?? false;
+  // No trust, no agents: an agent can write the code the user just declined to run (ADR 0017).
+  const agents = (options.agents ?? false) && !folder.untrusted;
+  const AGENTS_OFF = "You opened this project without its code, so the studio's agents are off. Trust the project to turn them on.";
+  const agentsOff = () => (folder.untrusted && options.agents ? AGENTS_OFF : null);
+  /** Refuses a turn for a studio agent while they're off. */
+  const needAgents = (agent: unknown) => {
+    if (folder.untrusted && agent !== undefined && agent !== 'external') throw new HttpError(409, AGENTS_OFF);
+  };
   const runner = new AgentRunner({
     queue,
     providers: agents ? createProviders(folder.studio) : [],
@@ -222,6 +232,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     mcpUrl: () => (url ? `${url}/__studio/mcp` : null),
     push: (event, data) => events.send(event, data),
     instructions: async () => STUDIO_INSTRUCTIONS,
+    enabled: () => !folder.untrusted,
     sceneInfo: async (sceneId) => {
       const mods = await loadModules(code);
       const entry = mods.library.findEntry(await sceneLibrary(mods, folder), sceneId);
@@ -256,7 +267,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   const relevant = (base: string, file: string): 'files' | 'code' | null => {
     const rel = relative(base, file).split(sep).join('/');
     if (/^(scenes|compositions)\/[^/]+\.json$/.test(rel) || rel === 'project.json' || /^projects\/[^/]+\/[^/]+\.json$/.test(rel) || /^media\//.test(rel)) return 'files';
-    if (/\.ts$/.test(rel) && (/^(rigs|audio)\//.test(rel) || /^projects\/[^/]+\/rigs\//.test(rel))) return 'code';
+    if (isImportable(rel) && (/^(rigs|audio)\//.test(rel) || /^projects\/[^/]+\/rigs\//.test(rel))) return 'code';
     return null;
   };
   try {
@@ -283,6 +294,10 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     }
   }
 
+  /** Threads as pages see them: a pending turn the runner may not take says so. The field is never read from a file. */
+  const shownThreads = (requests: StudioRequest[]) =>
+    requests.map(({ held: _, ...thread }) => (thread.status === 'pending' && thread.agent !== 'external' && !runner.isAllowed(thread) ? { ...thread, held: true } : thread));
+
   // Push the queue when .frame-studio/requests changes.
   let queueTimer: ReturnType<typeof setTimeout> | null = null;
   const pushQueue = () => {
@@ -291,7 +306,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       queueTimer = null;
       runner.kick();
       try {
-        events.send(QUEUE_EVENT, { requests: await queue.list() });
+        events.send(QUEUE_EVENT, { requests: shownThreads(await queue.list()) });
       } catch {
         // The next change pushes again.
       }
@@ -471,7 +486,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     checkLocal(req);
     if (req.method === 'GET' && path === '/health') {
       const authorized = pairing.allows(req);
-      return send(res, 200, { ok: true, ...(authorized ? { folder: folder.root, pid: process.pid } : {}) });
+      return send(res, 200, { ok: true, ...(authorized ? { folder: folder.root, pid: process.pid, untrusted: folder.untrusted === true } : {}) });
     }
     checkOrigin(req);
     if (req.method === 'POST' && path === '/pair') {
@@ -726,8 +741,11 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     }
 
     // The request queue (ADR 0003, ADR 0006).
-    if (req.method === 'GET' && path === '/queue') return send(res, 200, { requests: await queue.list() });
-    if (req.method === 'GET' && path === '/agents') return send(res, 200, { agents: [EXTERNAL, ...(await runner.statuses(url.searchParams.has('fresh')))] });
+    if (req.method === 'GET' && path === '/queue') return send(res, 200, { requests: shownThreads(await queue.list()) });
+    if (req.method === 'GET' && path === '/agents') {
+      const off = agentsOff();
+      return send(res, 200, { agents: [EXTERNAL, ...(await runner.statuses(url.searchParams.has('fresh')))], ...(off ? { agentsOff: off } : {}) });
+    }
     if (req.method === 'GET' && path === '/selection') return send(res, 200, { selection: await queue.readSelection() });
     if (req.method === 'PUT' && path === '/selection') {
       const selection = await json<Omit<CurrentSelection, 'updatedAt'> | null>(req);
@@ -743,7 +761,10 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       const input = await json<NewRequest>(req);
       const problem = checkNewRequest(input);
       if (problem) throw new HttpError(400, problem);
-      return send(res, 201, { request: await queue.create(input) });
+      needAgents(input.agent);
+      const request = await queue.create(input);
+      runner.allow(request);
+      return send(res, 201, { request });
     }
     if (req.method === 'POST' && path === '/requests/clear') return send(res, 200, { removed: await queue.clearFinished() });
     const id = parts[0] === 'requests' && parts.length >= 3 ? Number(parts[1]) : NaN;
@@ -769,9 +790,27 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         const input = await json<Reply>(req);
         const problem = checkNewRequest(input, { reply: true });
         if (problem) throw new HttpError(400, problem);
-        return send(res, 201, { request: await queue.reply(id, input) });
+        needAgents((await queue.get(id)).agent);
+        const request = await queue.reply(id, input);
+        runner.allow(request);
+        return send(res, 201, { request });
       }
       if (action === 'settle') return send(res, 200, { request: await queue.settle(id) });
+      if (action === 'start') {
+        // A click on a turn found on disk (ADR 0017). Access is the click's: the file's never counts.
+        const input = await json<{ settings?: TurnSettings } | null>(req);
+        const settings = input?.settings ?? { access: 'studio' as const };
+        const problem = checkSettings(settings);
+        if (problem) throw new HttpError(400, problem);
+        const { agent } = await queue.get(id);
+        needAgents(agent);
+        if (!runner.runs(agent)) throw new HttpError(409, `No agent here can work request #${id}.`);
+        const request = await queue.startHeld(id, settings).catch((err: unknown) => {
+          throw new HttpError(409, err instanceof Error ? err.message : String(err));
+        });
+        runner.allow(request);
+        return send(res, 200, { request });
+      }
       if (action === 'stop') {
         if (!(await runner.stop(id))) throw new HttpError(409, `No agent in the studio is working on request #${id}.`);
         return send(res, 200, { ok: true });
@@ -792,12 +831,13 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         const input = await json<{ prompt?: string; references?: string[]; settings?: TurnSettings } | null>(req);
         const problem = checkRetry(input);
         if (problem) throw new HttpError(400, problem);
-        return send(res, 201, {
-          request: await queue.retry(id, input?.prompt, {
-            ...(input?.references ? { references: input.references } : {}),
-            ...(input?.settings ? { settings: input.settings } : {}),
-          }),
+        needAgents((await queue.get(id)).agent);
+        const request = await queue.retry(id, input?.prompt, {
+          ...(input?.references ? { references: input.references } : {}),
+          ...(input?.settings ? { settings: input.settings } : {}),
         });
+        runner.allow(request);
+        return send(res, 201, { request });
       }
     }
     if (req.method === 'POST' && Number.isInteger(id) && parts[2] === 'approvals' && parts.length === 4) {

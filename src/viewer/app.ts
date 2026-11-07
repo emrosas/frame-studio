@@ -498,6 +498,12 @@ export class App {
             ...(references.length > 0 ? { references } : {}),
             ...(thread && thread.agent !== 'external' && settings ? { settings } : {}),
           });
+          this.noteAccess(id, settings);
+        }),
+      start: (id, settings) =>
+        attempt(async () => {
+          await this.studio.start(id, settings);
+          this.noteAccess(id, settings);
         }),
       revert: (id, turn) => attempt(() => this.studio.revert(id, turn)),
       respond: (id, approval, decision) => attempt(() => this.studio.respond(id, approval, decision)),
@@ -2062,7 +2068,10 @@ export class App {
 
   private refreshAgents(fresh: boolean): void {
     this.studio.agents(fresh).then(
-      (agents) => (this.ui.studio.agents = agents),
+      ({ agents, agentsOff }) => {
+        this.ui.studio.agents = agents;
+        this.ui.studio.agentsOff = agentsOff ?? null;
+      },
       () => {},
     );
   }
@@ -2144,6 +2153,7 @@ export class App {
         agent,
         ...(agent !== 'external' && settings ? { settings } : {}),
       });
+      this.noteAccess(request.id, settings);
       let copied = false;
       if (agent === 'external') {
         try {
@@ -2181,10 +2191,17 @@ export class App {
         references,
         ...(thread.agent !== 'external' && settings ? { settings } : {}),
       });
+      this.noteAccess(id, settings);
       return null;
     } catch (err) {
       return errorText(err).message;
     }
+  }
+
+  /** Remembers, for this page only, the threads you gave full access. A thread's stored access never seeds the next turn. */
+  private noteAccess(id: number, settings: TurnSettings | undefined): void {
+    const others = this.ui.studio.fullAccess.filter((t) => t !== id);
+    this.ui.studio.fullAccess = settings?.access === 'full' ? [...others, id] : others;
   }
 
   /** Brings back a request's scene, layer, part, range and frame. With play, loops its range, for View. */

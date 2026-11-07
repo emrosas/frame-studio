@@ -316,6 +316,8 @@ export interface ViewerActions {
   requestAction(id: number, action: RequestAction): Promise<string | null>;
   /** Try again: reverts the newest turn and asks again, with an edited prompt, new images and settings. */
   retry(id: number, prompt: string, files: File[], settings?: TurnSettings): Promise<string | null>;
+  /** Starts a turn found on disk, at these settings. Returns an error message, or null. */
+  start(id: number, settings: TurnSettings): Promise<string | null>;
   /** "Revert to here" on a turn, or with no turn, the whole thread. Returns an error message, or null. */
   revert(id: number, turn?: number): Promise<string | null>;
   /** Answers a question card, or skips it with null. Returns an error message, or null. */
@@ -365,6 +367,10 @@ export interface StudioState {
   error: string | null;
   /** The external agent and the agents the studio runs, as the picker offers them. */
   agents: AgentStatus[];
+  /** Why the studio's own agents are off here, when they are: the project opened without its code (ADR 0017). */
+  agentsOff: string | null;
+  /** Threads you gave full access from this page. A reply starts from studio access in any other: what a file says never counts. */
+  fullAccess: number[];
   /** The thread open in the agent panel, or null for a new thread. */
   open: number | null;
 }
@@ -506,7 +512,7 @@ export class ViewerUi {
   /** The token shows its From and To fields. */
   rangeEditing = $state(false);
   errors = $state<ErrorBlock[]>([]);
-  studio = $state<StudioState>({ requests: [], now: Date.now(), error: null, agents: [], open: null });
+  studio = $state<StudioState>({ requests: [], now: Date.now(), error: null, agents: [], agentsOff: null, fullAccess: [], open: null });
   /**
    * Which side columns show, as last left (Viewer.svelte saves it). The App reads it, so a thread that ends while
    * the agent panel is hidden still gets its notice.

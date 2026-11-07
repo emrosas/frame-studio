@@ -7,7 +7,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js';
 import { connectStudio, type Connected } from '../studio/connect.ts';
-import { studioFolder } from '../studio/folder.ts';
+import { studioFolder, trustsCode } from '../studio/folder.ts';
 import { SESSION_HEADER } from '../studio/mcp-http.ts';
 import type { StudioServerOptions } from '../studio/server.ts';
 
@@ -19,8 +19,10 @@ export interface ShimOptions {
 }
 
 export async function runShim(options: ShimOptions = {}): Promise<void> {
-  const { values } = parseArgs({ args: process.argv.slice(2), options: { folder: { type: 'string' } }, strict: false });
-  const folder = studioFolder(resolve(typeof values.folder === 'string' ? values.folder : process.cwd()), options.builtins ? { builtins: options.builtins } : {});
+  const { values } = parseArgs({ args: process.argv.slice(2), options: { folder: { type: 'string' }, trust: { type: 'boolean' } }, strict: false });
+  const root = resolve(typeof values.folder === 'string' ? values.folder : process.cwd());
+  // A server this shim starts loads built-ins only until told otherwise (ADR 0017).
+  const folder = studioFolder(root, { ...(options.builtins ? { builtins: options.builtins } : {}), untrusted: !trustsCode(root, values.trust === true) });
   const session = `mcp-${process.pid}`;
   const log = (line: string) => process.stderr.write(`[frame-studio] ${line}\n`);
 

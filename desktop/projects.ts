@@ -5,7 +5,7 @@
 
 import { mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { basename, join } from 'node:path';
-import { DEFAULT_FORMAT, displayStatus, normalizeRequest, threadSummary, type StudioRequest, type ThreadSummary } from '../src/studio/protocol.ts';
+import { DEFAULT_FORMAT, displayStatus, readThread, threadSummary, type StudioRequest, type ThreadSummary } from '../src/studio/protocol.ts';
 
 /** A project's threads that need a look: working, waiting on the user's input, or the user's turn. */
 export interface ProjectStatus {
@@ -157,7 +157,7 @@ async function readThreads(dir: string): Promise<StudioRequest[]> {
   const read = await Promise.all(
     names.map(async (n) => {
       try {
-        return normalizeRequest(await readJson(join(requests, n)));
+        return readThread(await readJson(join(requests, n)), Number(n.slice(0, -'.json'.length)));
       } catch {
         return null;
       }
@@ -194,14 +194,14 @@ export async function projectThreads(dir: string, running = true, posters: Reado
   });
 }
 
-/** True while an agent the studio runs has a thread there working or waiting to start, so its server must keep running. */
+/** True while an agent the studio runs has a thread working there, so its server must keep running. A pending turn doesn't count: a stranger's waits for a click forever. */
 export async function hasAgentWork(dir: string): Promise<boolean> {
   const requests = join(dir, '.frame-studio', 'requests');
   const names = await readdir(requests).catch(() => [] as string[]);
   for (const n of names.filter((x) => /^\d+\.json$/.test(x))) {
     try {
-      const thread = normalizeRequest(JSON.parse(await readFile(join(requests, n), 'utf8')));
-      if (thread.agent !== 'external' && (thread.status === 'working' || thread.status === 'pending')) return true;
+      const thread = readThread(JSON.parse(await readFile(join(requests, n), 'utf8')), Number(n.slice(0, -'.json'.length)));
+      if (thread && thread.agent !== 'external' && thread.status === 'working') return true;
     } catch {
       // skip
     }

@@ -104,8 +104,8 @@ export class StudioClient {
   }
 
   /** The agents a thread can go to, with whether each is ready. `fresh` skips the server's short cache. */
-  async agents(fresh = false): Promise<AgentStatus[]> {
-    return (await call<{ agents: AgentStatus[] }>(`/agents${fresh ? '?fresh' : ''}`)).agents;
+  async agents(fresh = false): Promise<{ agents: AgentStatus[]; agentsOff?: string }> {
+    return call<{ agents: AgentStatus[]; agentsOff?: string }>(`/agents${fresh ? '?fresh' : ''}`);
   }
 
   async create(request: NewRequest): Promise<StudioRequest> {
@@ -179,6 +179,11 @@ export class StudioClient {
 
   async act(id: number, action: RequestAction): Promise<void> {
     await call(`/requests/${id}/${action}`, jsonBody({}));
+  }
+
+  /** Starts a turn found on disk (ADR 0017), at the settings the user chose here. */
+  async start(id: number, settings: TurnSettings): Promise<void> {
+    await call(`/requests/${id}/start`, jsonBody({ settings }));
   }
 
   /** Try again: reverts the newest turn and asks again, with an edited prompt, references and settings. */

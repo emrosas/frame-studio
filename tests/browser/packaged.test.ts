@@ -41,9 +41,9 @@ async function viewerWindow(electron: ElectronApplication): Promise<Page> {
   return page;
 }
 
-async function mcpClient(): Promise<Client> {
+async function mcpClient(args: string[] = []): Promise<Client> {
   const client = new Client({ name: 'frame-studio-packaged-test', version: '0.0.0' });
-  await client.connect(new StdioClientTransport({ command: MCP, args: [], cwd: folder, env: env(), stderr: 'pipe' }));
+  await client.connect(new StdioClientTransport({ command: MCP, args, cwd: folder, env: env(), stderr: 'pipe' }));
   return client;
 }
 
@@ -88,7 +88,7 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
       const scenes = JSON.parse(textOf((await client.callTool({ name: 'list_scenes', arguments: {} })) as CallToolResult)) as { id: string }[];
       expect(scenes.map((s) => s.id)).toContain('film');
       const frame = (await client.callTool({ name: 'render_frame', arguments: { sceneId: 'film', frame: 50, maxWidth: 320 } })) as CallToolResult;
-      expect(frame.isError).toBeFalsy();
+      expect(frame.isError, textOf(frame)).toBeFalsy();
       expect(frame.content.some((c) => c.type === 'image')).toBe(true);
     } finally {
       await client.close();
@@ -121,10 +121,19 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
     try {
       const frame = (await client.callTool({ name: 'render_frame', arguments: { sceneId: 'hello', frame: 12, maxWidth: 320 } })) as CallToolResult;
       expect(frame.isError, textOf(frame)).toBeFalsy();
-      const html = (await client.callTool({ name: 'export', arguments: { sceneId: 'film', target: 'html' } })) as CallToolResult;
-      expect(textOf(html)).toMatch(/out\/film\/film\.html/);
+      // Its own server leaves the folder's code out, and says how to let it in (ADR 0017).
+      const refused = (await client.callTool({ name: 'export', arguments: { sceneId: 'film', target: 'html' } })) as CallToolResult;
+      expect(refused.isError).toBe(true);
+      expect(textOf(refused)).toMatch(/--trust/);
     } finally {
       await client.close();
+    }
+    const trusting = await mcpClient(['--trust']);
+    try {
+      const html = (await trusting.callTool({ name: 'export', arguments: { sceneId: 'film', target: 'html' } })) as CallToolResult;
+      expect(textOf(html)).toMatch(/out\/film\/film\.html/);
+    } finally {
+      await trusting.close();
     }
   });
 });

@@ -18,7 +18,7 @@ import { buildEmbed } from '../bundle/embed.ts';
 import { openStudio, poolTransport, writeViaSink, type Studio } from '../render/studio.ts';
 import { entryPath, libraryFrom, loadModules, readSceneFiles, sceneLibrary, writeFileAtomic, type LoadedModules } from '../scene-files.ts';
 import { runCheck } from '../studio/check.ts';
-import type { CodeHost } from '../studio/code.ts';
+import { withheldNote, type CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
 import { hear, nextWords, type VoiceProgress } from '../voice/align.ts';
@@ -170,7 +170,7 @@ export class Workspace {
     const { modules, lib, entry } = await this.entry(key);
     const project = entry.project !== null ? lib.projects.find((p) => p.id === entry.project) : undefined;
     const problems = [...lib.errors, ...entry.errors, ...(project?.errors ?? []).map((e) => `${project!.file}: ${e}`)];
-    if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors:\n${problems.join('\n')}`);
+    if (!entry.scene || problems.length > 0) throw new Error(`${entry.file} has errors:\n${problems.join('\n')}${await withheldNote(this.folder)}`);
     const file = entryPath(entry, this.folder);
     const files = project
       ? [join(this.folder.projects, project.id, 'project.json'), ...lib.entries.filter((e) => e.project === project.id).map((e) => entryPath(e, this.folder))]
@@ -526,6 +526,9 @@ export class Workspace {
     const first = (await readCue()).cue;
     if (typeof first.file !== 'string') throw new Error(`Cue "${cueId}" plays a generator. Only a sound file has words to time.`);
     const { file } = first;
+    // Whoever works the scene now may be who called this. Anyone who starts later owns it, and these words wait for no one.
+    const workingNow = async () => (await this.queue.list()).filter((r) => r.status === 'working' && r.sceneId === key).map((r) => r.id);
+    const workers = await workingNow();
     await this.checkMedia({ audio: [first] }, 'That cue');
     const language = first.lang ?? lib.folder?.project?.lang ?? null;
     const script = options.script ?? first.script;
@@ -545,6 +548,9 @@ export class Workspace {
     options.onProgress?.({ stage: 'write', done: 0, total: 1 });
     // Listening takes a while, and the scene stays open to edits. Write into the file as it stands now.
     const { raw, cue } = await readCue();
+    if (cue.file !== file) throw new Error(`Cue "${cueId}" changed to another sound file while it was being timed, so these words aren't its words. Time it again.`);
+    const taken = (await workingNow()).find((id) => !workers.includes(id));
+    if (taken !== undefined) throw new Error(`An agent took "${key}" while its voice was being timed (request #${taken}), so the words weren't written. Time it again when it finishes.`);
     if (entry.scene) keepAnchorTimes(raw, entry.scene, modules.engine.wordTime);
     cue.words = nextWords(heard.words, script, (cue.words ?? []) as SpokenWord[]);
     if (script?.trim()) cue.script = script;

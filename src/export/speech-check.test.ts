@@ -66,6 +66,34 @@ describe('caption-speed', () => {
   });
 });
 
+describe('caption-cues', () => {
+  const cues = (s: Scene, world = {}, composition = false) => speechChecks(s, registry, world, 0, 96, composition).find((c) => c.id === 'caption-cues')!;
+
+  it('passes captions on a cue of their own scene', () => {
+    expect(cues(scene()).status).toBe('pass');
+  });
+
+  it('warns when a captions layer names a cue the scene lacks, rather than sending you to align_voice', () => {
+    const s = scene({ audio: [] });
+    expect(cues(s)).toMatchObject({ status: 'warn', value: 1 });
+    expect(cues(s).message).toContain(`Captions "subs" in "s" name cue "voice", which that scene doesn't have`);
+    expect(cues(s).message).toContain('put the voice in the scene');
+    expect(find(s, 'caption-safe').status).not.toBe('fail');
+  });
+
+  it('warns about a scene a composition places', () => {
+    const shot = scene({ id: 'shot', audio: [] });
+    const film = scene({ id: 'film', layers: [{ id: 'clip', scene: 'shot' }], audio: [] });
+    expect(cues(film, { scenes: new Map([['shot', shot]]) }, true).message).toContain('in "shot"');
+  });
+
+  it('warns about a composition cue with words, which no captions can reach', () => {
+    const film = scene({ id: 'film', layers: [] });
+    expect(cues(film, {}, true).message).toContain('Cue "voice" on this composition has words no captions can reach');
+    expect(cues(film, {}, false).status).toBe('pass');
+  });
+});
+
 describe('caption-safe', () => {
   it('passes the rig where it sits by default', () => {
     expect(find(scene(), 'caption-safe').status).toBe('pass');

@@ -87,9 +87,14 @@ let fetching: Promise<void> | null = null;
 /** Gets the model if it isn't here yet. Two jobs at once share one download. */
 export async function ensureModel(options: { signal?: AbortSignal; onProgress?(done: number, total: number): void } = {}): Promise<void> {
   if (await modelReady()) return;
-  fetching ??= download(WHISPER_MODEL.url, modelPath(), WHISPER_MODEL, options).finally(() => {
-    fetching = null;
-  });
+  fetching ??= download(WHISPER_MODEL.url, modelPath(), WHISPER_MODEL, options)
+    .catch((err: unknown) => {
+      if (options.signal?.aborted || (err instanceof Error && /pinned sha256/.test(err.message))) throw err;
+      throw new Error("Couldn't download the speech model. Check your connection.", { cause: err });
+    })
+    .finally(() => {
+      fetching = null;
+    });
   await fetching;
 }
 

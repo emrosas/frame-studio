@@ -3457,6 +3457,16 @@ button.check-result:hover {
   margin-left: auto;
 }
 
+.thread-held {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.thread-held .row {
+  justify-content: space-between;
+}
+
 .thread-actions {
   display: flex;
   flex-wrap: wrap;

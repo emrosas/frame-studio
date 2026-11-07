@@ -6,6 +6,13 @@ const token = (text: string, from: number, t_dtw: number, p = 1) => ({ text, off
 /** The bytes a token holds, as whisper-cli writes them, read back as text one byte to a character. */
 const raw = (text: string) => Buffer.from(text, 'utf8').toString('latin1');
 
+describe('a script with no words', () => {
+  it('is a clear error, not a TypeError', () => {
+    const heard = [{ text: 'hola', start: 0, end: 1 }];
+    expect(() => alignScript('... — ¿?', heard)).toThrow('That script has no words in it, only punctuation.');
+  });
+});
+
 describe('plainLetters', () => {
   it('drops case, accents and punctuation', () => {
     expect(plainLetters('¿Qué?')).toBe('que');
