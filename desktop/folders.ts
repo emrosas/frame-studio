@@ -26,12 +26,13 @@ async function isEmpty(dir: string): Promise<boolean> {
  * Makes the sample project at `dir` (ADR 0013): Bears' story, converted from
  * the samples' projects/bears-story into a project folder with the film as a
  * composition, plus the hello scene. A folder that already has things in it
- * is opened as it is, never overwritten.
+ * is opened as it is, never overwritten. Returns whether it made anything.
  */
-export async function createStudioFolder(dir: string, samples: string): Promise<void> {
-  if (!(await isEmpty(dir))) return;
+export async function createStudioFolder(dir: string, samples: string): Promise<boolean> {
+  if (!(await isEmpty(dir))) return false;
   await convertFilm(join(samples, 'projects/bears-story'), dir, samples);
   await cp(join(samples, 'scenes/hello.json'), join(dir, 'scenes/hello.json'));
+  return true;
 }
 
 /**

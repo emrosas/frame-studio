@@ -25,6 +25,8 @@ export interface StudioFolder {
   out: string;
   /** The handoff folder: the request queue, the selection, and server.json. */
   studio: string;
+  /** Don't load the folder's own rigs and generators: the user opened it without trusting its code (ADR 0017). */
+  untrusted?: boolean;
 }
 
 /**
@@ -32,7 +34,7 @@ export interface StudioFolder {
  * to FRAME_STUDIO_DIR or the folder's .frame-studio/, so tests never touch a
  * real queue.
  */
-export function studioFolder(root: string = REPO, options: { builtins?: string; studio?: string } = {}): StudioFolder {
+export function studioFolder(root: string = REPO, options: { builtins?: string; studio?: string; untrusted?: boolean } = {}): StudioFolder {
   const at = resolve(root);
   return {
     root: at,
@@ -45,5 +47,6 @@ export function studioFolder(root: string = REPO, options: { builtins?: string; 
     references: resolve(at, 'references'),
     out: resolve(at, 'out'),
     studio: resolve(options.studio ?? process.env.FRAME_STUDIO_DIR ?? resolve(at, '.frame-studio')),
+    ...(options.untrusted ? { untrusted: true } : {}),
   };
 }

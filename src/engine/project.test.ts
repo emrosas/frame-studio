@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { createRegistry, rigIdsUsed } from './registry';
 import { render } from './render';
 import { resolveLayer } from './resolve';
-import { sceneGraphErrors, validateProject } from './project';
+import { sceneGraphErrors, validateFolderProject, validateProject } from './project';
 import { sceneLayerSpan, scenePlacement, shotFrame } from './scene-layer';
 import { createRecordingContext, type LogEntry } from './testing/recording-context';
 import type { Ctx2D, Layer, Rig, Scene, Surfaces, World } from './types';
@@ -245,6 +245,13 @@ describe('validateProject', () => {
       expect.stringMatching(/^cast\.pip: params\.r: unknown param "r" for rig "box"/),
       'cast.a/b: cast names are short names without "/"',
     ]);
+  });
+});
+
+describe('validateFolderProject', () => {
+  it('takes a language code, and refuses anything else', () => {
+    expect(validateFolderProject({ name: 'Lagos', lang: 'es' }).ok).toBe(true);
+    expect(validateFolderProject({ lang: 'Spanish' })).toMatchObject({ ok: false, errors: [expect.stringContaining('lang: must be a language code')] });
   });
 });
 

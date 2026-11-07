@@ -2,7 +2,7 @@
 // The viewer stays web-only code, so everything here is optional; in a
 // browser tab there is no bridge.
 
-import type { ThreadSummary } from '../studio/protocol';
+import type { ThreadSummary, VoiceChoice } from '../studio/protocol';
 
 /** What the app knows about updates (ADR 0009). `notes` is the release page's URL. */
 export type UpdateState =
@@ -27,6 +27,43 @@ export interface DesktopUpdates {
   install(): Promise<void>;
   /** Opens the release page of the version on offer. */
   openNotes(): Promise<void>;
+}
+
+/** A paid provider, as main describes it (ADR 0017). The key itself never leaves main: only its last four and the date. */
+export interface VoiceProvider {
+  id: string;
+  label: string;
+  kinds: readonly string[];
+  /** Where to make, cap or revoke a key. */
+  keyPage: string;
+  usdPer1000Characters: number;
+  voices: readonly VoiceChoice[];
+  key: { last4: string; added: string } | null;
+}
+
+export type VoiceAnswer =
+  | { file: string; words?: { text: string; start: number; end: number }[] }
+  | { error: string }
+  | { cancelled: true };
+
+/** Generate Voice's paid providers. Each spend and each removal stops at a native dialog in main. */
+export interface DesktopVoice {
+  /** `refusal` says why this computer can't keep keys, or is null. */
+  providers(): Promise<{ refusal: string | null; providers: VoiceProvider[] } | null>;
+  /** Opens the key entry window, which the page can't see into. True when a key was saved. */
+  addKey(provider: string): Promise<boolean>;
+  /** Asks, then deletes the key from this computer. True when it did. */
+  removeKey(provider: string): Promise<boolean>;
+  generate(request: { provider: string; text: string; lang: string; voice: string }): Promise<VoiceAnswer>;
+}
+
+/** Whether this project's code runs (ADR 0017). */
+export interface DesktopTrust {
+  state(): Promise<{ folder: string; trusted: boolean; files: number; trustedFolders: { path: string; added: string }[] } | null>;
+  /** Shows the native prompt, and reopens the project with its code on Trust. Resolves to why that failed, or null. */
+  ask(): Promise<string | null>;
+  /** Takes trust away from a folder, and reopens it without its code if it's on screen. */
+  revoke(path: string): Promise<string | null>;
 }
 
 /** A video or scene of a project whose server may not run, read from disk. */
@@ -106,6 +143,10 @@ export interface DesktopBridge {
   openProject(path: string, target?: OpenTarget): Promise<string | null>;
   /** Asks where, converts film `id` in `project`'s projects/, or this one's, into a project folder of its own (ADR 0013), and switches to it. */
   convertFilm(id: string, project?: string): Promise<string | null>;
+  readonly voice: DesktopVoice;
+  readonly trust: DesktopTrust;
+  /** Calls `cb` when the app menu opens Settings. Returns a function that stops it. */
+  onOpenSettings(cb: () => void): () => void;
   /** Missing when the app can't update, such as when it runs from the repo. */
   readonly updates?: DesktopUpdates;
 }

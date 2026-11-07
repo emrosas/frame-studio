@@ -37,7 +37,7 @@ export interface FolderProject {
   name?: string;
   fps?: number;
   size?: [number, number];
-  /** The language spoken, for timing a voice whose cue doesn't say (ADR 0016). */
+  /** The language voices and captions start from, such as "es". */
   lang?: string;
   cast?: Record<string, { rig: string; params?: Record<string, unknown> }>;
 }
@@ -95,6 +95,8 @@ export interface SceneLibrary {
   folder?: { file: string; project: FolderProject | null; errors: readonly string[] } | null;
   /** The studio folder's sound files (ADR 0012), when the library came from a studio server. */
   media?: readonly { file: string; bytes: number; modified: number }[];
+  /** Source files of the folder's own that stayed unloaded, since it was opened without trust (ADR 0017). */
+  withheldCode?: number;
 }
 
 function message(err: unknown): string {

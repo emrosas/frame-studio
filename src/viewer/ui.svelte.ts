@@ -3,13 +3,14 @@
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
 import type { CheckReport } from '../export/check';
-import type { AgentId, AgentStatus, ApprovalDecision, NewScene, NewVideo, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
+import type { AgentId, AgentStatus, ApprovalDecision, KokoroStatus, NewScene, NewVideo, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { OpenTarget, ProjectEntry, UpdateState } from './desktop';
 import type { KeyLane, KeyMark, KeyTarget, SelectedKey } from './keyframes';
 import { readPref } from './prefs';
 import type { FrameRange } from './selection';
 import type { ClipPlace, VisibleSpan } from './timeline';
 import type { RequestAction } from './studio-client';
+import type { GeneratedVoice } from './speech';
 import type { VoiceLine } from './voice';
 import type { SpokenWord } from '../engine/types';
 
@@ -237,6 +238,14 @@ export interface ViewerActions {
   anchorToWord(cueId: string, wordId: string): void;
   /** Marks a marker as what Delete, Anchor and the arrows would act on. */
   selectMarker(index: number | null): void;
+  /** Kokoro on this computer (ADR 0017). */
+  speechStatus(): Promise<KokoroStatus>;
+  /** Starts Kokoro's download, which reports through ui.speechInstall. */
+  installSpeech(): Promise<KokoroStatus>;
+  /** Speaks with Kokoro into media/. */
+  generateSpeech(text: string, lang: string, voice: string): Promise<{ file: string } | { error: string }>;
+  /** Keeps what a voice was generated from, so the cue placed from it gets words: the provider's, or the timing job's. */
+  alignVoice(voice: GeneratedVoice): void;
   /** The loudest sample in each of `buckets` slices of seconds [from, to) of a file the scene plays, for its waveform. */
   waveform(file: string, from: number, to: number, buckets: number): Promise<Float32Array | null>;
   /** Creates an empty scene and shows it. Returns an error message, or null. */
@@ -441,6 +450,18 @@ export class ViewerUi {
   media = $state<MediaItem[]>([]);
   /** What the last import or Add at playhead did, for the Media list. */
   mediaNote = $state<{ text: string; error: boolean } | null>(null);
+  /** The Generate Voice sheet is up (ADR 0017). */
+  voiceOpen = $state(false);
+  /** Settings is up. */
+  settingsOpen = $state(false);
+  /** Kokoro's download while it runs. */
+  speechInstall = $state<{ done: number; total: number } | null>(null);
+  /** Why the last download failed. */
+  speechInstallError = $state<string | null>(null);
+  /** project.json's language. */
+  projectLang = $state<string | null>(null);
+  /** Source files of this project's own left unloaded, since it opened without trust. */
+  withheldCode = $state(0);
   /** The scene on screen plays sound files, so the HTML export can offer to carry them. */
   usesMedia = $state(false);
   /** The scene's sound cues on the timeline, or null without any. */

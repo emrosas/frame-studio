@@ -9,8 +9,8 @@
 // browser. Electron main process only.
 
 import { randomBytes } from 'node:crypto';
-import { createWriteStream, existsSync, mkdirSync, renameSync, writeFileSync, type WriteStream } from 'node:fs';
-import { mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
+import { createWriteStream, existsSync, mkdirSync, realpathSync, renameSync, writeFileSync, type WriteStream } from 'node:fs';
+import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -21,6 +21,8 @@ import { createProject, hasAgentWork, listProjects, projectPoster, WARM_MS, warm
 import { appPaths } from './paths.ts';
 import { adoptShellPath } from './shell-path.ts';
 import { checkForUpdates, checkFromMenu, installUpdate, openReleaseNotes, startUpdates, type UpdateState, updatesEnabled, updateState } from './updater.ts';
+import { projectCode } from './trust.ts';
+import { registerVoice } from './voice.ts';
 import { openWorkerWindow } from './worker.ts';
 
 interface Settings {
@@ -29,6 +31,8 @@ interface Settings {
   bounds?: Rectangle;
   /** What the viewer keeps between visits. Every project's server has its own port and so its own localStorage, so these live here. */
   prefs?: Record<string, string>;
+  /** Projects whose code the user trusts, by real path, with the hash of that code (ADR 0017). */
+  trust?: Record<string, { hash: string; added: string }>;
 }
 
 interface Session {
@@ -38,6 +42,8 @@ interface Session {
   server: UtilityProcess;
   worker: BrowserWindow;
   stopping: boolean;
+  /** Its own rigs and generators load (ADR 0017). */
+  trusted: boolean;
   /** When it left the screen. */
   left?: number;
 }
@@ -64,6 +70,8 @@ let restarts = 0;
 let listing: ProjectEntry[] = [];
 /** Unsent prompts by project, so they outlive a switch. */
 const drafts = new Map<string, Record<string, string>>();
+/** Projects opened without their code since launch, with the hash the user saw, so a restart doesn't ask again. */
+const declined = new Map<string, string>();
 
 const settingsFile = () => join(app.getPath('userData'), 'settings.json');
 
@@ -78,6 +86,7 @@ async function loadSettings(): Promise<Settings> {
       recent: Array.isArray(read.recent) ? read.recent.filter((p) => typeof p === 'string') : [],
       ...(read.bounds ? { bounds: read.bounds } : {}),
       ...(read.prefs && typeof read.prefs === 'object' ? { prefs: read.prefs } : {}),
+      ...(read.trust && typeof read.trust === 'object' ? { trust: read.trust } : {}),
     };
   } catch {
     return { recent: [] };
@@ -130,10 +139,10 @@ function childEnv(): Record<string, string> {
 // ---- the studio server ----
 
 /** Starts the studio server on `folder` and waits until it listens. */
-async function startServer(folder: string, token: string): Promise<{ server: UtilityProcess; url: string }> {
+async function startServer(folder: string, token: string, trusted: boolean): Promise<{ server: UtilityProcess; url: string }> {
   const server = utilityProcess.fork(
     paths.server,
-    ['--folder', folder, '--viewer', paths.viewer, '--builtins', paths.builtins, '--agents', '--discovery', '--worker', 'app'],
+    ['--folder', folder, '--viewer', paths.viewer, '--builtins', paths.builtins, '--agents', '--discovery', '--worker', 'app', ...(trusted ? [] : ['--untrusted'])],
     { env: childEnv(), stdio: 'pipe', serviceName: 'Frame Studio server' },
   );
   server.stdout?.on('data', (chunk: Buffer) => serverLog?.write(chunk));
@@ -161,6 +170,8 @@ async function startServer(folder: string, token: string): Promise<{ server: Uti
 /** Stops a project's server and render worker. */
 function stopSession(target: Session | null): void {
   if (!target) return;
+  keepTrust(target);
+  void saveSettings();
   if (session === target) session = null;
   sessions.delete(target.folder);
   target.stopping = true;
@@ -185,6 +196,59 @@ async function sweep(): Promise<void> {
 function warmMs(): number {
   const set = Number(process.env.FRAME_STUDIO_WARM_MS);
   return process.env.FRAME_STUDIO_WARM_MS !== undefined && Number.isFinite(set) ? set : WARM_MS;
+}
+
+// ---- trusting a project's code (ADR 0017) ----
+
+/** Remembers `dir`'s code as trusted, as it is now. */
+function trustNow(real: string, hash: string): void {
+  settings.trust = { ...settings.trust, [real]: { hash, added: new Date().toISOString().slice(0, 10) } };
+  declined.delete(real);
+  void saveSettings();
+}
+
+/**
+ * What an open, trusted project's agents and hands changed is trusted too, or every rig an agent writes would ask
+ * again on the next open. Only changes made while it's closed ask.
+ */
+function keepTrust(target: Session): void {
+  if (!target.trusted) return;
+  try {
+    const code = projectCode(target.folder);
+    const real = realpathSync(target.folder);
+    if (code.files > 0) settings.trust = { ...settings.trust, [real]: { hash: code.hash, added: settings.trust?.[real]?.added ?? new Date().toISOString().slice(0, 10) } };
+  } catch {
+    // The folder went away; nothing to remember.
+  }
+}
+
+/** Asks about `dir`'s code. The native dialog is one no project code can draw or answer. */
+async function askTrust(dir: string, files: number): Promise<boolean> {
+  const parent = BrowserWindow.getFocusedWindow() ?? main ?? welcome;
+  const options: Electron.MessageBoxOptions = {
+    type: 'warning',
+    message: 'This project contains code.',
+    detail: `${basename(dir)} has ${files === 1 ? '1 source file' : `${files} source files`} in its rigs or audio folders. Frame Studio runs that code to draw the project, and it can do what any program on this computer can.\n\nTrust it if you made it or know who did. Without its code the project opens with the built-in rigs only.`,
+    buttons: ['Trust', 'Open Without Its Code'],
+    defaultId: 1,
+    cancelId: 1,
+  };
+  const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options);
+  return response === 0;
+}
+
+/** Whether `dir`'s code may load: none to load, trusted as it stands, or the user says so now. */
+async function decideTrust(dir: string): Promise<boolean> {
+  const real = await realpath(dir);
+  const code = projectCode(real);
+  if (code.files === 0 || settings.trust?.[real]?.hash === code.hash) return true;
+  if (declined.get(real) === code.hash) return false;
+  if (await askTrust(dir, code.files)) {
+    trustNow(real, code.hash);
+    return true;
+  }
+  declined.set(real, code.hash);
+  return false;
 }
 
 /** Opens run one at a time, so a double click can't start two servers. */
@@ -212,10 +276,11 @@ async function openFolderNow(folder: string, options: { restart?: boolean; targe
   // A project still running in the background comes back as it is, its agents mid-turn.
   if (!target) {
     await writeTsconfig(dir, paths.builtins).catch((err: unknown) => log(`tsconfig: ${String(err)}`));
+    const trusted = await decideTrust(dir);
     const token = randomBytes(24).toString('base64url');
     let started: { server: UtilityProcess; url: string };
     try {
-      started = await startServer(dir, token);
+      started = await startServer(dir, token, trusted);
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       log(why);
@@ -223,7 +288,7 @@ async function openFolderNow(folder: string, options: { restart?: boolean; targe
       return why;
     }
     const worker = openWorkerWindow(started.url, token);
-    const opened: Session = { folder: dir, url: started.url, token, server: started.server, worker, stopping: false };
+    const opened: Session = { folder: dir, url: started.url, token, server: started.server, worker, stopping: false, trusted };
     target = opened;
     sessions.set(dir, opened);
     started.server.once('exit', (code) => {
@@ -411,7 +476,12 @@ async function convertFilmToProject(id: string, project: string | null): Promise
 async function sampleProject(): Promise<string | null> {
   const dir = join(projectsHome(), 'Sample');
   try {
-    await createStudioFolder(dir, paths.samples);
+    const made = await createStudioFolder(dir, paths.samples);
+    // We just wrote its code ourselves. One opened again later is held to its hash like any project.
+    if (made) {
+      const code = projectCode(dir);
+      if (code.files > 0) trustNow(await realpath(dir), code.hash);
+    }
   } catch (err) {
     return `Could not make ${dir}: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -430,6 +500,8 @@ function buildMenu(): void {
     submenu: [
       { role: 'about' },
       ...(updatesEnabled() ? [{ label: 'Check for Updates…', click: () => void checkFromMenu() }] : []),
+      { type: 'separator' },
+      { label: 'Settings…', accelerator: 'CmdOrCtrl+,', enabled: session !== null, click: () => main?.webContents.send('frame-studio:open-settings') },
       { type: 'separator' },
       { role: 'services' },
       { type: 'separator' },
@@ -497,6 +569,15 @@ function pushUpdate(state: UpdateState): void {
   for (const win of [main, welcome]) if (win && !win.isDestroyed()) win.webContents.send('frame-studio:update-changed', state);
 }
 
+/** The project on screen, if `event` came from the main frame of the viewer window: not a frame inside it, and not the render worker. */
+function viewerProject(event: IpcMainEvent | IpcMainInvokeEvent): string | null {
+  const frame = event.senderFrame;
+  const top = main && !main.isDestroyed() ? main.webContents.mainFrame : null;
+  if (!session || !top || !frame || event.sender !== main!.webContents) return null;
+  if (frame.processId !== top.processId || frame.routingId !== top.routingId) return null;
+  return fromViewer(frame.url) ? session.folder : null;
+}
+
 /** The longest value the viewer may keep. */
 const PREF_MAX = 64 * 1024;
 
@@ -561,6 +642,34 @@ function registerIpc(): void {
     return listing;
   });
   ipcMain.handle('frame-studio:poster', (event, path: string, file: string) => (fromApp(event) && settings.recent.includes(path) ? projectPoster(path, String(file)) : null));
+  registerVoice({ projectOf: viewerProject, window: () => main, pages: paths.desktop, log });
+  // Folder trust (ADR 0017). The page can ask for the prompt and take trust away; only the native prompt grants it.
+  ipcMain.handle('frame-studio:trust-state', async (event) => {
+    const folder = viewerProject(event);
+    if (!folder) return null;
+    return { folder, trusted: session!.trusted, files: projectCode(folder).files, trustedFolders: Object.entries(settings.trust ?? {}).map(([path, { added }]) => ({ path, added })) };
+  });
+  ipcMain.handle('frame-studio:trust-ask', async (event) => {
+    const folder = viewerProject(event);
+    if (!folder || session!.trusted) return null;
+    const real = await realpath(folder);
+    const code = projectCode(real);
+    if (!(await askTrust(folder, code.files))) return null;
+    trustNow(real, code.hash);
+    return openFolder(folder, { restart: true });
+  });
+  ipcMain.handle('frame-studio:trust-revoke', async (event, path: unknown) => {
+    const folder = viewerProject(event);
+    if (!folder || typeof path !== 'string' || !settings.trust?.[path]) return null;
+    settings.trust = Object.fromEntries(Object.entries(settings.trust).filter(([p]) => p !== path));
+    await saveSettings();
+    const open = [...sessions.values()].find((s) => existsSync(s.folder) && realpathSync(s.folder) === path);
+    if (!open) return null;
+    // No need to ask: you just said no. It stays closed to its code until you trust it again.
+    open.trusted = false;
+    declined.set(path, projectCode(path).hash);
+    return open === session ? openFolder(open.folder, { restart: true }) : (stopSession(open), null);
+  });
   // Updates (ADR 0009). The preloads offer them only when the app can update.
   ipcMain.on('frame-studio:updates', (event) => {
     event.returnValue = updatesEnabled() && fromApp(event);
@@ -604,6 +713,7 @@ export function runApp(): void {
   });
   app.on('before-quit', () => {
     if (main && !main.isDestroyed()) settings.bounds = main.getBounds();
+    for (const s of [...sessions.values()]) keepTrust(s);
     saveSettingsNow();
     for (const s of [...sessions.values()]) stopSession(s);
   });

@@ -136,6 +136,47 @@ describe.skipIf(!canListen)('timing real voices', () => {
     return read(id).audio[0].words;
   }
 
+  it('keeps an edit made while it listened', async () => {
+    await timed('edited-meanwhile', 'eleven-en.mp3', 'en', LINES.en);
+    const scene = read('edited-meanwhile');
+    delete scene.audio[0].words;
+    write('edited-meanwhile', scene);
+    await (await workspace()).alignVoice('edited-meanwhile', 'voice', {
+      onProgress: ({ stage }) => {
+        if (stage === 'write') write('edited-meanwhile', { ...scene, markers: [{ t: 1, label: 'made meanwhile' }] });
+      },
+    });
+    const after = read('edited-meanwhile');
+    expect(after.markers).toEqual([{ t: 1, label: 'made meanwhile' }]);
+    expect(after.audio[0].words.length).toBeGreaterThan(0);
+  });
+
+  it('a voice from the Generate Voice sheet, placed at the playhead, gets the sheet\'s words from the timing job', async () => {
+    process.env.FRAME_STUDIO_FAKE_KOKORO = '1';
+    try {
+      await open('no-words');
+      await page.getByRole('button', { name: 'New', exact: true }).click();
+      await page.getByRole('menuitem', { name: 'Generate voice…' }).click();
+      const sheet = page.getByRole('dialog', { name: 'Generate voice' });
+      await sheet.getByRole('button', { name: 'Download Kokoro' }).click();
+      await sheet.getByRole('radiogroup', { name: 'Voice' }).waitFor();
+      await sheet.getByLabel('Language').selectOption('es');
+      const script = '¿Por qué el lago no se congela?';
+      await sheet.getByLabel('Text').fill(script);
+      await sheet.getByRole('button', { name: 'Generate', exact: true }).click();
+      await sheet.getByRole('button', { name: 'Place at playhead' }).click();
+      await sheet.getByText('Placed at the playhead.').waitFor();
+      const cue = () => read('no-words').audio.find((c: { file: string }) => c.file.startsWith('media/voice-kokoro-'));
+      await expect.poll(() => cue()?.words?.length ?? 0, { timeout: 60_000 }).toBe(7);
+      expect(cue().words.map((w: SpokenWord) => w.text).join(' ')).toBe(script);
+      expect(cue()).toMatchObject({ script, lang: 'es' });
+      await sheet.getByRole('button', { name: 'Close' }).click();
+    } finally {
+      delete process.env.FRAME_STUDIO_FAKE_KOKORO;
+      write('no-words', voiceScene('no-words', { audio: [{ id: 'voice', file: 'media/tone.wav', start: 0, end: 4 }], layers: [] }));
+    }
+  }, 90_000);
+
   function near(words: readonly SpokenWord[], expected: readonly Reference[]): void {
     expect(words).toHaveLength(expected.length);
     words.forEach((word, i) => {

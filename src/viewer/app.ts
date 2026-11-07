@@ -31,6 +31,7 @@ import { CanvasView } from './canvas';
 import { PlaybackClock } from './clock';
 import { dragDelta, dragScale, landValue, lockAxis, movable, snapCentre, stageCentre, withinBounds, withLayers, writePosition, type DragMoment, type DragScale, type Movable, type Position } from './drag';
 import { anchorKeys, deleteKeys, keyLanes, keyMarks, keysAt, moveTarget, type KeyTarget, type SelectedKey } from './keyframes';
+import type { GeneratedVoice } from './speech';
 import type { VoiceLine } from './voice';
 import { cueTarget, isLayerTarget, MARKERS_TARGET } from '../studio/protocol';
 import { wordRef, wordTime } from '../engine';
@@ -283,6 +284,8 @@ export class App {
   /** Layers on screen ahead of their files: a drag under way, or a save on its way back. */
   private readonly held = new Map<string, Layer>();
   private heldVersion = 0;
+  /** What each voice generated here was made from, by its file in media/, for the cue placed from it. */
+  private readonly generated = new Map<string, GeneratedVoice>();
   /** The scene ui.voices was worked out for. */
   private voiceScene: Scene | null = null;
   private heldScene: { base: Scene; version: number; scene: Scene } | null = null;
@@ -373,9 +376,20 @@ export class App {
         attempt(async () => {
           const scene = this.validScene();
           if (!scene || !this.entry) throw new Error('No valid scene is showing.');
-          await this.studio.placeSound(this.entry.key, file, this.clock.frame / scene.fps);
+          const voice = this.generated.get(file);
+          const cue = await this.studio.placeSound(this.entry.key, file, this.clock.frame / scene.fps, voice);
           this.setHome(false);
+          // The cue holds the script and language by now, so the job reads them from there.
+          if (voice && cue && !cue.words) void this.timeVoice(cue.id);
         }),
+      speechStatus: () => this.studio.speechStatus(),
+      installSpeech: () => this.studio.installSpeech(),
+      generateSpeech: (text, lang, voice) =>
+        this.studio.generateSpeech(text, lang, voice).then(
+          (file) => ({ file }),
+          (err: unknown) => ({ error: errorText(err).message }),
+        ),
+      alignVoice: (voice) => void this.generated.set(voice.file, voice),
       waveform: (file, from, to, buckets) => this.media.peaks(file, from, to, buckets),
       timeVoice: (cueId) => void this.timeVoice(cueId),
       confirmVoice: () => void this.startVoice(),
@@ -1145,6 +1159,7 @@ export class App {
     this.ui.projects = this.library.projects.map((p) => ({ id: p.id, name: p.name, fps: p.project?.fps ?? null, size: p.project?.size ?? null }));
     const folder = this.library.folder?.project;
     this.ui.format = { fps: folder?.fps, size: folder?.size };
+    this.ui.projectLang = folder?.lang ?? null;
     this.ui.selectedScene = entry?.key ?? null;
     const project = entry && entry.project !== null ? this.library.projects.find((p) => p.id === entry.project) : undefined;
     this.ui.header = entry
@@ -1413,6 +1428,18 @@ export class App {
         : null,
     );
     this.errors.set('library', lib.errors.length > 0 ? { title: 'Rigs failed to load; nothing can render', lines: lib.errors } : null);
+    // Without trust, a scene that needs the project's rigs fails as an unknown rig. Say why first (ADR 0017).
+    this.ui.withheldCode = lib.withheldCode ?? 0;
+    const blocked = (lib.withheldCode ?? 0) > 0 && (this.entry?.errors.length ?? 0) > 0;
+    this.errors.set(
+      'trust',
+      blocked
+        ? {
+            title: "This project's code isn't loaded",
+            lines: [`You opened it without its code, so ${lib.withheldCode === 1 ? 'one source file' : `${lib.withheldCode} source files`} in rigs/ or audio/ stayed closed. Scenes that use them can't draw; the built-in rigs still work.`, 'Trust the project from Settings or the Library to load its code.'],
+          }
+        : null,
+    );
     const project = this.entry?.project != null ? lib.projects.find((p) => p.id === this.entry!.project) : undefined;
     this.errors.set(
       'project',
@@ -1995,6 +2022,14 @@ export class App {
       }
     });
     this.studio.onThumb(({ key, file }) => (this.ui.thumbs = { ...this.ui.thumbs, [key]: file }));
+    this.studio.onSpeech((event) => {
+      if (event.done !== undefined && event.total !== undefined) this.ui.speechInstall = { done: event.done, total: event.total };
+      if (event.finished || event.error !== undefined) {
+        this.ui.speechInstallError = event.error ?? null;
+        this.ui.speechInstall = null;
+      }
+    });
+    desktop()?.onOpenSettings(() => (this.ui.settingsOpen = true));
     this.studio.onExport((event) => {
       const state = this.ui.exporting;
       if (state.running?.id !== event.id) return;

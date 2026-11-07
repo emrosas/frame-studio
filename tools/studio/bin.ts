@@ -2,7 +2,7 @@
 // utility process, and it works from a terminal too.
 //
 //   node tools/studio/bin.ts --folder <studio folder> --viewer <built viewer dir>
-//     [--builtins <dir>] [--port 4753] [--agents] [--worker app|electron] [--discovery]
+//     [--builtins <dir>] [--port 4753] [--agents] [--worker app|electron] [--discovery] [--untrusted]
 //
 // The pairing token never goes on the command line. In a utility process it
 // comes as the first message from the parent, which gets { url } back once
@@ -22,6 +22,7 @@ const { values } = parseArgs({
     agents: { type: 'boolean' },
     worker: { type: 'string' },
     discovery: { type: 'boolean' },
+    untrusted: { type: 'boolean' },
   },
 });
 const builtins = resolve(values.builtins ?? resolve(REPO, 'src'));
@@ -48,12 +49,12 @@ async function readToken(): Promise<string> {
 }
 
 if (!values.folder || !values.viewer) {
-  process.stderr.write('Usage: node tools/studio/bin.ts --folder <studio folder> --viewer <built viewer dir> [--builtins <dir>] [--port <n>] [--agents] [--worker app|electron] [--discovery]\n');
+  process.stderr.write('Usage: node tools/studio/bin.ts --folder <studio folder> --viewer <built viewer dir> [--builtins <dir>] [--port <n>] [--agents] [--worker app|electron] [--discovery] [--untrusted]\n');
   process.exit(2);
 }
 const token = await readToken();
 const server = await startStudioServer({
-  folder: studioFolder(values.folder, { builtins }),
+  folder: studioFolder(values.folder, { builtins, untrusted: values.untrusted ?? false }),
   token,
   port: values.port ? Number(values.port) : undefined,
   viewer: { kind: 'static', dir: values.viewer },

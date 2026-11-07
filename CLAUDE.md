@@ -86,6 +86,8 @@ tools/
               inlines all, with Rolldown. npm run export -- --target html.
   type/       npm run typeface: font file -> typeface module (fontkit, dev only),
               the built-in typefaces' sources, and the embed's glyph cut.
+  voice/      Generate Voice (ADR 0017): providers/, one file each, loaded by
+              the app's main process, and Kokoro, which the server runs.
   mcp/        The MCP tools (docs/MCP.md), and server.ts, the stdio shim an
               external agent starts, which forwards to a studio server.
   studio/     The studio server (ADR 0008): the viewer, pairing, the file
@@ -193,6 +195,12 @@ Users can attach reference images to a prompt. References are **input to the age
 - Export encodes it with WebCodecs `AudioEncoder` (AAC-LC at 48 kHz, or Opus where there is no AAC encoder) and muxes it next to the video. AAC priming is signalled with an edit list and a `roll` sample group (`src/export/audio-track.ts`), or it plays 44 ms late. Audio and video share the scene timeline as the single master clock.
 - The HTML embed includes the audio generators unless exported silent. It starts muted, since browsers allow sound only after a gesture. GIF is always silent.
 
+## Generate Voice and keys (ADR 0017)
+
+Rigs run in the viewer page and the server, so a provider key reaches neither. `desktop/keys.ts`, main process only, keeps safeStorage ciphertext in `keys.json`; a window of main's own takes the key. Generating goes bridge, sender check, native dialog, pinned host (`tools/voice/pinned.ts`), then `media/` under a name main picks. No server route, status codes only in logs. Providers are files in `tools/voice/providers/`, added by pull request, never loaded from a project. Kokoro needs no key: sherpa-onnx-node 1.13.8 and the model download on first use to `~/.frame-studio/models/`, sha256-pinned, and nothing GPL ships in the app. The browser and `npm run dev` have Kokoro only.
+
+Before a folder's `rigs/` or `audio/` load the first time, main asks. Trust is stored by real path and code hash, and an untrusted server (`--untrusted`) runs built-ins only.
+
 ## Headless rendering and export
 
 - Renders for agents, the CLI and exports come from the **render worker** (ADR 0008): `render.html?worker` in a hidden Electron window (no UI, scene size, CPU raster), taking jobs from the studio server. The app opens it; a server without the app launches Electron in worker-only mode. Electron's Chromium is the pixel reference, so the pixel tests render through it too. Usage: `docs/SCENES.md`, "Rendering and exporting".
@@ -212,6 +220,7 @@ Users can attach reference images to a prompt. References are **input to the age
 - `list_generators()`: each audio generator's param schema
 - `list_media()`, `import_media(path)`: the sound files in `media/` with their lengths, and copying one in (ADR 0012)
 - `align_voice(sceneId, cueId, script?)`: times a sound cue's words and writes them into the cue; with a script, words and punctuation come from it (ADR 0016)
+- `generate_voice(text, lang, voice?)`: Kokoro speaks into `media/`, with no key (ADR 0017)
 - `render_frame(sceneId, frame | timecode)`: returns a PNG so the agent can see its work
 - `render_contact_sheet(sceneId, from, to, every)`: a grid of frames for reviewing motion
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
@@ -223,7 +232,7 @@ Users can attach reference images to a prompt. References are **input to the age
 ## Integrated AI (M8)
 
 An AI inside the studio that works request threads like a chat in T3 Code (`docs/adr/0006-requests-are-threads.md`).
-- It runs locally in the studio server. Providers launch the user's own signed-in CLI: `claude` through Anthropic's Agent SDK (dev-only package, pointed at the installed binary) and `codex app-server`. Never offer a login screen, never read or store the user's tokens, and never call it Claude Code. A missing or signed-out CLI shows the command to run.
+- It runs locally in the studio server. Providers launch the user's own signed-in CLI: `claude` through Anthropic's Agent SDK (dev-only package, pointed at the installed binary) and `codex app-server`. Never offer a login screen, never read or store a CLI's tokens, and never call it Claude Code. Pasted provider keys are separate: encrypted by the app, in the main process only (ADR 0017). A missing or signed-out CLI shows the command to run.
 - Its tools are the studio operations the MCP server offers. By default it may also write in `scenes/`, `compositions/`, `rigs/`, `audio/`, `project.json`, old films' `rigs/`, and in the repo `src/rigs/` and `src/audio/`; anything else asks first through an approval card, unless the thread is in full access.
 - One working thread per scene. Each agent turn gets a checkpoint, and only the user settles a thread.
 - An agent asks the user to choose through a question card (ADR 0011): Claude's `AskUserQuestion` and Codex's `request_user_input` both become the same card, and the turn waits for the answers, as it does for an approval.
@@ -241,6 +250,7 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 
 ## Later (don't build yet)
 
+- Generate Video. Providers allow the kind and a poll seam (ADR 0017); nothing else exists.
 - The app signed and notarized, with electron-updater in place of the unsigned updater (ADR 0009), and Windows and Linux builds (ADR 0008 left them for later). The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
 - A rig-controls panel generated from param schemas.
 - Scene transitions as a library, multi-shot story files.

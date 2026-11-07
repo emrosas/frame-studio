@@ -1,8 +1,18 @@
 # Progress
 
-Last updated 2026-11-06, after word timing, captions, the voice row and word anchors (ADR 0016).
+Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards, the Footage / Threads switch, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016).
 
 ## Done
+
+### M14.6: Provider keys, Generate Voice, Kokoro, folder trust (ADR 0017)
+
+- Keys live in `desktop/keys.ts`, main process only, as safeStorage ciphertext. They go in through a window of main's own. The bridge gives the page the provider, last four and date.
+- Generating stops at a native dialog, then main calls the pinned host and writes into `media/`. ElevenLabs is the first provider, tested against a fake host, since no real key was available. Its model, voices and $0.10 per 1,000 characters come from its docs and have never run against the real API.
+- Kokoro downloads on first use with pinned checksums, and runs in a child process. Real runs in Node and in the Electron server spoke Spanish; Whisper tiny transcribed "¿Por qué el lago se congela tan rápido en invierno?" with its accents. A build check keeps sherpa-onnx and espeak-ng out of the app.
+- `generate_voice` is the agents' way in, and it needs no key.
+- A project's code asks once before it loads. Without trust, the server serves built-ins only and the viewer says why a scene won't draw. Settings, from View or the app menu, holds the key rows and revokes trust.
+- A generated voice placed at the playhead gets words. ElevenLabs' timestamps go straight into the cue under the script's text; anything else starts the timing job, which reads the script and language from the cue. `lang` in `project.json` passes validation and reaches the sheet.
+- Word timing kept the voice names (`/voice`, `src/viewer/voice.ts`). Kokoro and Generate Voice's plumbing are speech (`/speech`, `src/viewer/speech.ts`), apart from `generate_voice` and VoiceSheet.
 
 ### M1: Engine and viewer
 

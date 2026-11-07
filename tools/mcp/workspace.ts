@@ -22,9 +22,11 @@ import type { CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
 import { hear, nextWords, type VoiceProgress } from '../voice/align.ts';
-import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, editFields, isLayerTarget, MARKERS_TARGET, projectOf, type LayerChange, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
+import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, editFields, isLayerTarget, MARKERS_TARGET, projectOf, type LayerChange, type NewComposition, type NewScene, type PlacedVoice, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
+import { kokoro } from '../voice/kokoro.ts';
+import { saveVoiceFile } from '../voice/save.ts';
 import type { StudioQueue } from '../studio/queue.ts';
 
 type RawLayer = Record<string, unknown>;
@@ -252,9 +254,10 @@ export class Workspace {
 
   /**
    * Adds a cue that plays sound file `file` in scene `key` from `start` seconds, snapped to its frame, to the
-   * end of the file or the scene, whichever is first (ADR 0012). Refused while an agent works on the scene.
+   * end of the file or the scene, whichever is first (ADR 0012). Refused while an agent works on the scene. A
+   * generated voice brings its script and language, and words if its provider timed them; the script's text wins.
    */
-  async placeSound(key: string, file: string, start: number): Promise<{ file: string; cue: Record<string, unknown> }> {
+  async placeSound(key: string, file: string, start: number, voice?: PlacedVoice): Promise<{ file: string; cue: Record<string, unknown> }> {
     const { modules, entry } = await this.entry(key);
     const working = (await this.queue.list()).find((r) => r.status === 'working' && r.sceneId === entry.key);
     if (working) throw new Error(`Request #${working.id} is working on this scene; place the sound when its turn ends.`);
@@ -270,7 +273,8 @@ export class Workspace {
     const stem = file.slice(file.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'sound';
     let id = stem;
     for (let n = 2; taken.has(id); n++) id = `${stem}-${n}`;
-    const cue = { id, file, start: from, end };
+    const spoken = voice ? { script: voice.script, lang: voice.lang, ...(voice.words?.length ? { words: nextWords(voice.words, voice.script, []) } : {}) } : {};
+    const cue = { id, file, start: from, end, ...spoken };
     const next = { ...raw, audio: [...(raw.audio ?? []), cue] };
     await this.checkEdit(modules, entry, next, 'Placing the sound');
     await this.writeScene(path, next, modules);
@@ -311,6 +315,13 @@ export class Workspace {
   /** Copies a sound file from disk into media/, and returns it with its length. */
   async importMedia(source: string): Promise<MediaInfo> {
     const file = await importMedia(this.folder, source);
+    this.ctx.touch();
+    return (await mediaInfo(this.folder)).find((m) => m.file === file) ?? { file, bytes: 0, modified: 0 };
+  }
+
+  /** Speaks `text` with Kokoro into media/, and returns the file with its length (ADR 0017). Needs no key. */
+  async generateVoice(text: string, lang: string, voice?: string): Promise<MediaInfo> {
+    const file = await saveVoiceFile(this.folder.root, 'kokoro', '.wav', await kokoro.speak(text, lang, voice));
     this.ctx.touch();
     return (await mediaInfo(this.folder)).find((m) => m.file === file) ?? { file, bytes: 0, modified: 0 };
   }
@@ -506,14 +517,18 @@ export class Workspace {
   async alignVoice(key: string, cueId: string, options: { script?: string; signal?: AbortSignal; onProgress?(progress: VoiceProgress): void } = {}): Promise<{ file: string; cue: string; words: number; language: string | null; script: boolean; orphans: string[] }> {
     const { modules, entry, lib } = await this.entry(key);
     const path = entryPath(entry, this.folder);
-    const raw = JSON.parse(await readFile(path, 'utf8')) as RawScene & { audio?: RawCue[] };
-    const cue = raw.audio?.find((c) => c.id === cueId);
-    if (!cue) throw new Error(`"${key}" has no cue "${cueId}"; its cues are ${(raw.audio ?? []).map((c) => c.id).join(', ') || 'none'}.`);
-    if (typeof cue.file !== 'string') throw new Error(`Cue "${cueId}" plays a generator. Only a sound file has words to time.`);
-    const { file } = cue;
-    await this.checkMedia({ audio: [cue] }, 'That cue');
-    const language = cue.lang ?? lib.folder?.project?.lang ?? null;
-    const script = options.script ?? cue.script;
+    const readCue = async () => {
+      const raw = JSON.parse(await readFile(path, 'utf8')) as RawScene & { audio?: RawCue[] };
+      const cue = raw.audio?.find((c) => c.id === cueId);
+      if (!cue) throw new Error(`"${key}" has no cue "${cueId}"; its cues are ${(raw.audio ?? []).map((c) => c.id).join(', ') || 'none'}.`);
+      return { raw, cue };
+    };
+    const first = (await readCue()).cue;
+    if (typeof first.file !== 'string') throw new Error(`Cue "${cueId}" plays a generator. Only a sound file has words to time.`);
+    const { file } = first;
+    await this.checkMedia({ audio: [first] }, 'That cue');
+    const language = first.lang ?? lib.folder?.project?.lang ?? null;
+    const script = options.script ?? first.script;
     const heard = await hear({
       root: this.folder.root,
       builtins: this.folder.builtins,
@@ -528,6 +543,8 @@ export class Workspace {
       },
     });
     options.onProgress?.({ stage: 'write', done: 0, total: 1 });
+    // Listening takes a while, and the scene stays open to edits. Write into the file as it stands now.
+    const { raw, cue } = await readCue();
     if (entry.scene) keepAnchorTimes(raw, entry.scene, modules.engine.wordTime);
     cue.words = nextWords(heard.words, script, (cue.words ?? []) as SpokenWord[]);
     if (script?.trim()) cue.script = script;

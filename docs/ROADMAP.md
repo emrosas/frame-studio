@@ -243,16 +243,16 @@ Acceptance:
 
 Built from the research on Science in 8bit and HyperFrames: pixel stages, the camera, markers, the check tool, picture clips in compositions, the project library, and the timeline dock. Dragging and trimming clips came with the dock; the rest of M15 stands.
 
-## M14.6: Voice (ADR 0016)
+## M14.6: Voice (ADR 0016, ADR 0017)
 
-Captions that keep time on their own, and animation that follows spoken words, in English and Spanish.
+Captions that keep time on their own, animation that follows spoken words, and voices generated from the app, in English and Spanish.
 
 - Word timing: `align_voice` and a Timing button, with whisper.cpp, offline after the first download. A known script supplies the words.
 - A `captions` rig, with `kit.speech` for any rig that wants a cue's words.
 - A voice row on the timeline: waveform, word chips, retiming and text edits on the one undo stack.
 - Word anchors on keys and markers, kept through a re-record, and the check tool's word checks.
-
-Generating the voice itself is separate work (provider keys and Generate Voice).
+- Provider keys, Generate Voice, Kokoro and folder trust. Keys live in the app's main process; ElevenLabs and Kokoro generate into `media/`; agents get Kokoro through `generate_voice`; a project's code loads only once trusted.
+- A generated voice placed at the playhead gets words at once: the provider's timestamps when it sends them, the timing job otherwise, with the sheet's text as the script.
 
 ## M15: The timeline as an editor
 

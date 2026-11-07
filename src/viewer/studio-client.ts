@@ -8,22 +8,25 @@ import { studioEvents } from './studio-events';
 import type { RenderItem } from './ui.svelte';
 import {
   CHECK_EVENT,
+  EXPORT_EVENT,
+  QUEUE_EVENT,
+  SPEECH_EVENT,
+  THUMB_EVENT,
+  TURN_EVENT,
   VOICE_EVENT,
   type VoiceEvent,
   type VoiceStatus,
-  EXPORT_EVENT,
-  QUEUE_EVENT,
-  THUMB_EVENT,
-  TURN_EVENT,
   type AgentStatus,
   type ApprovalDecision,
   type ClipEdit,
   type LayerChange,
   type LayerEdit,
   type CurrentSelection,
+  type KokoroStatus,
   type NewRequest,
   type NewScene,
   type NewVideo,
+  type PlacedVoice,
   type QuestionAnswers,
   type Reply,
   type StudioRequest,
@@ -120,9 +123,9 @@ export class StudioClient {
     return (await call<{ file: string }>(`/media?name=${encodeURIComponent(file.name)}`, { method: 'POST', headers: { 'Content-Type': type }, body: file })).file;
   }
 
-  /** Adds a cue that plays a sound file in a scene, from `start` seconds. */
-  async placeSound(scene: string, file: string, start: number): Promise<void> {
-    await call('/sounds', jsonBody({ scene, file, start }));
+  /** Adds a cue that plays a sound file in a scene, from `start` seconds, and returns it. A generated voice brings its script and any words. */
+  async placeSound(scene: string, file: string, start: number, voice?: PlacedVoice): Promise<{ id: string; words?: unknown[] } | null> {
+    return (await call<{ cue?: { id: string; words?: unknown[] } }>('/sounds', jsonBody({ scene, file, start, voice }))).cue ?? null;
   }
 
   /** Creates an empty scene; returns its id as the library keys it. */
@@ -252,6 +255,26 @@ export class StudioClient {
   /** Calls `listener` with every timing event: progress, then the word count, or an error. */
   onVoice(listener: (event: VoiceEvent) => void): () => void {
     return this.on(VOICE_EVENT, listener);
+  }
+
+  /** Kokoro on this computer (ADR 0017). */
+  async speechStatus(): Promise<KokoroStatus> {
+    return (await call<{ kokoro: KokoroStatus }>('/speech')).kokoro;
+  }
+
+  /** Starts Kokoro's download; progress and the outcome come as speech events. */
+  async installSpeech(): Promise<KokoroStatus> {
+    return (await call<{ kokoro: KokoroStatus }>('/speech/install', jsonBody({}))).kokoro;
+  }
+
+  /** Speaks with Kokoro into media/. Returns the file's path for cues. */
+  async generateSpeech(text: string, lang: string, voice: string): Promise<string> {
+    return (await call<{ file: string }>('/speech/generate', jsonBody({ text, lang, voice }))).file;
+  }
+
+  /** Calls `listener` with Kokoro's download progress, then how it ended. */
+  onSpeech(listener: (event: { done?: number; total?: number; finished?: boolean; error?: string }) => void): () => void {
+    return this.on(SPEECH_EVENT, listener);
   }
 
   /** Copies an image into references/ and returns its repo-relative path. */

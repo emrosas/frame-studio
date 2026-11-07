@@ -2,7 +2,8 @@
   The bar over the canvas: the sidebar toggle at the far left, the way back from
   an opened shot, which scene this is and a quiet line of its format, then View,
   Export and the agent panel's toggle at the far right. View holds what a person
-  reaches for now and then: the safe zones on a 9:16 scene and the shortcuts.
+  reaches for now and then: the safe zones on a 9:16 scene, the shortcuts and
+  Settings.
   Over the library it only names the library.
 -->
 <script lang="ts">
@@ -93,6 +94,14 @@
           >
         {/if}
         <Shortcuts sound={ui.sound !== null} />
+        <button
+          type="button"
+          class="menu-item"
+          onclick={() => {
+            view = false;
+            ui.settingsOpen = true;
+          }}><Icon name="key" />Settings…</button
+        >
       </Popover>
     {/if}
   </div>

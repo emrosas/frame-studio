@@ -229,6 +229,26 @@ export interface VoiceStatus {
 }
 export type VoiceEvent = { id: string } & ({ stage: string; done: number; total: number } | { words: number } | { error: string });
 
+/** Kokoro's download (ADR 0017): { done, total } while it runs, then { finished: true } or { error }. */
+export const SPEECH_EVENT = 'frame-studio:speech';
+
+/** What a generated voice brings to the cue placed from it (ADR 0017). `words` come from a provider that times its own speech. */
+export interface PlacedVoice {
+  /** The text it was asked to say, which supplies a cue's words (ADR 0016). */
+  script: string;
+  lang: string;
+  words?: readonly { text: string; start: number; end: number }[];
+}
+
+/** What's wrong with a sent PlacedVoice, or null. */
+export function checkPlacedVoice(value: unknown): string | null {
+  const voice = value as Partial<PlacedVoice> | null;
+  if (typeof voice !== 'object' || voice === null || typeof voice.script !== 'string' || typeof voice.lang !== 'string') return 'A placed voice needs { script, lang, words? }.';
+  if (voice.words === undefined) return null;
+  const fine = Array.isArray(voice.words) && voice.words.every((w) => typeof w?.text === 'string' && Number.isFinite(w.start) && Number.isFinite(w.end));
+  return fine ? null : 'A placed voice\'s words need { text, start, end } each.';
+}
+
 /** A poster finished in the background: its scene key and file name under .frame-studio/thumbs/. */
 export const THUMB_EVENT = 'frame-studio:thumb';
 
@@ -731,4 +751,24 @@ export function checkAnswers(questions: readonly AgentQuestion[], answers: unkno
     if (!q.multiSelect && a.length > 1) return `question "${q.header}" takes one answer`;
   }
   return null;
+}
+
+/** A voice a generator offers (ADR 0017). */
+export interface VoiceChoice {
+  id: string;
+  label: string;
+  /** Language codes it speaks. */
+  langs: readonly string[];
+  detail?: string;
+}
+
+/** Kokoro on this computer (ADR 0017): `bytes` is the whole download. */
+export interface KokoroStatus {
+  state: 'missing' | 'installing' | 'ready' | 'unsupported';
+  bytes: number;
+  voices: readonly VoiceChoice[];
+  /** Bytes so far, while installing. */
+  done?: number;
+  /** Why the last download failed. */
+  error?: string;
 }

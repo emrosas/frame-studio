@@ -21,13 +21,15 @@ import {
   checkNewVideo,
   checkRetry,
   CHECK_EVENT,
-  VOICE_EVENT,
+  checkPlacedVoice,
   EXPORT_EVENT,
   LIBRARY_EVENT,
   MAX_REFERENCE_BYTES,
   QUEUE_EVENT,
   REFERENCE_TYPES,
+  SPEECH_EVENT,
   THUMB_EVENT,
+  VOICE_EVENT,
   type AgentStatus,
   type ApprovalDecision,
   type ClipEdit,
@@ -38,11 +40,14 @@ import {
   type NewRequest,
   type NewScene,
   type NewVideo,
+  type PlacedVoice,
   type QuestionAnswers,
   type Reply,
   type TurnSettings,
 } from '../../src/studio/protocol.ts';
 import { buildEmbed } from '../bundle/embed.ts';
+import { kokoro } from '../voice/kokoro.ts';
+import { saveVoiceFile } from '../voice/save.ts';
 import { listMedia, mediaInfo, saveMedia, serveMedia } from './media.ts';
 import { listRenders, serveRender } from './renders.ts';
 import { Thumbs } from './thumbs.ts';
@@ -54,7 +59,7 @@ import { runCheck } from './check.ts';
 import { STUDIO_INSTRUCTIONS } from './agents/instructions.ts';
 import { createProviders } from './agents/providers.ts';
 import { AgentRunner, readTurnEvents } from './agents/runner.ts';
-import { CodeHost } from './code.ts';
+import { CodeHost, withheldCode } from './code.ts';
 import { convertFilm } from './convert.ts';
 import { EventHub } from './events.ts';
 import type { StudioFolder } from './folder.ts';
@@ -486,7 +491,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       return;
     }
     if (req.method === 'GET' && path === '/files') {
-      return send(res, 200, { generation, folder: folder.root, files: await readSceneFiles(folder), media: await listMedia(folder) });
+      return send(res, 200, { generation, folder: folder.root, files: await readSceneFiles(folder), media: await listMedia(folder), withheldCode: await withheldCode(folder) });
     }
     // Sound files (ADR 0012): the list with lengths, a file's bytes, and uploads streamed to media/.
     if (req.method === 'GET' && path === '/media') return send(res, 200, { media: await mediaInfo(folder) });
@@ -497,6 +502,26 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       if (!type.startsWith('audio/') && !type.startsWith('application/octet-stream')) throw new HttpError(415, 'Send the sound file as audio/* or application/octet-stream.');
       const saved = await saveMedia(folder, url.searchParams.get('name') ?? 'sound', req);
       return send(res, 201, { file: saved });
+    }
+    // Kokoro (ADR 0017): is it here, fetch it, speak. No route here ever sees a key; those stay in the app's main process.
+    if (req.method === 'GET' && path === '/speech') return send(res, 200, { kokoro: kokoro.status() });
+    if (req.method === 'POST' && path === '/speech/install') {
+      kokoro
+        .install((done, total) => events.send(SPEECH_EVENT, { done, total }))
+        .then(() => events.send(SPEECH_EVENT, { finished: true }))
+        .catch((err: unknown) => events.send(SPEECH_EVENT, { error: err instanceof Error ? err.message : String(err) }));
+      return send(res, 202, { kokoro: kokoro.status() });
+    }
+    if (req.method === 'POST' && path === '/speech/generate') {
+      const input = await json<{ text?: unknown; lang?: unknown; voice?: unknown }>(req);
+      if (typeof input?.text !== 'string' || typeof input.lang !== 'string' || (input.voice !== undefined && typeof input.voice !== 'string')) throw new HttpError(400, 'Send { text, lang, voice? }.');
+      const { text, lang, voice } = input;
+      const bytes = await Promise.resolve()
+        .then(() => kokoro.speak(text, lang, voice))
+        .catch((err: unknown) => {
+          throw new HttpError(409, err instanceof Error ? err.message : String(err));
+        });
+      return send(res, 201, { file: await saveVoiceFile(folder.root, 'kokoro', '.wav', bytes) });
     }
     // Posters: where each scene's stands, starting any that are missing, and the files themselves, named by content.
     if (req.method === 'GET' && path === '/thumbs') return send(res, 200, { thumbs: await thumbs.list() });
@@ -669,12 +694,14 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     }
     if (req.method === 'POST' && path === '/sounds') {
       // Add at playhead: a cue playing a sound file, from the viewer's Media list (ADR 0012).
-      const input = await json<{ scene?: unknown; file?: unknown; start?: unknown }>(req);
+      const input = await json<{ scene?: unknown; file?: unknown; start?: unknown; voice?: unknown }>(req);
       if (typeof input?.scene !== 'string' || typeof input.file !== 'string' || typeof input.start !== 'number' || !Number.isFinite(input.start)) {
-        throw new HttpError(400, 'Send { scene, file, start }.');
+        throw new HttpError(400, 'Send { scene, file, start, voice? }.');
       }
-      const { scene, file, start } = input;
-      return send(res, 201, await created(() => ws().then((w) => w.placeSound(scene, file, start))));
+      const { scene, file, start, voice } = input;
+      const problem = voice === undefined ? null : checkPlacedVoice(voice);
+      if (problem) throw new HttpError(400, problem);
+      return send(res, 201, await created(() => ws().then((w) => w.placeSound(scene, file, start, voice as PlacedVoice | undefined))));
     }
     // Converting an M9 film into a project folder of its own (ADR 0013), beside this one unless `to` says where.
     const converting = /^\/projects\/([^/]+)\/convert$/.exec(path);

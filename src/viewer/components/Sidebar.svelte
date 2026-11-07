@@ -163,6 +163,15 @@
         <Popover label="New" role="menu" class="add-menu" anchor={addBox} onclose={() => (adding = false)}>
           <button type="button" role="menuitem" class="menu-item" onclick={() => add('video')}>New video</button>
           <button type="button" role="menuitem" class="menu-item" onclick={() => add('scene')}>New scene</button>
+          <button
+            type="button"
+            role="menuitem"
+            class="menu-item"
+            onclick={() => {
+              adding = false;
+              ui.voiceOpen = true;
+            }}>Generate voice…</button
+          >
           {#if canSwitch}
             <div class="menu-rule"></div>
             <button type="button" role="menuitem" class="menu-item" onclick={newProject}>New project…</button>
