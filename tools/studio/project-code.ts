@@ -6,7 +6,7 @@
 
 import { createHash } from 'node:crypto';
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
+import { basename, dirname, join, relative, sep } from 'node:path';
 
 /** What Node or a bundler can take from an import. Nothing else may be imported, so a name can't hide code. */
 const IMPORTABLE = /\.(?:ts|mts|cts|tsx|js|mjs|cjs|jsx|json|wasm|node)$/i;
@@ -164,6 +164,8 @@ export function fileRefusal(home: CodeHome, file: string, from: string = file): 
   const at = real(file);
   if (at === null) return null;
   if (isBuiltin(home, at)) return null;
+  // The walk that hashes a project's code skips node_modules, so a link into it would run code Trust never saw.
+  if (at.split(/[/\\]/).includes('node_modules')) return `${name} is a link into node_modules, and a project's code takes no packages`;
   const project = real(home.root) ?? home.root;
   const rel = inside(project, at);
   const film = codeFolderOf(home.root, from);
@@ -232,4 +234,10 @@ export function checkApproval(folder: { root: string; untrusted?: boolean; appro
   if (projectCode(folder.root).hash === approval.hash) return;
   folder.untrusted = true;
   approval.refused();
+}
+
+/** A folder's name for a dialog: a name can hold line breaks and direction marks, which would reshape the warning around it. */
+export function dialogName(dir: string): string {
+  const clean = basename(dir).replace(/[\p{Cc}\p{Cf}]+/gu, ' ').replace(/\s+/g, ' ').trim();
+  return clean.length > 60 ? `${clean.slice(0, 59)}…` : clean || 'This folder';
 }

@@ -17,7 +17,7 @@ import { connectStudio } from '../../tools/studio/connect';
 import { REPO, studioFolder, trustsCode } from '../../tools/studio/folder';
 import { ModuleService } from '../../tools/studio/modules';
 import { newToken } from '../../tools/studio/pairing';
-import { projectCode } from '../../tools/studio/project-code';
+import { dialogName, projectCode } from '../../tools/studio/project-code';
 import { startStudioServer } from '../../tools/studio/server';
 
 
@@ -116,6 +116,19 @@ describe('what a project may import', () => {
     put('projects/one/rigs/a.ts', plainRig('a', "import { b } from '../../two/rigs/b';\nvoid b;"));
     put('projects/two/rigs/b.ts', 'export const b = 1;\n');
     expect(loadInNode().errors.join('\n')).toMatch(/projects\/one\/rigs\/a\.ts.*two\/rigs\/b/);
+  });
+
+  it('refuses a link into node_modules, whose target the hash never sees', () => {
+    put('rigs/node_modules/x.ts', marks(join(root, 'ran.txt')));
+    put('rigs/a.ts', plainRig('a', "import './link';"));
+    symlinkSync(join(root, 'rigs/node_modules/x.ts'), join(root, 'rigs/link.ts'));
+    expect(loadInNode().errors.join('\n')).toMatch(/link into node_modules/);
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false);
+  });
+
+  it('cleans a folder name for a dialog', () => {
+    expect(dialogName('/x/Sample\nhas 0 source files')).toBe('Sample has 0 source files');
+    expect(dialogName(`/x/${'a'.repeat(80)}`)).toHaveLength(60);
   });
 
   it('refuses node_modules and packages', () => {

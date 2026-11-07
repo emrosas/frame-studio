@@ -21,7 +21,7 @@ import { createProject, hasAgentWork, listProjects, projectPoster, WARM_MS, warm
 import { appPaths } from './paths.ts';
 import { adoptShellPath } from './shell-path.ts';
 import { checkForUpdates, checkFromMenu, installUpdate, openReleaseNotes, startUpdates, type UpdateState, updatesEnabled, updateState } from './updater.ts';
-import { projectCode } from '../tools/studio/project-code.ts';
+import { projectCode, dialogName } from '../tools/studio/project-code.ts';
 import { registerVoice } from './voice.ts';
 import { openWorkerWindow } from './worker.ts';
 
@@ -231,7 +231,7 @@ async function askTrust(dir: string, files: number): Promise<boolean> {
   const options: Electron.MessageBoxOptions = {
     type: 'warning',
     message: 'This project contains code.',
-    detail: `${basename(dir)} has ${files === 1 ? '1 source file' : `${files} source files`} in its rigs or audio folders. Frame Studio runs that code to draw the project, and it can do what any program on this computer can.\n\nTrust it if you made it or know who did. Without its code the project opens with the built-in rigs only.`,
+    detail: `${dialogName(dir)} has ${files === 1 ? '1 source file' : `${files} source files`} in its rigs or audio folders. Frame Studio runs that code to draw the project, and it can do what any program on this computer can.\n\nTrust it if you made it or know who did. Without its code the project opens with the built-in rigs only.`,
     buttons: ['Trust', 'Open Without Its Code'],
     defaultId: 1,
     cancelId: 1,
