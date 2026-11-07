@@ -11,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, shell, type IpcMainEvent, type IpcMainInvokeEvent } from 'electron';
 import { isLoopback, pinnedFetch } from '../tools/voice/pinned.ts';
 import { providers } from '../tools/voice/providers/index.ts';
-import { saveVoiceFile } from '../tools/voice/save.ts';
+import { checkMediaFolder, SaveRefused, saveVoiceFile } from '../tools/voice/save.ts';
 import { estimate, finished, ProviderError, type GeneratedWord, type Provider } from '../tools/voice/types.ts';
 import { KeyRefused, KeyStore } from './keys.ts';
 
@@ -167,6 +167,8 @@ export function registerVoice(host: VoiceHost): void {
     if (generating) return { error: 'A generation is already running.' };
     generating = true;
     try {
+      // Before the dialog, so a folder that can't take the file costs nothing.
+      await checkMediaFolder(folder);
       const { response } = await dialog.showMessageBox(parent, {
         type: 'question',
         message: `Generate voice with ${chosen.label}?`,
@@ -186,10 +188,17 @@ export function registerVoice(host: VoiceHost): void {
         key = null;
       }
       if (made.bytes.length > MAX_BYTES) return { error: `${chosen.label} sent more than the app will save.` };
-      const file = await saveVoiceFile(folder, chosen.id, made.ext, made.bytes);
+      let file: string;
+      try {
+        file = await saveVoiceFile(folder, chosen.id, made.ext, made.bytes);
+      } catch (err) {
+        host.log(`${chosen.id}: generated, save failed (${err instanceof Error ? err.name : 'unknown'})`);
+        return { error: err instanceof SaveRefused ? err.message : `${chosen.label} made the voice, but it couldn't be saved to media/.` };
+      }
       host.log(`${chosen.id}: generated ${made.bytes.length} bytes`);
       return { file, ...(made.words ? { words: made.words } : {}) };
     } catch (err) {
+      if (err instanceof SaveRefused) return { error: err.message };
       if (err instanceof ProviderError) {
         host.log(`${chosen.id}: status ${err.status}`);
         return { error: err.message };

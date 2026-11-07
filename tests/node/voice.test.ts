@@ -19,11 +19,11 @@ import { studioFolder } from '../../tools/studio/folder';
 import { ModuleService } from '../../tools/studio/modules';
 import { Kokoro, KOKORO_VOICES, kokoroManifest, type KokoroManifest } from '../../tools/voice/kokoro';
 import { isLoopback, pinnedFetch } from '../../tools/voice/pinned';
+import { checkMediaFolder, SaveRefused, saveVoiceFile } from '../../tools/voice/save';
 import { missingWhisper } from '../../tools/voice/align';
 import { ensureModel } from '../../tools/voice/whisper';
 import { REPO } from '../../tools/studio/folder';
 import { elevenlabs, wordsFromAlignment } from '../../tools/voice/providers/elevenlabs';
-import { saveVoiceFile } from '../../tools/voice/save';
 import { estimate, finished, ProviderError, type Generated, type Pending } from '../../tools/voice/types';
 
 const dir = mkdtempSync(join(tmpdir(), 'frame-studio-voice-'));
@@ -152,6 +152,27 @@ describe('the key store', () => {
     expect(listed).toEqual({ provider: 'elevenlabs', last4: 'WXYZ', added: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
     expect(JSON.stringify(await store.list())).not.toContain(KEY);
     expect(await store.reveal('elevenlabs')).toBe(KEY);
+  });
+
+  it('moves a damaged key file aside, keeping it, and still works', async () => {
+    const folder = join(dir, 'store-damaged');
+    mkdirSync(folder);
+    const file = join(folder, 'keys.json');
+    writeFileSync(file, '{ not json');
+    const store = new KeyStore(file, cipher());
+    expect(await store.list()).toEqual([]);
+    await store.remove('elevenlabs');
+    await store.save('elevenlabs', KEY);
+    expect(await store.reveal('elevenlabs')).toBe(KEY);
+    expect(readdirSync(folder).some((n) => n.startsWith('keys.json.damaged-'))).toBe(true);
+  });
+
+  it("won't let a save wipe a key file it can't read", async () => {
+    const folder = join(dir, 'store-unreadable');
+    mkdirSync(join(folder, 'keys.json'), { recursive: true });
+    const store = new KeyStore(join(folder, 'keys.json'), cipher());
+    await expect(store.save('elevenlabs', KEY)).rejects.toThrow(/can't read its key file/);
+    expect(await store.list()).toEqual([]);
   });
 
   it('forgets a removed key', async () => {
@@ -352,5 +373,33 @@ export const marked = { id: 'marked', params: {}, draw() {} };
     const trusted = studioFolder(root);
     expect(await withheldCode(trusted)).toBe(0);
     expect((await new ModuleService(trusted).manifest()).folderRigs).toHaveLength(1);
+  });
+});
+
+describe('saving a generated voice', () => {
+  it('refuses a media folder that leaves the project before anything is billed, in words fit to show', async () => {
+    const root = join(dir, 'save-link');
+    mkdirSync(join(dir, 'elsewhere'), { recursive: true });
+    mkdirSync(root);
+    symlinkSync(join(dir, 'elsewhere'), join(root, 'media'));
+    await expect(checkMediaFolder(root)).rejects.toBeInstanceOf(SaveRefused);
+    await expect(checkMediaFolder(root)).rejects.toThrow(/points outside the project/);
+  });
+
+  it('checks a project with no media folder without making one', async () => {
+    const root = join(dir, 'save-none');
+    mkdirSync(root);
+    await checkMediaFolder(root);
+    expect(existsSync(join(root, 'media'))).toBe(false);
+  });
+
+  it('saves under a name it picks, and never over another file', async () => {
+    const root = join(dir, 'save-ok');
+    mkdirSync(root);
+    const first = await saveVoiceFile(root, 'test', '.mp3', new Uint8Array([1]));
+    const second = await saveVoiceFile(root, 'test', '.mp3', new Uint8Array([2]));
+    expect(first).toMatch(/^media\/voice-test-/);
+    expect(second).not.toBe(first);
+    expect(readdirSync(join(root, 'media')).filter((n) => n.endsWith('.part'))).toEqual([]);
   });
 });

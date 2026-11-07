@@ -17,7 +17,7 @@ import { connectStudio } from '../../tools/studio/connect';
 import { REPO, studioFolder, trustsCode } from '../../tools/studio/folder';
 import { ModuleService } from '../../tools/studio/modules';
 import { newToken } from '../../tools/studio/pairing';
-import { dialogName, projectCode } from '../../tools/studio/project-code';
+import { checkApproval, dialogName, projectCode } from '../../tools/studio/project-code';
 import { startStudioServer } from '../../tools/studio/server';
 
 
@@ -116,6 +116,33 @@ describe('what a project may import', () => {
     put('projects/one/rigs/a.ts', plainRig('a', "import { b } from '../../two/rigs/b';\nvoid b;"));
     put('projects/two/rigs/b.ts', 'export const b = 1;\n');
     expect(loadInNode().errors.join('\n')).toMatch(/projects\/one\/rigs\/a\.ts.*two\/rigs\/b/);
+  });
+
+  it('refuses an @frame-studio/ name with no built-in, which Node would look for in node_modules', () => {
+    put('rigs/a.ts', plainRig('a', "import '@frame-studio/nothing';"));
+    put('node_modules/@frame-studio/nothing/index.ts', marks(join(root, 'ran.txt')));
+    expect(loadInNode().errors.join('\n')).toMatch(/not a built-in/);
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false);
+  });
+
+  it('hashes a folder named .DS_Store, and skips only the file', () => {
+    put('rigs/a.ts', plainRig('a'));
+    const before = projectCode(root).hash;
+    put('rigs/.DS_Store', 'junk');
+    expect(projectCode(root).hash).toBe(before);
+    rmSync(join(root, 'rigs/.DS_Store'));
+    put('rigs/.DS_Store/evil.ts', 'export {};');
+    expect(projectCode(root).hash).not.toBe(before);
+  });
+
+  it('refuses code that no longer matches its approval, and keeps no approval to skip', () => {
+    put('rigs/a.ts', plainRig('a'));
+    let refused = false;
+    const folder = { root, approval: { hash: 'not this', refused: () => (refused = true) } } as { root: string; untrusted?: boolean; approval?: { hash: string; refused(): void } };
+    checkApproval(folder);
+    expect(refused).toBe(true);
+    expect(folder.untrusted).toBe(true);
+    expect(folder.approval).toBeUndefined();
   });
 
   it('refuses a link into node_modules, whose target the hash never sees', () => {

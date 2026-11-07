@@ -57,10 +57,23 @@ export class KeyStore {
   }
 
   private async read(): Promise<KeyFile> {
-    const text = await readFile(this.file, 'utf8').catch(() => null);
-    if (text === null) return { version: 1, keys: {} };
-    const parsed = JSON.parse(text) as Partial<KeyFile>;
-    return { version: 1, keys: parsed.keys ?? {} };
+    let text: string;
+    try {
+      text = await readFile(this.file, 'utf8');
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { version: 1, keys: {} };
+      // Anything else isn't "no keys": treating it so would let the next save wipe them.
+      throw new KeyRefused('Frame Studio can\'t read its key file. Check its permissions and try again.');
+    }
+    try {
+      const parsed = JSON.parse(text) as Partial<KeyFile>;
+      if (typeof parsed.keys === 'object' && parsed.keys !== null && !Array.isArray(parsed.keys)) return { version: 1, keys: parsed.keys };
+    } catch {
+      // Falls through to moving it aside.
+    }
+    // Damaged. Kept beside it, ciphertext and all, so adding a key again loses nothing.
+    await rename(this.file, `${this.file}.damaged-${Date.now()}`).catch(() => {});
+    return { version: 1, keys: {} };
   }
 
   private async write(file: KeyFile): Promise<void> {
@@ -72,7 +85,7 @@ export class KeyStore {
   }
 
   async list(): Promise<KeySummary[]> {
-    const { keys } = await this.read();
+    const { keys } = await this.read().catch((): KeyFile => ({ version: 1, keys: {} }));
     return Object.entries(keys).map(([provider, { last4, added }]) => ({ provider, last4, added }));
   }
 

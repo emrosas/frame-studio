@@ -45,7 +45,7 @@ function walk(root: string, dir: string, out: CodeFile[]): void {
   }
   for (const name of names) {
     // Imports from here are refused, and a real one can hold a hundred thousand files.
-    if (name === 'node_modules' || name === JUNK) continue;
+    if (name === 'node_modules') continue;
     const path = join(dir, name);
     let info;
     try {
@@ -53,6 +53,8 @@ function walk(root: string, dir: string, out: CodeFile[]): void {
     } catch {
       continue;
     }
+    // Only the real file: a folder or link of that name can hold or reach code.
+    if (name === JUNK && info.isFile()) continue;
     if (info.isDirectory()) {
       walk(root, path, out);
       continue;
@@ -81,7 +83,15 @@ export function filmRigs(root: string): string[] {
   } catch {
     return [];
   }
-  return names.filter((name) => lstatSync(join(projects, name)).isDirectory()).map((name) => join(projects, name, 'rigs'));
+  return names
+    .filter((name) => {
+      try {
+        return lstatSync(join(projects, name)).isDirectory();
+      } catch {
+        return false;
+      }
+    })
+    .map((name) => join(projects, name, 'rigs'));
 }
 
 /** Every file that belongs to a project's code, sorted: its rigs/, audio/ and each old film's rigs/. Dot files count. */
@@ -191,7 +201,8 @@ export function importRefusal(home: CodeHome, from: string, specifier: string, t
   const who = shown(home, from);
   const relativeName = specifier.startsWith('./') || specifier.startsWith('../');
   if (!relativeName && !specifier.startsWith('@frame-studio/')) return `${who} imports "${specifier}", and a project's code takes no packages: only relative paths and @frame-studio/ names`;
-  if (target === null) return null;
+  // Node would look for a name with no built-in behind it in the project's node_modules, which the hash skips.
+  if (target === null) return relativeName ? null : `${who} imports "${specifier}", which is not a built-in`;
   const why = fileRefusal(home, target, from);
   return why ? `${who} imports "${specifier}": ${why}` : null;
 }
@@ -230,8 +241,15 @@ export interface Approval {
 export function checkApproval(folder: { root: string; untrusted?: boolean; approval?: Approval }): void {
   const { approval } = folder;
   if (!approval) return;
+  // Held until this finishes: a throw has to refuse the code, not leave a later read unchecked.
+  let same = false;
+  try {
+    same = projectCode(folder.root).hash === approval.hash;
+  } catch {
+    // Code that can't be read isn't the code the user approved.
+  }
   delete folder.approval;
-  if (projectCode(folder.root).hash === approval.hash) return;
+  if (same) return;
   folder.untrusted = true;
   approval.refused();
 }
