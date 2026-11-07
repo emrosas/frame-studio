@@ -3,7 +3,7 @@
 // ViewerActions. Nothing here touches the canvas (ADR 0002).
 
 import type { CheckReport } from '../export/check';
-import type { AgentId, AgentStatus, ApprovalDecision, NewScene, NewVideo, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
+import type { AgentId, AgentStatus, ApprovalDecision, KokoroStatus, NewScene, NewVideo, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { OpenTarget, ProjectEntry, UpdateState } from './desktop';
 import type { KeyLane, KeyMark, KeyTarget, SelectedKey } from './keyframes';
 import { readPref } from './prefs';
@@ -211,6 +211,12 @@ export interface ViewerActions {
   importMedia(files: File[]): Promise<string | null>;
   /** Places a sound file at the playhead of the scene on screen. Returns an error message, or null. */
   placeSound(file: string): Promise<string | null>;
+  /** Kokoro on this computer (ADR 0017). */
+  voiceStatus(): Promise<KokoroStatus>;
+  /** Starts Kokoro's download, which reports through ui.voiceInstall. */
+  installVoice(): Promise<KokoroStatus>;
+  /** Speaks with Kokoro into media/. */
+  generateKokoro(text: string, lang: string, voice: string): Promise<{ file: string } | { error: string }>;
   /** The loudest sample in each of `buckets` slices of seconds [from, to) of a file the scene plays, for its waveform. */
   waveform(file: string, from: number, to: number, buckets: number): Promise<Float32Array | null>;
   /** Creates an empty scene and shows it. Returns an error message, or null. */
@@ -415,6 +421,18 @@ export class ViewerUi {
   media = $state<MediaItem[]>([]);
   /** What the last import or Add at playhead did, for the Media list. */
   mediaNote = $state<{ text: string; error: boolean } | null>(null);
+  /** The Generate Voice sheet is up (ADR 0017). */
+  voiceOpen = $state(false);
+  /** Settings is up. */
+  settingsOpen = $state(false);
+  /** Kokoro's download while it runs. */
+  voiceInstall = $state<{ done: number; total: number } | null>(null);
+  /** Why the last download failed. */
+  voiceInstallError = $state<string | null>(null);
+  /** project.json's language. */
+  projectLang = $state<string | null>(null);
+  /** Source files of this project's own left unloaded, since it opened without trust. */
+  withheldCode = $state(0);
   /** The scene on screen plays sound files, so the HTML export can offer to carry them. */
   usesMedia = $state(false);
   /** The scene's sound cues on the timeline, or null without any. */

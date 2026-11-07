@@ -99,6 +99,7 @@ describe('an agent session', () => {
         'create_composition',
         'create_scene',
         'export',
+        'generate_voice',
         'get_project',
         'get_request',
         'get_scene',

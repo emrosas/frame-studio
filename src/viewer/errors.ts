@@ -5,9 +5,9 @@
 import type { ErrorBlock } from './ui.svelte';
 
 /** 'request': the URL asked for a scene that does not exist. */
-export type ErrorSource = 'pictures' | 'server' | 'build' | 'hmr' | 'library' | 'project' | 'request' | 'scene' | 'render' | 'audio' | 'media' | 'runtime';
+export type ErrorSource = 'pictures' | 'server' | 'build' | 'hmr' | 'library' | 'project' | 'request' | 'trust' | 'scene' | 'render' | 'audio' | 'media' | 'runtime';
 
-const ORDER: readonly ErrorSource[] = ['server', 'build', 'hmr', 'library', 'project', 'request', 'scene', 'render', 'audio', 'media', 'pictures', 'runtime'];
+const ORDER: readonly ErrorSource[] = ['server', 'build', 'hmr', 'library', 'project', 'request', 'trust', 'scene', 'render', 'audio', 'media', 'pictures', 'runtime'];
 
 export interface ErrorReport {
   title: string;

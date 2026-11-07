@@ -71,7 +71,8 @@ export class ModuleService {
     const b = under(builtins);
     if (b !== null && /^(engine|rigs|audio)\//.test(b)) return { scope: 'b', path: b };
     const f = under(root);
-    if (f === null) return null;
+    // An untrusted folder's code is never served (ADR 0017).
+    if (f === null || this.folder.untrusted) return null;
     const project = under(projects);
     const code = under(rigs) !== null || under(audio) !== null || (project !== null && /^[^/]+\/rigs\//.test(project));
     return code ? { scope: 'f', path: f } : null;
@@ -205,18 +206,18 @@ export class ModuleService {
   }
 
   async manifest(): Promise<ModuleManifest> {
-    const { builtins, rigs, audio, projects } = this.folder;
+    const { builtins, rigs, audio, projects, untrusted } = this.folder;
     const urls = async (files: string[]) => Promise.all(files.map((f) => this.url(f)));
     const projectRigs: Record<string, string[]> = {};
-    for (const file of await sourceFiles(projects)) {
+    for (const file of untrusted ? [] : await sourceFiles(projects)) {
       const m = /^([^/]+)\/rigs\//.exec(relative(projects, file).split(sep).join('/'));
       if (m) (projectRigs[m[1]] ??= []).push(await this.url(file));
     }
     return {
       builtinRigs: await this.url(join(builtins, 'rigs/index.ts')),
       builtinAudio: await this.url(join(builtins, 'audio/index.ts')),
-      folderRigs: await urls(await sourceFiles(rigs)),
-      folderAudio: await urls(await sourceFiles(audio)),
+      folderRigs: untrusted ? [] : await urls(await sourceFiles(rigs)),
+      folderAudio: untrusted ? [] : await urls(await sourceFiles(audio)),
       projectRigs,
     };
   }

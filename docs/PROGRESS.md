@@ -1,8 +1,17 @@
 # Progress
 
-Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards and the Footage / Threads switch.
+Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards, the Footage / Threads switch, and Generate Voice with provider keys and folder trust.
 
 ## Done
+
+### M14.6: Provider keys, Generate Voice, Kokoro, folder trust (ADR 0017)
+
+- Keys live in `desktop/keys.ts`, main process only, as safeStorage ciphertext. They go in through a window of main's own. The bridge gives the page the provider, last four and date.
+- Generating stops at a native dialog, then main calls the pinned host and writes into `media/`. ElevenLabs is the first provider, tested against a fake host, since no real key was available. Its model, voices and $0.10 per 1,000 characters come from its docs and have never run against the real API.
+- Kokoro downloads on first use with pinned checksums, and runs in a child process. Real runs in Node and in the Electron server spoke Spanish; Whisper tiny transcribed "¿Por qué el lago se congela tan rápido en invierno?" with its accents. A build check keeps sherpa-onnx and espeak-ng out of the app.
+- `generate_voice` is the agents' way in, and it needs no key.
+- A project's code asks once before it loads. Without trust, the server serves built-ins only and the viewer says why a scene won't draw. Settings, from View or the app menu, holds the key rows and revokes trust.
+- `alignVoice` in `src/viewer/voice.ts` is the call point for the timing job (ADR 0016), and does nothing yet. `lang` in `project.json` reaches the sheet, but the validator refuses it until that job's branch lands.
 
 ### M1: Engine and viewer
 

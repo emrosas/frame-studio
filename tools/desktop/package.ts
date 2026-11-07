@@ -57,7 +57,7 @@ const icon = await writeIcon(STAGE);
 
 step('main process');
 await bundle(join(REPO, 'desktop/main.ts'), join(APP, 'main.mjs'), ['electron']);
-for (const file of ['preload.cjs', 'welcome-preload.cjs', 'welcome.html', 'welcome.js']) await cp(join(REPO, 'desktop', file), join(APP, 'desktop', file));
+for (const file of ['preload.cjs', 'welcome-preload.cjs', 'welcome.html', 'welcome.js', 'key-preload.cjs', 'key-window.html', 'key-window.js']) await cp(join(REPO, 'desktop', file), join(APP, 'desktop', file));
 await writeFile(
   join(APP, 'package.json'),
   `${JSON.stringify({ name: 'frame-studio', productName: 'Frame Studio', version: pkg.version, description: pkg.description, main: 'main.mjs', type: 'module' }, null, 2)}\n`,
@@ -69,6 +69,8 @@ const serverExternal = ['electron', 'vite', 'playwright', /^rolldown(\/.*)?$/];
 await bundle(join(REPO, 'tools/studio/bin.ts'), join(RES, 'server/bin.mjs'), serverExternal);
 await bundle(join(REPO, 'tools/desktop/app-shim.ts'), join(RES, 'server/shim.mjs'), serverExternal);
 await writeFile(join(RES, 'server/package.json'), '{ "type": "module" }\n');
+// Kokoro's child process, beside the bundle that starts it. sherpa-onnx and espeak-ng are never here: they download on first use (ADR 0017).
+await cp(join(REPO, 'tools/voice/kokoro-child.cjs'), join(RES, 'server/kokoro-child.cjs'));
 for (const dep of ['rolldown', '@rolldown/binding-darwin-arm64', '@rolldown/pluginutils', '@oxc-project/types']) {
   await cp(join(REPO, 'node_modules', dep), join(RES, 'server/node_modules', dep), { recursive: true, dereference: true });
 }

@@ -243,6 +243,10 @@ Acceptance:
 
 Built from the research on Science in 8bit and HyperFrames: pixel stages, the camera, markers, the check tool, picture clips in compositions, the project library, and the timeline dock. Dragging and trimming clips came with the dock; the rest of M15 stands.
 
+## M14.6: Voice
+
+Provider keys, Generate Voice, Kokoro and folder trust (ADR 0017). Keys live in the app's main process; ElevenLabs and Kokoro generate into `media/`; agents get Kokoro through `generate_voice`; a project's code loads only once trusted.
+
 ## M15: The timeline as an editor
 
 A simple video editor's timeline for compositions (ADR 0012, ADR 0013).

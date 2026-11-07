@@ -122,6 +122,14 @@
     {/if}
   </header>
 
+  {#if ui.withheldCode > 0}
+    <p class="lib-trust" role="status">
+      <Icon name="shield" />
+      <span>This project's code isn't loaded, so scenes that use its own rigs won't draw.</span>
+      {#if desktopApp}<button type="button" class="btn is-small" onclick={() => void desktop()?.trust.ask()}>Trust this project…</button>{/if}
+    </p>
+  {/if}
+
   {#if ui.emptyProject}
     <div class="lib-empty">
       <h2>Nothing here yet</h2>
@@ -159,6 +167,7 @@
     <h2>
       Media
       <button type="button" class="btn is-small" aria-label="Import media" title="Import sound, video and images (or drop them anywhere)" onclick={() => picker?.click()}>Import</button>
+      <button type="button" class="btn is-small" title="Speak text into a sound file here" onclick={() => (ui.voiceOpen = true)}>Generate voice</button>
     </h2>
     <input bind:this={picker} type="file" accept="audio/*,video/*,image/png,image/jpeg,image/webp,.mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.mov,.mp4" multiple hidden onchange={(e) => importPicked(e.currentTarget.files)} />
     {#if ui.mediaNote}<p class="lib-hint panel-note" class:is-error={ui.mediaNote.error} role="status">{ui.mediaNote.text}</p>{/if}

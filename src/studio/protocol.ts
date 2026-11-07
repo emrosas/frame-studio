@@ -218,6 +218,8 @@ export const EXPORT_EVENT = 'frame-studio:export';
 
 /** Pushed as a viewer check goes: progress, then the report, or an error. */
 export const CHECK_EVENT = 'frame-studio:check';
+/** Kokoro's download: { done, total } while it runs, then { finished: true } or { error }. */
+export const VOICE_EVENT = 'frame-studio:voice';
 /** A poster finished in the background: its scene key and file name under .frame-studio/thumbs/. */
 export const THUMB_EVENT = 'frame-studio:thumb';
 
@@ -709,4 +711,24 @@ export function checkAnswers(questions: readonly AgentQuestion[], answers: unkno
     if (!q.multiSelect && a.length > 1) return `question "${q.header}" takes one answer`;
   }
   return null;
+}
+
+/** A voice a generator offers (ADR 0017). */
+export interface VoiceChoice {
+  id: string;
+  label: string;
+  /** Language codes it speaks. */
+  langs: readonly string[];
+  detail?: string;
+}
+
+/** Kokoro on this computer (ADR 0017): `bytes` is the whole download. */
+export interface KokoroStatus {
+  state: 'missing' | 'installing' | 'ready' | 'unsupported';
+  bytes: number;
+  voices: readonly VoiceChoice[];
+  /** Bytes so far, while installing. */
+  done?: number;
+  /** Why the last download failed. */
+  error?: string;
 }

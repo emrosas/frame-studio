@@ -17,6 +17,8 @@
   import ErrorPanel from './ErrorPanel.svelte';
   import Library from './Library.svelte';
   import NewDialog from './NewDialog.svelte';
+  import SettingsDialog from './SettingsDialog.svelte';
+  import VoiceSheet from './VoiceSheet.svelte';
   import SelectionBar from './SelectionBar.svelte';
   import Sidebar from './Sidebar.svelte';
   import StackMenu from './StackMenu.svelte';
@@ -140,6 +142,12 @@
 </main>
 {#if ui.stackMenu}
   <StackMenu {ui} {actions} menu={ui.stackMenu} />
+{/if}
+{#if ui.voiceOpen}
+  <VoiceSheet {ui} {actions} onclose={() => (ui.voiceOpen = false)} />
+{/if}
+{#if ui.settingsOpen}
+  <SettingsDialog onclose={() => (ui.settingsOpen = false)} />
 {/if}
 {#if ui.newRequest}
   <NewDialog

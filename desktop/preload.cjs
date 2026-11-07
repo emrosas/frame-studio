@@ -1,9 +1,10 @@
 // The viewer window's preload (ADR 0008): the desktop bridge, and nothing
 // else. The page gets the studio server's pairing token once, what it keeps
 // between projects, and asks main for native features: Reveal in Finder, the
-// sidebar's projects and converting an old film into a project (ADR 0013), and
-// updates (ADR 0009) when the app can update. Plain CommonJS, since sandboxed
-// preloads can't be modules or TypeScript.
+// sidebar's projects and converting an old film into a project (ADR 0013),
+// voice providers and folder trust (ADR 0017), and updates (ADR 0009) when the
+// app can update. No key ever crosses this bridge. Plain CommonJS, since
+// sandboxed preloads can't be modules or TypeScript.
 
 const { contextBridge, ipcRenderer } = require('electron');
 
@@ -36,5 +37,21 @@ contextBridge.exposeInMainWorld('frameStudioDesktop', {
   forgetProject: (path) => ipcRenderer.invoke('frame-studio:forget-recent', String(path)),
   openProject: (path, target) => ipcRenderer.invoke('frame-studio:open-recent', String(path), target),
   convertFilm: (id, project) => ipcRenderer.invoke('frame-studio:convert-film', String(id), project ?? null),
+  voice: {
+    providers: () => ipcRenderer.invoke('frame-studio:voice-providers'),
+    addKey: (provider) => ipcRenderer.invoke('frame-studio:voice-add-key', String(provider)),
+    removeKey: (provider) => ipcRenderer.invoke('frame-studio:voice-remove-key', String(provider)),
+    generate: (request) => ipcRenderer.invoke('frame-studio:voice-generate', { provider: String(request.provider), text: String(request.text), lang: String(request.lang), voice: String(request.voice) }),
+  },
+  trust: {
+    state: () => ipcRenderer.invoke('frame-studio:trust-state'),
+    ask: () => ipcRenderer.invoke('frame-studio:trust-ask'),
+    revoke: (path) => ipcRenderer.invoke('frame-studio:trust-revoke', String(path)),
+  },
+  onOpenSettings: (cb) => {
+    const listener = () => cb();
+    ipcRenderer.on('frame-studio:open-settings', listener);
+    return () => ipcRenderer.removeListener('frame-studio:open-settings', listener);
+  },
   ...(ipcRenderer.sendSync('frame-studio:updates') ? { updates: updates() } : {}),
 });

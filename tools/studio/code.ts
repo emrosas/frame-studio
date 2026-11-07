@@ -59,6 +59,16 @@ export async function sourceFiles(dir: string): Promise<string[]> {
   return out.sort();
 }
 
+/** How many source files of the folder's own a server without trust leaves unloaded (ADR 0017). */
+export async function withheldCode(folder: StudioFolder): Promise<number> {
+  if (!folder.untrusted) return 0;
+  const lists = [await sourceFiles(folder.rigs), await sourceFiles(folder.audio)];
+  for (const entry of await readdir(folder.projects, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) lists.push(await sourceFiles(join(folder.projects, entry.name, 'rigs')));
+  }
+  return lists.reduce((sum, list) => sum + list.length, 0);
+}
+
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /**
@@ -166,11 +176,13 @@ export class CodeHost {
     const builtinGenerators = [...((builtinAudioMod.allGenerators as readonly AudioGenerator[]) ?? [])];
     const builtinRigDefs = await this.collect([join(builtins, 'rigs')], isRig, version, errors);
     const builtinGenDefs = await this.collect([join(builtins, 'audio')], isGenerator, version, errors);
-    const folderRigs = await this.collect([rigs], isRig, version, errors);
-    const folderGenerators = await this.collect([audio], isGenerator, version, errors);
+    // An untrusted folder's code never loads (ADR 0017): built-ins only.
+    const untrusted = this.folder.untrusted === true;
+    const folderRigs = await this.collect(untrusted ? [] : [rigs], isRig, version, errors);
+    const folderGenerators = await this.collect(untrusted ? [] : [audio], isGenerator, version, errors);
     const projectRigs: Record<string, Rig[]> = {};
     const projectRigDefinitions: Record<string, Map<string, Definition>> = {};
-    for (const entry of await readdir(projects, { withFileTypes: true }).catch(() => [])) {
+    for (const entry of untrusted ? [] : await readdir(projects, { withFileTypes: true }).catch(() => [])) {
       if (!entry.isDirectory()) continue;
       const own = await this.collect([join(projects, entry.name, 'rigs')], isRig, version, errors);
       if (own.values.length > 0) projectRigs[entry.name] = own.values;

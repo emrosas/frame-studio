@@ -8,6 +8,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { z } from 'zod';
 import type { NewComposition, NewScene } from '../../src/studio/protocol.ts';
 import type { StudioQueue } from '../studio/queue.ts';
+import { KOKORO_VOICES, MAX_VOICE_TEXT } from '../voice/kokoro.ts';
 import type { Workspace } from './workspace.ts';
 
 const frame = z
@@ -237,6 +238,20 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
       inputSchema: { path: z.string().describe('Absolute path to the sound file') },
     },
     tool('import_media', async (w, { path }: { path: string }) => text(await w.importMedia(path))),
+  );
+
+  server.registerTool(
+    'generate_voice',
+    {
+      title: 'Generate a voice with Kokoro',
+      description: `Speaks text with Kokoro, on this computer, into media/, and returns the file with its path for a cue and its length. It needs no key and works offline once the user has downloaded Kokoro from the Generate Voice sheet; until then it says so. Voices: ${KOKORO_VOICES.map((v) => `${v.id} (${v.langs.join(', ')})`).join(', ')}. Paid providers aren't here: their keys stay with the user, in the app. For a file the user made elsewhere, use import_media.`,
+      inputSchema: {
+        text: z.string().min(1).max(MAX_VOICE_TEXT).describe('What to say'),
+        lang: z.enum(['en', 'es']).describe('The language: en or es'),
+        voice: z.string().optional().describe("A Kokoro voice for that language; the language's first voice when left out"),
+      },
+    },
+    tool('generate_voice', async (w, { text: words, lang, voice }: { text: string; lang: string; voice?: string }) => text(await w.generateVoice(words, lang, voice))),
   );
 
   server.registerTool(

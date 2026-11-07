@@ -12,12 +12,14 @@ import {
   QUEUE_EVENT,
   THUMB_EVENT,
   TURN_EVENT,
+  VOICE_EVENT,
   type AgentStatus,
   type ApprovalDecision,
   type ClipEdit,
   type LayerChange,
   type LayerEdit,
   type CurrentSelection,
+  type KokoroStatus,
   type NewRequest,
   type NewScene,
   type NewVideo,
@@ -231,6 +233,26 @@ export class StudioClient {
   /** Calls `listener` with every check event: progress, then the report, or an error. */
   onCheck(listener: (event: CheckEvent) => void): () => void {
     return this.on(CHECK_EVENT, listener);
+  }
+
+  /** Kokoro on this computer (ADR 0017). */
+  async voiceStatus(): Promise<KokoroStatus> {
+    return (await call<{ kokoro: KokoroStatus }>('/voice')).kokoro;
+  }
+
+  /** Starts Kokoro's download; progress and the outcome come as voice events. */
+  async installVoice(): Promise<KokoroStatus> {
+    return (await call<{ kokoro: KokoroStatus }>('/voice/install', jsonBody({}))).kokoro;
+  }
+
+  /** Speaks with Kokoro into media/. Returns the file's path for cues. */
+  async generateVoice(text: string, lang: string, voice: string): Promise<string> {
+    return (await call<{ file: string }>('/voice/generate', jsonBody({ text, lang, voice }))).file;
+  }
+
+  /** Calls `listener` with Kokoro's download progress, then how it ended. */
+  onVoice(listener: (event: { done?: number; total?: number; finished?: boolean; error?: string }) => void): () => void {
+    return this.on(VOICE_EVENT, listener);
   }
 
   /** Copies an image into references/ and returns its repo-relative path. */

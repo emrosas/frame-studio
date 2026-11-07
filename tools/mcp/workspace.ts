@@ -24,6 +24,8 @@ import type { RenderPool } from '../studio/render-pool.ts';
 import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, projectOf, type LayerChange, type NewComposition, type NewScene, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
+import { kokoro } from '../voice/kokoro.ts';
+import { saveVoiceFile } from '../voice/save.ts';
 import type { StudioQueue } from '../studio/queue.ts';
 
 type RawLayer = Record<string, unknown>;
@@ -291,6 +293,13 @@ export class Workspace {
   /** Copies a sound file from disk into media/, and returns it with its length. */
   async importMedia(source: string): Promise<MediaInfo> {
     const file = await importMedia(this.folder, source);
+    this.ctx.touch();
+    return (await mediaInfo(this.folder)).find((m) => m.file === file) ?? { file, bytes: 0, modified: 0 };
+  }
+
+  /** Speaks `text` with Kokoro into media/, and returns the file with its length (ADR 0017). Needs no key. */
+  async generateVoice(text: string, lang: string, voice?: string): Promise<MediaInfo> {
+    const file = await saveVoiceFile(this.folder.root, 'kokoro', '.wav', await kokoro.speak(text, lang, voice));
     this.ctx.touch();
     return (await mediaInfo(this.folder)).find((m) => m.file === file) ?? { file, bytes: 0, modified: 0 };
   }

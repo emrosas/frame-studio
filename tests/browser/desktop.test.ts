@@ -79,7 +79,7 @@ describe('the app', () => {
     expect(state.scenes).toEqual(['film-background', 'hello', 'meet', 'pip', 'together', 'film']);
     expect(state.errors).toEqual([]);
     // Only the bridge reaches the page: no Node, no Electron.
-    expect(state.bridge).toEqual(['boot', 'convertFilm', 'forgetProject', 'newProject', 'openFolder', 'openProject', 'poster', 'projects', 'reveal', 'setDraft', 'setPref', 'token']);
+    expect(state.bridge).toEqual(['boot', 'convertFilm', 'forgetProject', 'newProject', 'onOpenSettings', 'openFolder', 'openProject', 'poster', 'projects', 'reveal', 'setDraft', 'setPref', 'token', 'trust', 'voice']);
     expect(state.node).toBe('undefined');
     const tsconfig = JSON.parse(readFileSync(join(folder, 'tsconfig.json'), 'utf8')) as { compilerOptions: { paths: Record<string, string[]> } };
     expect(tsconfig.compilerOptions.paths['@frame-studio/*']).toEqual([`${join(REPO, 'src')}/*`]);
