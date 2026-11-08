@@ -16,8 +16,12 @@ export type KeyAction =
   | { type: 'markSpan' }
   /** Return: the prompt takes the keyboard. */
   | { type: 'compose' }
-  /** Delete and Backspace: the selected key. */
+  /** Delete and Backspace: the selected key, else the selected sound, else the selected clip. */
   | { type: 'delete' }
+  /** S: the selected clip or sound splits at the playhead. */
+  | { type: 'split' }
+  /** Command-D: a copy of the selected clip or sound goes after it. */
+  | { type: 'duplicate' }
   /** Command-Z and Shift-Command-Z: hand edits, of keys, of clips and on the canvas. */
   | { type: 'undo' }
   | { type: 'redo' }
@@ -38,13 +42,15 @@ export interface KeyInput {
  * Space play/pause, Left/Right one frame (Shift: one second), Home/End,
  * I and O for the range, X for the span of what is selected, Escape to clear
  * the selection one step at a time, M for sound on or off, Return to go to the
- * prompt, Delete or Backspace for the selected key, and Command-Z with Shift to
- * undo and redo a hand edit. The App sends the arrows to a selected key instead.
+ * prompt, Delete or Backspace for the selected key, sound or clip, S to split it
+ * at the playhead, Command-D to duplicate it, and Command-Z with Shift to undo
+ * and redo a hand edit. The App sends the arrows to a selected key instead.
  * A held Space or M toggles once: its auto-repeats are ignored. Held arrows keep
  * stepping, so they scrub.
  */
 export function keyAction(e: KeyInput, fps: number): KeyAction | null {
   if ((e.metaKey || e.ctrlKey) && !e.altKey && (e.key === 'z' || e.key === 'Z')) return { type: e.shiftKey ? 'redo' : 'undo' };
+  if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && (e.key === 'd' || e.key === 'D')) return { type: 'duplicate' };
   if (e.altKey || e.ctrlKey || e.metaKey) return null;
   const big = Math.max(1, Math.round(fps));
   switch (e.key) {
@@ -68,6 +74,9 @@ export function keyAction(e: KeyInput, fps: number): KeyAction | null {
     case 'x':
     case 'X':
       return { type: 'markSpan' };
+    case 's':
+    case 'S':
+      return { type: 'split' };
     case 'Enter':
       return e.shiftKey ? null : { type: 'compose' };
     case 'Escape':

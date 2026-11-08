@@ -22,9 +22,10 @@ import { withheldNote, type CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
 import { hear, nextWords, type VoiceProgress } from '../voice/align.ts';
-import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, editFields, isLayerTarget, MARKERS_TARGET, projectOf, type LayerChange, type NewComposition, type NewScene, type PlacedVoice, type StudioRequest } from '../../src/studio/protocol.ts';
+import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, editFields, isLayerTarget, MARKERS_TARGET, projectOf, STRUCTURE_FIELDS, STRUCTURE_TARGET, type LayerChange, type NewComposition, type NewScene, type PlacedVoice, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
+import { applyTimelineEdit, freshId, freshTrack, type RawClip, type RawCue as TimelineCue, type TimelineEdit, type TimelineFile, type TimelineResult } from '../../src/studio/timeline-edit.ts';
 import { kokoro } from '../voice/kokoro.ts';
 import { saveVoiceFile } from '../voice/save.ts';
 import type { StudioQueue } from '../studio/queue.ts';
@@ -47,7 +48,7 @@ type RawCue = RawLayer & { id?: string; file?: string; lang?: string; script?: s
 
 /** What a hand edit lands on (ADR 0016): a layer or clip, a cue, or the scene itself for its markers. */
 function rawTarget(scene: RawScene & { audio?: RawCue[] }, id: string): RawLayer | undefined {
-  if (id === MARKERS_TARGET) return scene as unknown as RawLayer;
+  if (id === MARKERS_TARGET || id === STRUCTURE_TARGET) return scene as unknown as RawLayer;
   if (id.startsWith('audio/')) return scene.audio?.find((c) => c.id === id.slice('audio/'.length));
   return rawLayer(scene, id);
 }
@@ -257,7 +258,7 @@ export class Workspace {
    * end of the file or the scene, whichever is first (ADR 0012). Refused while an agent works on the scene. A
    * generated voice brings its script and language, and words if its provider timed them; the script's text wins.
    */
-  async placeSound(key: string, file: string, start: number, voice?: PlacedVoice): Promise<{ file: string; cue: Record<string, unknown> }> {
+  async placeSound(key: string, file: string, start: number, voice?: PlacedVoice): Promise<{ file: string; cue: Record<string, unknown>; change: LayerChange }> {
     const { modules, entry } = await this.entry(key);
     const working = (await this.queue.list()).find((r) => r.status === 'working' && r.sceneId === entry.key);
     if (working) throw new Error(`Request #${working.id} is working on this scene; place the sound when its turn ends.`);
@@ -265,9 +266,10 @@ export class Workspace {
     if (!info) throw new Error(`No file "${file}" in media/.`);
     const path = entryPath(entry, this.folder);
     const raw = JSON.parse(await readFile(path, 'utf8')) as { fps: number; duration: number; audio?: { id: string }[]; tracks?: { id: string; clips: Record<string, unknown>[] }[] };
+    const before = this.structure(raw as RawScene);
     const frame = Math.min(Math.max(0, Math.floor(start * raw.fps)), Math.max(0, modules.engine.frameCount(raw as Scene) - 1));
     const from = frame / raw.fps;
-    if (modules.engine.isPictureFile(file)) return this.placePicture(modules, entry, path, raw, file, from, info.duration);
+    if (modules.engine.isPictureFile(file)) return this.placePicture(modules, entry, path, raw, before, file, from, info.duration);
     const end = Math.min(raw.duration, info.duration !== undefined ? from + info.duration : raw.duration);
     const taken = new Set((raw.audio ?? []).map((c) => c.id));
     const stem = file.slice(file.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '').replace(/[^a-z0-9]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'sound';
@@ -278,7 +280,7 @@ export class Workspace {
     const next = { ...raw, audio: [...(raw.audio ?? []), cue] };
     await this.checkEdit(modules, entry, next, 'Placing the sound');
     await this.writeScene(path, next, modules);
-    return { file: this.show(path), cue };
+    return { file: this.show(path), cue, change: { before, after: this.structure(next as RawScene) } };
   }
 
   /** A picture clip at the playhead (ADR 0014), on a track of its own above the others. An image shows for 3 s. */
@@ -287,10 +289,11 @@ export class Workspace {
     entry: SceneEntry,
     path: string,
     raw: { fps: number; duration: number; tracks?: { id: string; clips: Record<string, unknown>[] }[] },
+    before: LayerChange['before'],
     file: string,
     start: number,
     duration: number | undefined,
-  ): Promise<{ file: string; cue: Record<string, unknown> }> {
+  ): Promise<{ file: string; cue: Record<string, unknown>; change: LayerChange }> {
     if (!raw.tracks) throw new Error('Images and videos go in a video, not a scene. Open a video from the Library, or start one with New video.');
     const length = Math.min(raw.duration - start, modules.engine.isVideoFile(file) ? (duration ?? 3) : 3);
     const taken = new Set(raw.tracks.flatMap((t) => t.clips.map((c) => c.id)));
@@ -304,7 +307,7 @@ export class Workspace {
     const next = { ...raw, tracks: [...raw.tracks, { id: `V${track}`, clips: [clip] }] };
     await this.checkEdit(modules, entry, next as never, 'Placing the clip');
     await this.writeScene(path, next as never, modules);
-    return { file: this.show(path), cue: clip };
+    return { file: this.show(path), cue: clip, change: { before, after: this.structure(next as RawScene) } };
   }
 
   /** The studio folder's sound files, with their lengths (ADR 0012). */
@@ -507,6 +510,96 @@ export class Workspace {
     await this.checkEdit(modules, entry, next, 'That edit');
     await this.writeScene(path, next, modules);
     return { before, after: pick(layer) };
+  }
+
+  /** The rest of a timeline's file an edit can change, for undo. */
+  private structure(raw: RawScene): RawLayer {
+    const fields = raw as unknown as Record<string, unknown>;
+    return structuredClone(Object.fromEntries(STRUCTURE_FIELDS.flatMap((f) => (fields[f] !== undefined ? [[f, fields[f]]] : []))));
+  }
+
+  /** Where a clip ends in its composition, in seconds, from what it places. Null when the file can't say. */
+  private clipEnds(modules: LoadedModules, lib: SceneLibrary): (clip: RawClip) => number | null {
+    return (clip) => {
+      const start = clip.start ?? 0;
+      const placed = typeof clip.scene === 'string' ? modules.library.findEntry(lib, clip.scene)?.scene : undefined;
+      const out = placed ? Math.min(clip.out ?? placed.duration, placed.duration) : clip.out;
+      return out === undefined ? null : start + out - (clip.in ?? 0);
+    };
+  }
+
+  /**
+   * A timeline edit from the viewer (ADR 0018), checked like update_scene. Returns the file's length, tracks and
+   * sound on either side, for undo, and what it made, to select.
+   */
+  async editTimeline(key: string, edit: TimelineEdit): Promise<LayerChange & TimelineResult> {
+    const { modules, entry, lib } = await this.entry(key);
+    const path = entryPath(entry, this.folder);
+    const raw = JSON.parse(await readFile(path, 'utf8')) as RawScene;
+    // An anchored key's t goes stale as its word moves, and is what it falls back on if the word goes.
+    if (entry.scene) keepAnchorTimes(raw, entry.scene, modules.engine.wordTime);
+    const before = this.structure(raw);
+    const clipEnd = this.clipEnds(modules, lib);
+    const add = edit.op === 'add-clip' ? { ...edit, length: await this.sourceLength(modules, lib, edit.source) } : edit;
+    const result = applyTimelineEdit(raw as unknown as TimelineFile, add, clipEnd);
+    await this.checkEdit(modules, entry, raw, 'That edit');
+    await this.writeScene(path, raw, modules);
+    return { before, after: this.structure(raw), ...result };
+  }
+
+  /** How long a new clip of `source` runs, in seconds. An image shows for 3 s. */
+  private async sourceLength(modules: LoadedModules, lib: SceneLibrary, source: { scene: string } | { file: string }): Promise<number> {
+    if ('scene' in source) {
+      const scene = modules.library.findEntry(lib, source.scene)?.scene;
+      if (!scene) throw new Error(`There's no valid scene "${source.scene}" to place.`);
+      return scene.duration;
+    }
+    const info = (await mediaInfo(this.folder)).find((m) => m.file === source.file);
+    if (!info) throw new Error(`No file "${source.file}" in media/.`);
+    if (!modules.engine.isPictureFile(source.file)) throw new Error('Sound goes on the sound rows. Place it from the Library.');
+    return modules.engine.isVideoFile(source.file) ? (info.duration ?? 3) : 3;
+  }
+
+  /**
+   * Moves a sound cue out of a video into a new scene with a captions layer, and places that as a clip on a
+   * track of its own (ADR 0018). The sound and its captions then move and trim together, with one copy of the
+   * words. The new scene stays if the move is undone: it's a file in the library, and nothing plays it.
+   */
+  async moveCueToScene(key: string, cueId: string): Promise<LayerChange & TimelineResult> {
+    const { modules, entry } = await this.entry(key);
+    const path = entryPath(entry, this.folder);
+    const raw = JSON.parse(await readFile(path, 'utf8')) as Omit<RawScene, 'tracks'> & TimelineFile & { id: string; size: [number, number] };
+    if (!raw.tracks) throw new Error('This is for a sound on a video. A scene can already caption its own voice.');
+    if (entry.scene) keepAnchorTimes(raw, entry.scene, modules.engine.wordTime);
+    const before = this.structure(raw as unknown as RawScene);
+    const at = raw.audio?.findIndex((c) => c.id === cueId) ?? -1;
+    const cue = raw.audio?.[at];
+    if (!cue) throw new Error(`"${key}" has no sound "${cueId}".`);
+    if (typeof cue.file !== 'string') throw new Error('Only a sound file has words to caption.');
+    const { start, end, ...rest } = cue;
+    const length = end - start;
+    // Volume keys are in scene seconds, and the scene starts where the cue did.
+    const moved = structuredClone(rest) as TimelineCue;
+    for (const track of moved.tracks ?? []) for (const k of track.keys) k.t -= start;
+    const taken = new Set((await this.listScenes()).map((s) => s.id as string));
+    const id = freshId(`${raw.id}-${cueId}`, taken);
+    const made = await this.createScene({ id, fps: raw.fps, size: raw.size, duration: length });
+    const scenePath = join(this.folder.root, made.file);
+    try {
+      // No background, so the captions sit over the clips under them.
+      await this.updateScene(id, { background: null, layers: [{ id: 'captions', rig: 'captions', params: { cue: cueId } }], audio: [{ ...moved, start: 0, end: length }] });
+      raw.audio!.splice(at, 1);
+      if (raw.audio!.length === 0) delete raw.audio;
+      const clip: RawClip = { id: freshId(id, new Set(raw.tracks.flatMap((t) => t.clips.map((c) => c.id)))), scene: id, ...(start > 0 ? { start } : {}) };
+      raw.tracks.push({ id: freshTrack(raw.tracks), clips: [clip] });
+      const fresh = await this.entry(key);
+      await this.checkEdit(fresh.modules, fresh.entry, raw as unknown as RawScene, 'Moving the voice');
+      await this.writeScene(path, raw as unknown as RawScene, fresh.modules);
+      return { before, after: this.structure(raw as unknown as RawScene), made: clip.id };
+    } catch (err) {
+      await rm(scenePath, { force: true });
+      throw err;
+    }
   }
 
   /**
@@ -743,15 +836,21 @@ export class Workspace {
   /**
    * A scoped edit, written as overrides. With a layerId it edits that layer.
    * Without one, the selection is the whole frame range: params go to every
-   * layer whose rig takes all of them, and a rig swap needs a layer.
+   * layer whose rig takes all of them, and a rig swap needs a layer. With
+   * `remove`, it clears overrides over the range instead, on every layer that
+   * has one there when no layerId is given.
    */
-  async applyToSelection(selection: SelectionInput, patch: { rig?: string; params?: Params }) {
+  async applyToSelection(selection: SelectionInput, patch: { rig?: string; params?: Params; remove?: boolean }) {
+    if (patch.remove && (patch.rig !== undefined || Object.keys(patch.params ?? {}).length > 0)) throw new Error('remove clears overrides, so it takes no rig or params');
     const { modules, scene, file, entry } = await this.validScene(selection.sceneId);
     const { from, to } = this.toRange(selection.from, selection.to, scene, modules);
     const layers = modules.engine.sceneLayers(scene);
     let targets: string[];
     if (selection.layerId !== undefined) {
       targets = [selection.layerId];
+    } else if (patch.remove) {
+      targets = layers.filter((l) => l.overrides?.some((o) => o.from < to && o.to > from)).map((l) => l.id);
+      if (targets.length === 0) throw new Error(`no layer has an override in [${from}, ${to})`);
     } else {
       if (patch.rig !== undefined) throw new Error('a rig swap needs a layerId; without one the selection covers every layer');
       const names = Object.keys(patch.params ?? {});
@@ -765,7 +864,10 @@ export class Workspace {
       if (targets.length === 0) throw new Error(`no layer's rig takes all of ${names.join(', ')}; give a layerId, or params one rig takes`);
     }
     let edited = scene;
-    for (const layerId of targets) edited = modules.engine.applyToSelection(edited, { layerId, partId: selection.partId, from, to }, patch);
+    for (const layerId of targets) {
+      const part = { layerId, partId: selection.partId, from, to };
+      edited = patch.remove ? modules.engine.removeOverrides(edited, part) : modules.engine.applyToSelection(edited, part, patch);
+    }
 
     // Write the edit into the file as written, not the validated copy, so fields the validator fills in stay out of it.
     const raw = JSON.parse(await readFile(file, 'utf8')) as Scene & { tracks?: { clips: Layer[] }[] };
@@ -775,7 +877,9 @@ export class Workspace {
     for (const layerId of targets) {
       const target = layerIn(raw, layerId);
       if (!target) throw new Error(`no layer "${layerId}" in ${this.show(file)}`);
-      target.overrides = (layerId === 'background' ? edited.background : edited.layers.find((l) => l.id === layerId))?.overrides;
+      const overrides = (layerId === 'background' ? edited.background : edited.layers.find((l) => l.id === layerId))?.overrides;
+      if (overrides) target.overrides = overrides;
+      else delete target.overrides;
     }
     await this.checkEdit(modules, entry, raw, 'That edit');
     await this.writeScene(file, raw, modules);

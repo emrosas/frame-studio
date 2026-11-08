@@ -7,7 +7,7 @@
 // until converted.
 
 import type { GeneratorRegistry } from '../audio/types';
-import type { CompositionValidation, ProjectContext, ProjectFile, ProjectValidation, SchemaOwner, ValidationResult } from '../engine';
+import type { Composition, CompositionValidation, ProjectContext, ProjectFile, ProjectValidation, SchemaOwner, ValidationResult } from '../engine';
 import { anchorWords } from '../engine/speech';
 import type { Cast, Rig, RigRegistry, Scene, World } from '../engine/types';
 
@@ -68,6 +68,8 @@ export interface SceneEntry {
   file: string;
   /** The validated scene, or null when the file is invalid. */
   scene: Scene | null;
+  /** A valid composition's tracks and sound as written (ADR 0018): `scene` flattens tracks into layers. */
+  composition?: Composition;
   /** Everything wrong with the file, each "path: message". Empty when valid. */
   errors: readonly string[];
   /** The project it belongs to, or null for a loose scene. */
@@ -261,6 +263,7 @@ function buildCompositions(
     const stem = fileStem(path);
     const errors: string[] = [];
     let scene: Scene | null = null;
+    let composition: Composition | undefined;
     try {
       const json = JSON.parse(files[path]) as unknown;
       const declared = declaredId(json);
@@ -269,12 +272,15 @@ function buildCompositions(
       if (taken) errors.push(`id: "${stem}" is already ${taken.file}; a project's scenes and compositions share ids, so rename one`);
       const result = tools.validateComposition!(json, registry ?? undefined, generators ?? undefined, { id: '', cast, scenes: lengths });
       if (!result.ok) errors.push(...result.errors);
-      else if (errors.length === 0) scene = anchorWords(result.scene);
+      else if (errors.length === 0) {
+        scene = anchorWords(result.scene);
+        composition = result.composition;
+      }
     } catch (err) {
       errors.push(`invalid JSON: ${message(err)}`);
     }
     const context: ProjectContext = { id: '', fps: scene?.fps ?? 0, size: scene?.size ?? [0, 0], cast, scenes: lengths, kind: 'composition' };
-    const entry: SceneEntry = { key: byKey.has(stem) ? file : stem, path, file, scene, errors, project: null, registry, world: {}, context, kind: 'composition' };
+    const entry: SceneEntry = { key: byKey.has(stem) ? file : stem, path, file, scene, ...(composition ? { composition } : {}), errors, project: null, registry, world: {}, context, kind: 'composition' };
     own.push(entry);
     byKey.set(entry.key, entry);
   }

@@ -23,6 +23,7 @@ import { startStudioServer } from '../../tools/studio/server';
 
 const plainRig = (id: string, extra = '') => `${extra}\nexport const ${id} = { id: ${JSON.stringify(id)}, params: {}, draw() {} };\n`;
 /** Code that leaves a mark when it runs. */
+const cjsMarks = (path: string) => `process.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(path)}, 'ran');\n`;
 const marks = (path: string) => `(globalThis as { process?: { getBuiltinModule(n: string): { writeFileSync(p: string, s: string): void } } }).process?.getBuiltinModule('node:fs').writeFileSync(${JSON.stringify(path)}, 'ran');\nexport const lib = 1;\n`;
 
 let dir: string;
@@ -120,9 +121,34 @@ describe('what a project may import', () => {
 
   it('refuses an @frame-studio/ name with no built-in, which Node would look for in node_modules', () => {
     put('rigs/a.ts', plainRig('a', "import '@frame-studio/nothing';"));
-    put('node_modules/@frame-studio/nothing/index.ts', marks(join(root, 'ran.txt')));
+    put('node_modules/@frame-studio/nothing/index.js', cjsMarks(join(root, 'ran.txt')));
     expect(loadInNode().errors.join('\n')).toMatch(/not a built-in/);
     expect(existsSync(join(root, 'ran.txt'))).toBe(false);
+  });
+
+  it("holds what require() finds to the same rules, though the loader can't name it first", () => {
+    put('rigs/a.ts', plainRig('a', "import './b.cjs';"));
+    put('rigs/b.cjs', "require('./node_modules/evil');\n");
+    put('rigs/node_modules/evil.js', cjsMarks(join(root, 'ran.txt')));
+    expect(loadInNode().errors.join('\n')).toMatch(/node_modules/);
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false);
+  });
+
+  it("refuses a folder whose package.json points outside, which require() follows", () => {
+    put('rigs/a.ts', plainRig('a', "import './b.cjs';"));
+    put('rigs/b.cjs', "require('./sub');\n");
+    put('rigs/sub/package.json', JSON.stringify({ main: '../../scenes/outside.js' }));
+    put('scenes/outside.js', cjsMarks(join(root, 'ran.txt')));
+    expect(loadInNode().errors.join('\n')).toMatch(/outside rigs\/ and audio\//);
+    expect(existsSync(join(root, 'ran.txt'))).toBe(false);
+  });
+
+  it('still lets require() reach code that was hashed', () => {
+    put('rigs/a.ts', plainRig('a', "import './b.cjs';"));
+    put('rigs/b.cjs', "require('./sub');\n");
+    put('rigs/sub/index.js', cjsMarks(join(root, 'ran.txt')));
+    expect(loadInNode()).toEqual({ rigs: ['a'], errors: [] });
+    expect(existsSync(join(root, 'ran.txt'))).toBe(true);
   });
 
   it('hashes a folder named .DS_Store, and skips only the file', () => {
@@ -141,6 +167,20 @@ describe('what a project may import', () => {
     const folder = { root, approval: { hash: 'not this', refused: () => (refused = true) } } as { root: string; untrusted?: boolean; approval?: { hash: string; refused(): void } };
     checkApproval(folder);
     expect(refused).toBe(true);
+    expect(folder.untrusted).toBe(true);
+    expect(folder.approval).toBeUndefined();
+  });
+
+  it('refuses code when its check throws, and keeps no approval to skip', () => {
+    let refused = 0;
+    const folder = {
+      get root(): string {
+        throw new Error('no such folder');
+      },
+      approval: { hash: 'any', refused: () => refused++ },
+    } as { root: string; untrusted?: boolean; approval?: { hash: string; refused(): void } };
+    checkApproval(folder);
+    expect(refused).toBe(1);
     expect(folder.untrusted).toBe(true);
     expect(folder.approval).toBeUndefined();
   });
@@ -228,6 +268,14 @@ describe('what an export may carry', () => {
     put('scenes/s.json', JSON.stringify({ id: 's', fps: 12, duration: 1, size: [64, 64], seed: 1, layers: [{ id: 'one', rig: 'a' }] }));
     const folder = studioFolder(root);
     await expect(buildEmbed('s', { folder, code: new CodeHost(folder) })).rejects.toThrow(/rigs\/a\.ts imports "\.\.\/secret"/);
+  });
+
+  it("refuses what only the bundler can find, since the hash skips node_modules", async () => {
+    put('rigs/a.ts', plainRig('a', "import './node_modules/evil';"));
+    put('rigs/node_modules/evil.js', 'export const secret = "secret words";\n');
+    put('scenes/s.json', JSON.stringify({ id: 's', fps: 12, duration: 1, size: [64, 64], seed: 1, layers: [{ id: 'one', rig: 'a' }] }));
+    const folder = studioFolder(root);
+    await expect(buildEmbed('s', { folder, code: new CodeHost(folder) })).rejects.toThrow(/node_modules/);
   });
 });
 

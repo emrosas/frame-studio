@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentStatus, ThreadSummary } from '../studio/protocol';
 import type { ProjectEntry } from './desktop';
-import { ago, isSeen, modelLabel, needsYou, sceneDots, seenKey, threadBadge, threadGroups } from './thread-groups';
+import { ago, isSeen, modelLabel, needsYou, seenKey, threadBadge, threadList, type ThreadEntry } from './thread-groups';
 
 const thread = (id: number, more: Partial<ThreadSummary> = {}): ThreadSummary => ({
   id,
@@ -21,70 +21,64 @@ const base = {
   entries: [entry('/two', { current: true, threads: [thread(9, { title: 'stale copy from disk' })] }), entry('/three', { threads: [thread(1), thread(2), thread(3, { status: 'settled' })] })],
   live: [thread(1), thread(3, { status: 'working', turn: 'working' }), thread(2, { status: 'cancelled', turn: 'cancelled' })],
   folder: { path: '/two', name: 'two' },
-  folds: {},
   seen: {},
   query: '',
 };
 
 describe('the Threads view', () => {
-  it('puts the project on screen first and open with its live queue, others folded from disk', () => {
-    const groups = threadGroups(base);
-    expect(groups.map((g) => [g.path, g.open])).toEqual([['/two', true], ['/three', false]]);
-    expect(groups[0].threads.map((t) => t.id)).toEqual([3, 1]);
-    expect(groups[1].threads.map((t) => t.id)).toEqual([2, 1]);
+  const ids = (entries: readonly ThreadEntry[]) => entries.map((e) => `${e.path}#${e.thread.id}`);
+
+  it("lists every project's threads in one list, newest first, each naming its project", () => {
+    const list = threadList(base);
+    // The project on screen brings its live queue, the others what was read off disk.
+    expect(ids(list.threads)).toEqual(['/two#3', '/three#2', '/two#1', '/three#1']);
+    expect(list.threads[0]).toMatchObject({ path: '/two', name: 'two', current: true });
+    expect(list.threads[1]).toMatchObject({ path: '/three', name: 'three', current: false });
   });
 
   it('sorts newest first by when a thread last moved', () => {
     const live = [thread(1, { at: '2026-11-06T12:00:00.000Z' }), thread(2), thread(3)];
-    expect(threadGroups({ ...base, live })[0].threads.map((t) => t.id)).toEqual([1, 3, 2]);
+    expect(ids(threadList({ ...base, entries: [], live }).threads)).toEqual(['/two#1', '/two#3', '/two#2']);
   });
 
-  it('puts settled and cancelled threads under a Done fold, closed until you open it', () => {
-    const [two, three] = threadGroups(base);
-    expect(two.done.map((t) => t.id)).toEqual([2]);
-    expect(three.done.map((t) => t.id)).toEqual([3]);
-    expect(two.doneOpen).toBe(false);
-    expect(threadGroups({ ...base, folds: { '/two#done': true } })[0].doneOpen).toBe(true);
+  it('puts settled and cancelled threads under one Done fold', () => {
+    expect(ids(threadList(base).done)).toEqual(['/three#3', '/two#2']);
   });
 
-  it('shares the folds Footage uses', () => {
-    expect(threadGroups({ ...base, folds: { '/two': false, '/three': true } }).map((g) => g.open)).toEqual([false, true]);
+  it('has the one project in a browser', () => {
+    const list = threadList({ ...base, entries: [] });
+    expect(new Set(list.threads.map((e) => e.path))).toEqual(new Set(['/two']));
   });
 
-  it('counts what the fold hides, leaving out what is done', () => {
-    expect(threadGroups(base).map((g) => g.count)).toEqual([2, 2]);
-  });
-
-  it('has one group in a browser, with its header status from the queue', () => {
-    const groups = threadGroups({ ...base, entries: [] });
-    expect(groups).toHaveLength(1);
-    expect(groups[0]).toMatchObject({ path: '/two', current: true, status: { kind: 'your_turn', label: '1 your turn, 1 working' } });
-  });
-
-  it('filters titles across projects, opening what matches and dropping the rest', () => {
-    const groups = threadGroups({ ...base, entries: [base.entries[0], entry('/three', { threads: [thread(1, { title: 'A Bluer lake' }), thread(2, { title: 'bluer, settled', status: 'settled' })] })], query: ' BLUER ' });
-    expect(groups.map((g) => g.path)).toEqual(['/three']);
-    expect(groups[0]).toMatchObject({ open: true, doneOpen: true });
-    expect(groups[0].threads.map((t) => t.id)).toEqual([1]);
-    expect(threadGroups({ ...base, query: 'nothing' })).toEqual([]);
+  it("filters by title or project name across projects", () => {
+    const entries = [base.entries[0], entry('/three', { threads: [thread(1, { title: 'A Bluer lake' }), thread(2, { title: 'bluer, settled', status: 'settled' })] })];
+    const list = threadList({ ...base, entries, query: ' BLUER ' });
+    expect(ids(list.threads)).toEqual(['/three#1']);
+    expect(ids(list.done)).toEqual(['/three#2']);
+    expect(ids(threadList({ ...base, query: 'three' }).threads)).toEqual(['/three#2', '/three#1']);
+    expect(threadList({ ...base, query: 'nothing' })).toMatchObject({ threads: [], done: [] });
   });
 
   it('keeps counting what waits on you whatever the filter shows', () => {
-    const groups = threadGroups({ ...base, entries: [], query: 'thread 3' });
-    expect(groups[0].threads.map((t) => t.id)).toEqual([3]);
-    expect(groups[0].waiting).toBe(1);
+    const list = threadList({ ...base, entries: [], query: 'thread 3' });
+    expect(ids(list.threads)).toEqual(['/two#3']);
+    expect(list.waiting).toBe(1);
+  });
+
+  it('counts what waits on you in every project', () => {
+    expect(threadList(base).waiting).toBe(3);
   });
 
   it('stops counting a finished turn once you have seen it, until a newer one ends', () => {
     const seen = { [seenKey('/two', 1)]: thread(1).at };
-    expect(threadGroups({ ...base, entries: [], seen })[0].waiting).toBe(0);
+    expect(threadList({ ...base, entries: [], seen }).waiting).toBe(0);
     const later = thread(1, { at: '2026-11-06T11:00:00.000Z' });
-    expect(threadGroups({ ...base, entries: [], live: [later], seen })[0].waiting).toBe(1);
+    expect(threadList({ ...base, entries: [], live: [later], seen }).waiting).toBe(1);
   });
 
-  it('never opens a project whose folder is gone', () => {
-    const groups = threadGroups({ ...base, entries: [...base.entries, entry('/gone', { missing: true })], folds: { '/gone': true } });
-    expect(groups.at(-1)).toMatchObject({ missing: true, open: false });
+  it('leaves out a project whose folder is gone', () => {
+    const list = threadList({ ...base, entries: [...base.entries, entry('/gone', { missing: true, threads: [thread(7)] })] });
+    expect(list.threads.some((e) => e.path === '/gone')).toBe(false);
   });
 });
 
@@ -138,32 +132,5 @@ describe('what a card says', () => {
     expect(modelLabel(agents, 'claude', 'retired-model')).toBe('retired-model');
     expect(modelLabel(agents, 'claude', null)).toBeNull();
     expect(modelLabel(agents, 'claude', 'default')).toBeNull();
-  });
-});
-
-describe('dots on Footage rows', () => {
-  it("shows each scene's most pressing thread that's working or waiting", () => {
-    const threads = [thread(1, { status: 'working', turn: 'working', sceneId: 'a' }), thread(2, { status: 'input', turn: 'working', sceneId: 'a' }), thread(3, { sceneId: 'b' }), thread(4, { status: 'pending', turn: 'pending', sceneId: 'c' })];
-    const dots = sceneDots(threads, () => false);
-    expect(dots.a.kind).toBe('input');
-    expect(dots.b.kind).toBe('your_turn');
-    expect(dots.c.kind).toBe('pending');
-  });
-
-  it('leaves out what is done, and keeps a failed turn in sight', () => {
-    expect(sceneDots([thread(1), thread(3, { status: 'settled' })], () => true)).toEqual({});
-    expect(Object.values(sceneDots([thread(2, { turn: 'failed' })], () => true)).map((d) => d.kind)).toEqual(['failed']);
-  });
-});
-
-describe('the project dot', () => {
-  it('counts only the turns you have not seen', () => {
-    const live = [thread(1), thread(2)];
-    const folder = { path: '/a', name: 'A' };
-    const seen = { [seenKey('/a', 1)]: thread(1).at };
-    const [group] = threadGroups({ entries: [], live, folder, folds: {}, seen, query: '' });
-    expect(group.status?.label).toBe('1 your turn');
-    const [quiet] = threadGroups({ entries: [], live: [thread(1)], folder, folds: {}, seen, query: '' });
-    expect(quiet.status).toBeNull();
   });
 });

@@ -72,6 +72,71 @@ export function dragClip(clip: ClipPlace, handle: ClipHandle, delta: number, tot
   return { ...clip, out: clamp(clip.out + delta, clip.in + 1, clip.length) };
 }
 
+/** The frames of a clip's own edges that a drag of `handle` carries. */
+export function clipEdges(clip: ClipPlace, handle: ClipHandle): number[] {
+  const end = clip.from + clip.out - clip.in;
+  return handle === 'start' ? [clip.from] : handle === 'end' ? [end] : [clip.from, end];
+}
+
+/** Where a sound cue sits: frames on the timeline, and seconds into the file and of each fade. */
+export interface CuePlace {
+  from: number;
+  to: number;
+  in: number;
+  fadeIn: number;
+  fadeOut: number;
+  /** The file's length in seconds, where it has one and it's known. A generator has none. */
+  length: number | null;
+  /** Plays a file, so a trim at the start moves `in`. */
+  file: boolean;
+}
+
+/** The cue after dragging `handle` by `delta` frames, in a timeline of `total`. It keeps at least one frame. */
+export function dragCue(cue: CuePlace, handle: ClipHandle, delta: number, total: number, fps: number): CuePlace {
+  const span = cue.to - cue.from;
+  if (handle === 'move') {
+    const d = clamp(delta, -cue.from, Math.max(-cue.from, total - cue.to));
+    return { ...cue, from: cue.from + d, to: cue.to + d };
+  }
+  if (handle === 'start') {
+    const earliest = cue.file ? Math.max(-cue.from, -Math.floor(cue.in * fps + 1e-9)) : -cue.from;
+    const d = clamp(delta, earliest, span - 1);
+    return { ...cue, from: cue.from + d, in: cue.file ? Math.max(0, cue.in + d / fps) : cue.in };
+  }
+  // A cue already past the end of its file stays where it is until it's trimmed.
+  const last = cue.length === null ? total : Math.max(cue.to, Math.min(total, cue.from + Math.ceil((cue.length - cue.in) * fps - 1e-9)));
+  return { ...cue, to: clamp(cue.to + delta, cue.from + 1, last) };
+}
+
+/** The cue with a fade's handle at `frame`. The two fades share the cue and never cross. */
+export function dragFade(cue: CuePlace, side: 'in' | 'out', frame: number, fps: number): CuePlace {
+  const length = (cue.to - cue.from) / fps;
+  if (side === 'in') return { ...cue, fadeIn: clamp((frame - cue.from) / fps, 0, Math.max(0, length - cue.fadeOut)) };
+  return { ...cue, fadeOut: clamp((cue.to - frame) / fps, 0, Math.max(0, length - cue.fadeIn)) };
+}
+
+/** A clip as a transition sees it: its place and its order, `order` rising up the stack. */
+export interface StackedClip extends ClipPlace {
+  id: string;
+  order: number;
+}
+
+/**
+ * The clip a transition onto `clip` should run on under, and where its trim then ends, in frames: one that
+ * ends where `clip` starts, beneath it, with more of itself to show. A cut has nothing under it otherwise.
+ */
+export function clipUnder(clips: readonly StackedClip[], clip: StackedClip, frames: number): { id: string; out: number } | null {
+  const before = clips.filter((c) => c.id !== clip.id && c.order < clip.order && c.from + c.out - c.in === clip.from);
+  const under = before.sort((a, b) => b.order - a.order).find((c) => c.out < c.length);
+  return under ? { id: under.id, out: Math.min(under.length, under.out + frames) } : null;
+}
+
+/** The clip a transition onto `clip` ran on underneath, by `frames`, and the end it had before. */
+export function clipRunOn(clips: readonly StackedClip[], clip: StackedClip, frames: number): { id: string; out: number } | null {
+  const under = clips.find((c) => c.id !== clip.id && c.order < clip.order && c.from + c.out - c.in === clip.from + frames);
+  return under ? { id: under.id, out: under.out - frames } : null;
+}
+
 /** How close, in CSS pixels, a dragged edge must come to a target to land on it. */
 export const SNAP_PX = 6;
 

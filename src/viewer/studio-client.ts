@@ -33,6 +33,7 @@ import {
   type TurnEvent,
   type TurnSettings,
 } from '../studio/protocol';
+import type { TimelineEdit, TimelineResult } from '../studio/timeline-edit';
 
 const BASE = '/__studio';
 
@@ -124,8 +125,8 @@ export class StudioClient {
   }
 
   /** Adds a cue that plays a sound file in a scene, from `start` seconds, and returns it. A generated voice brings its script and any words. */
-  async placeSound(scene: string, file: string, start: number, voice?: PlacedVoice): Promise<{ id: string; words?: unknown[] } | null> {
-    return (await call<{ cue?: { id: string; words?: unknown[] } }>('/sounds', jsonBody({ scene, file, start, voice }))).cue ?? null;
+  placeSound(scene: string, file: string, start: number, voice?: PlacedVoice): Promise<{ cue: { id: string; words?: unknown[] }; change: LayerChange }> {
+    return call('/sounds', jsonBody({ scene, file, start, voice }));
   }
 
   /** Creates an empty scene; returns its id as the library keys it. */
@@ -141,6 +142,16 @@ export class StudioClient {
   /** Creates a video: a composition (ADR 0013), by default with a first scene on its track. Returns the composition's id. */
   async createVideo(video: NewVideo): Promise<string> {
     return (await call<{ id: string }>('/videos', jsonBody(video))).id;
+  }
+
+  /** A timeline edit (ADR 0018). Resolves to the file's length, tracks and sound on either side, for undo, and what it made. */
+  editTimeline(scene: string, edit: TimelineEdit): Promise<LayerChange & TimelineResult> {
+    return call('/timeline', jsonBody({ scene, edit }));
+  }
+
+  /** Moves a sound on a video into a scene of its own with captions (ADR 0018). Resolves as editTimeline does. */
+  moveCueToScene(scene: string, cue: string): Promise<LayerChange & TimelineResult> {
+    return call('/voice-scene', jsonBody({ scene, cue }));
   }
 
   /** Moves or trims a clip, through the checked edit path. Resolves to the clip on either side, for undo. */

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Scene } from '../engine/types';
+import { STRUCTURE_TARGET } from '../studio/protocol';
 import { asLayer, EditHistory, layerKey, layerSet, sceneState, type LayerRecord } from './undo';
 
 const scene = (layer: Record<string, unknown>, rest: Record<string, unknown> = {}) =>
@@ -193,5 +194,118 @@ describe('layerSet', () => {
 describe('asLayer', () => {
   it('puts the id back on the file JSON', () => {
     expect(asLayer('one', { rig: 'a' })).toEqual({ id: 'one', rig: 'a' });
+  });
+});
+
+
+describe('timeline edits (ADR 0018)', () => {
+  const clip = (id: string, start = 0) => ({ id, scene: 'a', start });
+  const composition = (tracks: { id: string; clips: { id: string; scene: string; start: number }[] }[], audio?: { id: string; file: string; start: number; end: number; words?: unknown[] }[], duration = 4) => ({ duration, tracks, ...(audio ? { audio } : {}) });
+  const scene = (c: ReturnType<typeof composition>): Scene => ({ id: 'cut', fps: 12, duration: c.duration, size: [640, 360], seed: 0, layers: c.tracks.flatMap((t) => t.clips) as unknown as Scene['layers'], ...(c.audio ? { audio: c.audio as unknown as Scene['audio'] } : {}) });
+  const state = (c: ReturnType<typeof composition>) => sceneState(scene(c), c);
+  const record = (before: ReturnType<typeof composition>, after: ReturnType<typeof composition>) => ({ layerId: STRUCTURE_TARGET, before, after });
+
+  function started(c: ReturnType<typeof composition>): EditHistory {
+    const history = new EditHistory();
+    history.sync('cut', state(c));
+    return history;
+  }
+
+  it('keeps its history through a save that adds a clip, a track and length', () => {
+    const before = composition([{ id: 'V1', clips: [clip('a')] }]);
+    const after = composition([{ id: 'V1', clips: [clip('a')] }, { id: 'V2', clips: [clip('new', 3)] }], undefined, 6);
+    const history = started(before);
+    history.begin();
+    history.record('cut', record(before, after));
+    history.end();
+    history.sync('cut', state(after));
+    expect(history.canUndo).toBe(true);
+    expect(history.undo()?.before).toEqual(before);
+  });
+
+  it('keeps its history when a split changes the first clip too', () => {
+    const before = composition([{ id: 'V1', clips: [clip('a')] }]);
+    const after = composition([{ id: 'V1', clips: [{ ...clip('a'), out: 1 } as ReturnType<typeof clip>, clip('a-2', 1)] }]);
+    const history = started(before);
+    history.begin();
+    history.record('cut', record(before, after));
+    history.end();
+    history.sync('cut', state(after));
+    expect(history.canUndo).toBe(true);
+  });
+
+  it('keeps its history when sound moves, with its words along', () => {
+    const cue = { id: 'v', file: 'media/v.wav', start: 0, end: 1, words: [{ id: 'w0', text: 'hi', start: 0, end: 1 }] };
+    const before = composition([{ id: 'V1', clips: [] }], [cue]);
+    const after = composition([{ id: 'V1', clips: [] }], [{ ...cue, start: 1, end: 2 }]);
+    const history = started(before);
+    history.begin();
+    history.record('cut', record(before, after));
+    history.end();
+    history.sync('cut', state(after));
+    expect(history.canUndo).toBe(true);
+  });
+
+  it('keeps its history for a video with its own sound and no audio list in the file', () => {
+    const c = composition([{ id: 'V1', clips: [clip('a')] }]);
+    const after = composition([{ id: 'V1', clips: [] }]);
+    const withSound = (x: ReturnType<typeof composition>) => {
+      const s = scene(x);
+      return sceneState(x.tracks[0].clips.length ? { ...s, audio: [{ id: 'a:sound', file: 'media/a.mp4', start: 0, end: 1 }] as unknown as Scene['audio'] } : s, x);
+    };
+    const history = new EditHistory();
+    history.sync('cut', withSound(c));
+    history.begin();
+    history.record('cut', record(c, after));
+    history.end();
+    history.sync('cut', withSound(after));
+    expect(history.canUndo).toBe(true);
+  });
+
+  it('sees someone else change a cue that shares a clip\'s id', () => {
+    const before = composition([{ id: 'V1', clips: [clip('a')] }], [{ id: 'a', file: 'media/v.wav', start: 0, end: 1 }]);
+    const history = started(before);
+    history.record('cut', { layerId: 'a', before: { start: 0 }, after: { start: 0 } });
+    history.record('cut', { layerId: 'a', before: { start: 0 }, after: { start: 1 } });
+    history.sync('cut', state(composition([{ id: 'V1', clips: [clip('a')] }], [{ id: 'a', file: 'media/v.wav', start: 0, end: 2 }])));
+    expect(history.canUndo).toBe(false);
+  });
+
+  it('ends when someone else adds a clip or moves a track', () => {
+    const before = composition([{ id: 'V1', clips: [clip('a')] }, { id: 'V2', clips: [clip('b')] }]);
+    const saved = composition([{ id: 'V1', clips: [clip('a')] }, { id: 'V2', clips: [clip('b'), clip('c', 2)] }]);
+    const history = started(before);
+    history.begin();
+    history.record('cut', record(before, saved));
+    history.end();
+    history.sync('cut', state(saved));
+    expect(history.canUndo).toBe(true);
+    history.sync('cut', state(composition([{ id: 'V1', clips: [clip('a'), clip('b')] }, { id: 'V2', clips: [clip('c', 2)] }])));
+    expect(history.canUndo).toBe(false);
+  });
+
+  it('ends when someone else changes the length or the sound', () => {
+    const c = composition([{ id: 'V1', clips: [] }], [{ id: 'v', file: 'media/v.wav', start: 0, end: 1 }]);
+    const history = started(c);
+    history.record('cut', { layerId: 'x', before: { in: 0 }, after: { in: 1 } });
+    history.sync('cut', state({ ...c, duration: 9 }));
+    expect(history.canUndo).toBe(false);
+    const again = started(c);
+    again.record('cut', { layerId: 'x', before: { in: 0 }, after: { in: 1 } });
+    again.sync('cut', state(composition([{ id: 'V1', clips: [] }], [{ id: 'v', file: 'media/v.wav', start: 0, end: 2 }])));
+    expect(again.canUndo).toBe(false);
+  });
+
+  it('turns one side into the other with the fields a timeline edit may set, and null for a list that goes', () => {
+    expect(layerSet({ duration: 4, audio: [{ id: 'a' }] }, { duration: 6 }, STRUCTURE_TARGET)).toEqual({ duration: 6, audio: null });
+  });
+
+  it('keeps the rule that a scene can\'t change its layers by hand', () => {
+    const base: Scene = { id: 's', fps: 12, duration: 1, size: [10, 10], seed: 0, layers: [{ id: 'a', rig: 'fill' }] };
+    const history = new EditHistory();
+    history.sync('s', sceneState(base));
+    history.record('s', { layerId: 'a', before: { x: 1 }, after: { x: 2 } });
+    history.sync('s', sceneState({ ...base, layers: [...base.layers, { id: 'b', rig: 'fill' }] }));
+    expect(history.canUndo).toBe(false);
   });
 });

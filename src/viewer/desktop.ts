@@ -147,6 +147,8 @@ export interface DesktopBridge {
   readonly trust: DesktopTrust;
   /** Calls `cb` when the app menu opens Settings. Returns a function that stops it. */
   onOpenSettings(cb: () => void): () => void;
+  /** Calls `cb` when the Edit menu's Undo or Redo is picked. Returns a function that stops it. */
+  onHistory(cb: (step: 'undo' | 'redo') => void): () => void;
   /** Missing when the app can't update, such as when it runs from the repo. */
   readonly updates?: DesktopUpdates;
 }

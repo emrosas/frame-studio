@@ -25,7 +25,7 @@ import {
   type HitTestOptions,
   type SceneLayerSpan,
 } from '../engine';
-import type { Layer, Scene, World } from '../engine/types';
+import type { AudioCue, Layer, Scene, World } from '../engine/types';
 import { createSurfaces } from '../embed/surfaces';
 import { CanvasView } from './canvas';
 import { PlaybackClock } from './clock';
@@ -33,7 +33,7 @@ import { dragDelta, dragScale, landValue, lockAxis, movable, snapCentre, stageCe
 import { anchorKeys, deleteKeys, keyLanes, keyMarks, keysAt, moveTarget, type KeyTarget, type SelectedKey } from './keyframes';
 import type { GeneratedVoice } from './speech';
 import type { VoiceLine } from './voice';
-import { cueTarget, isLayerTarget, MARKERS_TARGET } from '../studio/protocol';
+import { cueTarget, isLayerTarget, MARKERS_TARGET, STRUCTURE_TARGET, type LayerChange } from '../studio/protocol';
 import { wordRef, wordTime } from '../engine';
 import { formatClock, visibleSpans, type ClipPlace } from './timeline';
 import { ErrorLog, errorText } from './errors';
@@ -73,8 +73,10 @@ import {
 import { desktop } from './desktop';
 import { readPref, writePref } from './prefs';
 import { StudioClient } from './studio-client';
-import type { LayerRow, SceneOption, ShotBand, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
+import type { EditTarget, LayerRow, SceneOption, ShotBand, ShotHead, ShotRows, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
 import { asLayer, EditHistory, layerKey, layerSet, sceneState } from './undo';
+import { transitionSeconds, type RawClip, type TimelineEdit, type TimelineResult, type Transition } from '../studio/timeline-edit';
+import { clipRunOn, clipUnder, type CuePlace, type StackedClip } from './timeline';
 import { parseFrameParam, RELOAD_KEY, reloadRecord, UrlSync, type UrlPosition } from './url';
 
 /** window.studio.selection: what is picked, in the shape agent tools take. */
@@ -200,6 +202,8 @@ interface CanvasDrag {
 const NUDGE_SAVE_MS = 250;
 /** How long a saved layer stays held if its file never shows that edit, which means someone else's arrived first. */
 const HOLD_MS = 2000;
+/** How long a transition preset runs, in seconds, or the clip's length if that's shorter. */
+const TRANSITION_SECONDS = 0.5;
 
 const LOCKED = 'An agent is working on this scene, so it stays put until the agent finishes.';
 
@@ -278,6 +282,8 @@ export class App {
   private scrubbing = false;
   /** Hand edits, for Command-Z. */
   private readonly history = new EditHistory();
+  /** What a timeline edit made, to select when the file with it arrives. */
+  private pickMade: { kind: 'clip' | 'cue'; id: string } | null = null;
   private historySteps: Promise<unknown> = Promise.resolve();
 
   // ---- hand edits (ADR 0015) ----
@@ -377,7 +383,17 @@ export class App {
           const scene = this.validScene();
           if (!scene || !this.entry) throw new Error('No valid scene is showing.');
           const voice = this.generated.get(file);
-          const cue = await this.studio.placeSound(this.entry.key, file, this.clock.frame / scene.fps, voice);
+          const key = this.entry.key;
+          const cue = await this.inLine(async () => {
+            this.history.begin();
+            try {
+              const placed = await this.studio.placeSound(key, file, this.clock.frame / scene.fps, voice);
+              this.history.record(key, { layerId: STRUCTURE_TARGET, ...placed.change });
+              return placed.cue;
+            } finally {
+              this.history.end();
+            }
+          });
           this.setHome(false);
           // The cue holds the script and language by now, so the job reads them from there.
           if (voice && cue && !cue.words) void this.timeVoice(cue.id);
@@ -410,7 +426,19 @@ export class App {
         this.userSetRange(range);
         this.flushNow();
       },
-      moveClip: (layerId, place) => this.moveClip(layerId, place),
+      moveClip: (layerId, place, track) => this.moveClip(layerId, place, track),
+      addClip: (source) => {
+        const scene = this.validScene();
+        if (scene) void this.timelineEdit({ op: 'add-clip', source, at: this.clock.frame / scene.fps, length: 0, track: this.selectedTrack() });
+      },
+      splitAtPlayhead: (target) => this.splitAtPlayhead(target),
+      duplicateSelected: (target) => this.duplicateSelected(target),
+      deleteSelected: (target) => this.deleteSelected(target),
+      addTrack: () => void this.timelineEdit({ op: 'add-track' }),
+      deleteTrack: (track) => void this.timelineEdit({ op: 'delete-track', track }),
+      setTransition: (clip, preset) => this.setTransition(clip, preset),
+      saveCue: (id, place) => this.saveCue(id, place),
+      moveCueToScene: (id) => void this.moveCueToScene(id),
       startKeyDrag: (target) => this.startKeyDrag(target),
       dragKeys: (to) => this.dragKeys(to),
       endKeyDrag: (commit) => this.endKeyDrag(commit),
@@ -662,8 +690,126 @@ export class App {
     return run;
   }
 
-  private moveClip(layerId: string, place: ClipPlace): Promise<boolean> {
-    return this.inLine(() => this.saveClip(layerId, place));
+  private moveClip(layerId: string, place: ClipPlace, track?: string): Promise<boolean> {
+    return this.inLine(() => this.saveClip(layerId, place, track));
+  }
+
+  // ---- the timeline as an editor (ADR 0018) ----
+
+  /** A timeline edit, in line with the other saves, as one undo step. Whatever refuses it says why in the selection bar. */
+  private timelineEdit(edit: TimelineEdit): Promise<boolean> {
+    return this.structureEdit((key) => this.studio.editTimeline(key, edit), edit.op.startsWith('add-clip') || edit.op.startsWith('split') || edit.op.startsWith('duplicate') ? (edit.op.endsWith('cue') ? 'cue' : 'clip') : null);
+  }
+
+  private structureEdit(save: (key: string) => Promise<LayerChange & TimelineResult>, made: 'clip' | 'cue' | null): Promise<boolean> {
+    return this.inLine(async () => {
+      const key = this.entry?.key;
+      if (!key) return false;
+      this.history.begin();
+      try {
+        const { before, after, made: id } = await save(key);
+        this.history.record(key, { layerId: STRUCTURE_TARGET, before, after });
+        if (id !== undefined && made) {
+          this.pickMade = { kind: made, id };
+          // The file may have got here before this answer did.
+          this.selectMade();
+        }
+        return true;
+      } catch (err) {
+        this.say(errorText(err).message);
+        return false;
+      } finally {
+        this.history.end();
+      }
+    });
+  }
+
+  /** The new clip or cue, once the file that has it arrives. */
+  private selectMade(): void {
+    const made = this.pickMade;
+    const scene = this.entry?.scene;
+    if (!made || !scene) return;
+    if (made.kind === 'clip' ? !scene.layers.some((l) => l.id === made.id) : !scene.audio?.some((c) => c.id === made.id)) return;
+    this.pickMade = null;
+    this.pick(made.kind === 'clip' ? made.id : null, null);
+    if (made.kind === 'cue') this.ui.cue = made.id;
+    this.flushNow();
+  }
+
+  /** What an edit acts on: the right-click's clip or sound, else the sound or clip selected. */
+  private editTarget(target?: EditTarget): EditTarget | null {
+    if (target) return target;
+    if (this.ui.cue !== null) return { cue: this.ui.cue };
+    if (this.entry?.kind === 'composition' && this.layerId !== null) return { clip: this.layerId };
+    return null;
+  }
+
+  private splitAtPlayhead(given?: EditTarget): void {
+    const target = this.editTarget(given);
+    const scene = this.validScene();
+    if (!scene) return;
+    if (!target) return this.say('Select a clip or sound to split it at the playhead.');
+    const at = this.clock.frame / scene.fps;
+    void this.timelineEdit('clip' in target ? { op: 'split-clip', clip: target.clip, at } : { op: 'split-cue', cue: target.cue, at });
+  }
+
+  private duplicateSelected(given?: EditTarget): void {
+    const target = this.editTarget(given);
+    if (!target) return this.say('Select a clip or sound to duplicate it.');
+    void this.timelineEdit('clip' in target ? { op: 'duplicate-clip', clip: target.clip } : { op: 'duplicate-cue', cue: target.cue });
+  }
+
+  private deleteSelected(given?: EditTarget): void {
+    const target = this.editTarget(given);
+    if (!target) return;
+    void this.timelineEdit('clip' in target ? { op: 'delete-clip', clip: target.clip } : { op: 'delete-cue', cue: target.cue }).then((saved) => {
+      if (saved && ('clip' in target ? this.layerId === target.clip : this.ui.cue === target.cue)) this.userSetLayer(null, null);
+    });
+  }
+
+  /** The selected clip's track, where a new clip goes first. */
+  private selectedTrack(): string | null {
+    return this.entry?.composition?.tracks.find((t) => t.clips.some((c) => c.id === this.layerId))?.id ?? null;
+  }
+
+  private setTransition(clip: string, preset: Transition | null): void {
+    const scene = this.validScene();
+    const place = this.clipPlace(clip);
+    const composition = this.entry?.composition;
+    if (!scene || !place || !composition) return;
+    const seconds = Math.min(TRANSITION_SECONDS, (place.out - place.in) / scene.fps);
+    let order = 0;
+    const stack = composition.tracks.flatMap((t) => t.clips.flatMap((c): StackedClip[] => {
+      const at = this.clipPlace(c.id);
+      return at ? [{ ...at, id: c.id, order: order++ }] : [];
+    }));
+    const self = stack.find((c) => c.id === clip);
+    const raw = composition.tracks.flatMap((t) => t.clips).find((c) => c.id === clip);
+    const present = raw ? transitionSeconds(raw as unknown as RawClip) : null;
+    const under = !self ? null : preset ? clipUnder(stack, self, Math.round(seconds * scene.fps)) : present !== null ? clipRunOn(stack, self, Math.round(present * scene.fps)) : null;
+    // A clip's end is left unsaid where it can be, as a drag's is: a length needn't be whole frames.
+    const out = (id: string, frames: number, length: number) => (frames >= length && !this.isPictureClip(id) ? null : frames / scene.fps);
+    void this.timelineEdit({ op: 'transition', clip, preset, seconds, ...(under ? { under: { clip: under.id, out: out(under.id, under.out, stack.find((c) => c.id === under.id)!.length) } } : {}) });
+  }
+
+  private saveCue(id: string, place: CuePlace): Promise<boolean> {
+    const fps = this.validScene()?.fps;
+    if (!fps) return Promise.resolve(false);
+    const fileOnly = place.file ? { in: place.in, fadeIn: place.fadeIn, fadeOut: place.fadeOut } : {};
+    // The last frame can end past a length that isn't whole frames, which the validator refuses.
+    const end = Math.min(place.to / fps, this.validScene()?.duration ?? Infinity);
+    return this.timelineEdit({ op: 'edit-cue', cue: id, start: place.from / fps, end, ...fileOnly });
+  }
+
+  private moveCueToScene(id: string): Promise<boolean> {
+    return this.structureEdit((key) => this.studio.moveCueToScene(key, id), 'clip');
+  }
+
+  /** The app's Edit menu, clicked or by its key: a text field's own undo, else the hand edits'. */
+  private menuHistory(step: 'undo' | 'redo'): void {
+    // As for the key: the library and a dialog keep the timeline out of reach.
+    if (focusKeepsKey(document.activeElement, 'z') || this.ui.home || document.querySelector('dialog:modal')) document.execCommand(step);
+    else if (this.clock.timeline) this.stepHistory(step);
   }
 
   /** Where a clip sits now, from the composition on screen. */
@@ -672,7 +818,7 @@ export class App {
     return shot ? { from: shot.span.from, in: shot.span.in, out: shot.end, length: shot.length } : null;
   }
 
-  private async saveClip(layerId: string, place: ClipPlace): Promise<boolean> {
+  private async saveClip(layerId: string, place: ClipPlace, track?: string): Promise<boolean> {
     const scene = this.validScene();
     if (!scene || !this.entry) return false;
     const { fps } = scene;
@@ -683,8 +829,13 @@ export class App {
     const spans = was ? { before: spanOf(was), after: spanOf(place) } : undefined;
     this.history.begin();
     try {
-      const change = await this.studio.moveClip(key, { clip: layerId, ...edit });
-      this.history.record(key, { layerId, ...change, spans });
+      if (track) {
+        const { before, after } = await this.studio.editTimeline(key, { op: 'move-clip', clip: layerId, track, ...edit });
+        this.history.record(key, { layerId: STRUCTURE_TARGET, before, after, ...(spans ? { spans } : {}) });
+      } else {
+        const change = await this.studio.moveClip(key, { clip: layerId, ...edit });
+        this.history.record(key, { layerId, ...change, spans });
+      }
       this.rangeFollows(spans?.before, spans?.after);
       return true;
     } catch (err) {
@@ -1131,9 +1282,11 @@ export class App {
     this.version++;
     this.shape = renderable ? sceneShape(scene, registry, this.total, entry?.world) : null;
     this.ui.layers = renderable ? this.layerRows(scene) : [];
-    this.history.sync(entry?.key ?? null, entry?.scene ? sceneState(entry.scene) : null);
+    this.history.sync(entry?.key ?? null, entry?.scene ? sceneState(entry.scene, entry.composition) : null);
     this.dropMissingKey();
     this.reconcileSelection(keepFrame);
+    if (keepFrame) this.selectMade();
+    else this.pickMade = null;
     if (!keepFrame) {
       // Rows and menus of the scene that's leaving won't report the pointer going.
       this.rowHover = null;
@@ -1551,6 +1704,13 @@ export class App {
         break;
       case 'delete':
         if (this.ui.selectedKey) this.deleteKey(this.ui.selectedKey);
+        else this.deleteSelected();
+        break;
+      case 'split':
+        this.splitAtPlayhead();
+        break;
+      case 'duplicate':
+        this.duplicateSelected();
         break;
       case 'mute':
         if (this.soundStatus !== 'none') this.toggleMute();
@@ -2036,6 +2196,7 @@ export class App {
       }
     });
     desktop()?.onOpenSettings(() => (this.ui.settingsOpen = true));
+    desktop()?.onHistory((step) => this.menuHistory(step));
     this.studio.onExport((event) => {
       const state = this.ui.exporting;
       if (state.running?.id !== event.id) return;
@@ -2463,6 +2624,7 @@ export class App {
     ui.sound = scene && status !== 'none' ? { status, muted: this.sound.isMuted } : null;
     ui.band = scene && this.range ? { range: this.range, frameCount: this.total } : null;
     ui.keyEdit = !scene || this.entry?.kind === 'composition' ? 'off' : this.agentWorks() ? 'locked' : 'on';
+    ui.soundEdit = scene !== null && !this.agentWorks();
     ui.shots = scene ? this.shotBands() : null;
     ui.sounds = scene ? this.soundBands(scene) : null;
     if (this.voiceScene !== scene) {
@@ -2533,29 +2695,61 @@ export class App {
     if (!marks?.some((m) => m.frame === key.frame)) this.ui.selectedKey = null;
   }
 
-  /** The shots for the scrubber, each in the lowest lane where it overlaps no other. Null without any. */
-  private shotBands(): { bands: ShotBand[]; lanes: number; frameCount: number; locked: boolean } | null {
-    const shots = this.shots();
-    if (shots.length === 0) return null;
-    const composition = this.entry?.kind === 'composition';
+  /** Lays bands out in as few rows as they fit, each in the lowest where it overlaps no other. */
+  private lanesFor<T extends { from: number; to: number }>(items: readonly T[]): { item: T; lane: number }[] & { lanes?: number } {
     const laneEnds: number[] = [];
-    const bands = [...shots]
-      .sort((a, b) => a.span.from - b.span.from)
-      .map((s): ShotBand => {
-        let lane = laneEnds.findIndex((end) => end <= s.span.from);
+    const placed: { item: T; lane: number }[] & { lanes?: number } = [...items]
+      .sort((a, b) => a.from - b.from)
+      .map((item) => {
+        let lane = laneEnds.findIndex((end) => end <= item.from);
         if (lane < 0) lane = laneEnds.push(0) - 1;
-        laneEnds[lane] = s.span.to;
-        return {
-          layerId: s.layerId,
-          label: s.label,
-          from: s.span.from,
-          to: s.span.to,
-          lane,
-          selected: s.layerId === this.layerId,
-          ...(composition ? { clip: { from: s.span.from, in: s.span.in, out: s.end, length: s.length } } : {}),
-        };
+        laneEnds[lane] = item.to;
+        return { item, lane };
       });
-    return { bands, lanes: laneEnds.length, frameCount: this.total, locked: this.agentWorks() };
+    placed.lanes = laneEnds.length;
+    return placed;
+  }
+
+  /** The bands for the scrubber: a video's clips on its tracks, top of the stack first, or a film's shots by overlap. Null without any. */
+  private shotBands(): ShotRows | null {
+    const shots = this.shots().map((s) => ({ ...s, from: s.span.from, to: s.span.to }));
+    const locked = this.agentWorks();
+    const band = (s: (typeof shots)[number], lane: number, track?: string): ShotBand => ({
+      layerId: s.layerId,
+      label: s.label,
+      from: s.from,
+      to: s.to,
+      lane,
+      selected: s.layerId === this.layerId,
+      ...(track !== undefined ? { clip: { from: s.from, in: s.span.in, out: s.end, length: s.length }, track } : {}),
+    });
+    const composition = this.entry?.composition;
+    if (composition) {
+      const bands: ShotBand[] = [];
+      const heads: ShotHead[] = [];
+      let lane = 0;
+      for (const track of [...composition.tracks].reverse()) {
+        const ids = new Set(track.clips.map((c) => c.id));
+        const placed = this.lanesFor(shots.filter((s) => ids.has(s.layerId)));
+        const lanes = Math.max(1, placed.lanes ?? 0);
+        for (const { item, lane: own } of placed) bands.push(band(item, lane + own, track.id));
+        heads.push({ name: track.id, lanes, lane, track: track.id, removable: track.clips.length === 0 && composition.tracks.length > 1 });
+        lane += lanes;
+      }
+      return { bands, heads, lanes: lane, frameCount: this.total, locked, composition: true };
+    }
+    if (shots.length === 0) return null;
+    const placed = this.lanesFor(shots);
+    const lanes = placed.lanes ?? 0;
+    const heads = Array.from({ length: lanes }, (_, i): ShotHead => ({ name: i === 0 ? 'Shots' : `Shots ${i + 1}`, lanes: 1, lane: i }));
+    return { bands: placed.map(({ item, lane }) => band(item, lane)), heads, lanes, frameCount: this.total, locked, composition: false };
+  }
+
+  /** Where a cue sits, for dragging it. A video clip's own sound follows its clip. */
+  private cuePlace(cue: AudioCue, fps: number, from: number, to: number): CuePlace | undefined {
+    if (cue.id.endsWith(':sound')) return undefined;
+    const known = cue.file ? this.ui.media.find((m) => m.file === cue.file)?.duration : undefined;
+    return { from, to, in: cue.in ?? 0, fadeIn: cue.fadeIn ?? 0, fadeOut: cue.fadeOut ?? 0, length: known ?? null, file: cue.file !== undefined };
   }
 
   /** The scene's own sound cues for the timeline, each in the lowest lane where it overlaps no other. Null without any. */
@@ -2563,22 +2757,18 @@ export class App {
     // A cue with words has a voice row instead.
     const cues = (scene.audio ?? []).filter((cue) => !cue.words?.length);
     if (cues.length === 0) return null;
-    const laneEnds: number[] = [];
-    const bands = cues
-      .map((cue) => {
-        const from = timeToFrame(cue.start, scene.fps);
-        return { cue, from, to: Math.max(from + 1, timeToFrame(cue.end, scene.fps)) };
-      })
-      .sort((a, b) => a.from - b.from)
-      .map(({ cue, from, to }): SoundBand => {
-        let lane = laneEnds.findIndex((end) => end <= from);
-        if (lane < 0) lane = laneEnds.push(0) - 1;
-        laneEnds[lane] = to;
-        const label = cue.file ? cue.file.slice(cue.file.lastIndexOf('/') + 1) : (cue.generator ?? cue.id);
-        const played = (to - from) / scene.fps;
-        return { id: cue.id, label, from, to, lane, ...(cue.file ? { file: { path: cue.file, from: cue.in ?? 0, to: (cue.in ?? 0) + played }, canTime: this.ui.keyEdit === 'on' && !cue.id.endsWith(':sound') } : {}) };
-      });
-    return { bands, lanes: laneEnds.length, frameCount: this.total };
+    const spans = cues.map((cue) => {
+      const from = timeToFrame(cue.start, scene.fps);
+      return { cue, from, to: Math.max(from + 1, timeToFrame(cue.end, scene.fps)) };
+    });
+    const placed = this.lanesFor(spans);
+    const bands = placed.map(({ item: { cue, from, to }, lane }): SoundBand => {
+      const label = cue.file ? cue.file.slice(cue.file.lastIndexOf('/') + 1) : (cue.generator ?? cue.id);
+      const played = (to - from) / scene.fps;
+      const place = this.cuePlace(cue, scene.fps, from, to);
+      return { id: cue.id, label, from, to, lane, ...(place ? { place } : {}), ...(cue.file ? { file: { path: cue.file, from: cue.in ?? 0, to: (cue.in ?? 0) + played }, canTime: this.ui.keyEdit === 'on' && !cue.id.endsWith(':sound') } : {}) };
+    });
+    return { bands, lanes: placed.lanes ?? 0, frameCount: this.total };
   }
 
   /** The cues with words, for their rows (ADR 0016). A row only changes with its scene. */
@@ -2588,7 +2778,8 @@ export class App {
       const from = timeToFrame(cue.start, scene.fps);
       const to = Math.max(from + 1, timeToFrame(cue.end, scene.fps));
       const start = cue.in ?? 0;
-      return [{ cue: { id: cue.id, start: cue.start, end: cue.end, ...(cue.in !== undefined ? { in: cue.in } : {}), words: cue.words }, label: cue.file.slice(cue.file.lastIndexOf('/') + 1), from, to, file: { path: cue.file, from: start, to: start + (to - from) / scene.fps } }];
+      const place = this.cuePlace(cue, scene.fps, from, to);
+      return [{ cue: { id: cue.id, start: cue.start, end: cue.end, ...(cue.in !== undefined ? { in: cue.in } : {}), words: cue.words }, label: cue.file.slice(cue.file.lastIndexOf('/') + 1), from, to, file: { path: cue.file, from: start, to: start + (to - from) / scene.fps }, ...(place ? { place } : {}) }];
     });
   }
 

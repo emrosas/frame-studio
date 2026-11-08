@@ -146,9 +146,13 @@ describe('a studio folder', () => {
         JSON.stringify({ ...read('compositions/short-film.json'), tracks: [{ id: 'V1', clips: [{ id: 'dot', scene: 'dot-test', start: 1 }] }] }),
       );
       await page.waitForFunction(() => (window as unknown as { studio: { scene: { layers: { id: string }[] } | null } }).studio.scene?.layers.some((l) => l.id === 'dot'));
-      await page.getByRole('button', { name: 'dot-test', exact: true }).click();
+      await page.getByRole('navigation', { name: 'Studio' }).getByRole('list', { name: 'Projects' }).locator('.project-row').first().click();
+      const library = page.getByRole('region', { name: 'Library' });
+      await expect.poll(() => library.getByRole('button', { name: 'dot-test', exact: true }).textContent()).toContain('Used in short-film');
+      await library.getByRole('button', { name: 'dot-test', exact: true }).click();
       await page.waitForFunction(() => (window as unknown as W).studio.scene?.id === 'dot-test');
-      await page.getByRole('button', { name: 'short-film', exact: true }).last().click();
+      await page.getByRole('navigation', { name: 'Studio' }).getByRole('list', { name: 'Projects' }).locator('.project-row').first().click();
+      await library.getByRole('button', { name: 'short-film', exact: true }).click();
       await page.waitForFunction(() => (window as unknown as W).studio.scene?.id === 'short-film');
       expect(await page.evaluate(() => (window as unknown as W).studio.errors)).toEqual([]);
     } finally {
@@ -282,7 +286,7 @@ describe('a studio folder', () => {
       await library.waitFor({ state: 'detached' });
       await page.waitForFunction(() => new URLSearchParams(location.search).get('scene') === 'dot-test');
 
-      await page.getByRole('button', { name: 'Library' }).first().click();
+      await page.getByRole('list', { name: 'Projects' }).locator('.project-row').first().click();
       await library.waitFor();
       await library.getByRole('button', { name: 'Back to dot-test' }).click();
       await library.waitFor({ state: 'detached' });

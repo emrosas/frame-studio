@@ -256,7 +256,7 @@ Captions that keep time on their own, animation that follows spoken words, and v
 
 ## M15: The timeline as an editor
 
-A simple video editor's timeline for compositions (ADR 0012, ADR 0013).
+Built (ADR 0018). A simple video editor's timeline for compositions (ADR 0012, ADR 0013).
 
 - Tracks for clips and sound files, with waveforms.
 - Move, trim either edge, split at the playhead, duplicate and delete, snapping to frames, the playhead and other edges.

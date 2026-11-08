@@ -35,6 +35,19 @@ export interface EditSelection {
   to: number;
 }
 
+function checkRange(from: number, to: number): void {
+  if (!(Number.isInteger(from) && Number.isInteger(to) && from >= 0 && from < to)) {
+    throw new RangeError(`the range needs integer frames with 0 <= from < to, got [${from}, ${to})`);
+  }
+}
+
+function findLayer(scene: Scene, layerId: string): LayerSpec | Layer {
+  const layer = layerId === BACKGROUND_ID ? scene.background : scene.layers.find((l) => l.id === layerId);
+  if (layer) return layer;
+  const ids = [...scene.layers.map((l) => l.id), ...(scene.background ? [BACKGROUND_ID] : [])];
+  throw new Error(`no layer "${layerId}" in scene "${scene.id}"; layers: ${ids.join(', ')}`);
+}
+
 function withPatch(from: number, to: number, patch: SelectionPatch, over?: Override): Override {
   const rig = patch.rig ?? over?.rig;
   const params = { ...over?.params, ...patch.params };
@@ -55,15 +68,9 @@ export function applyToSelection(scene: Scene, selection: EditSelection, patch: 
   if (patch.rig === undefined && Object.keys(patch.params ?? {}).length === 0) {
     throw new Error('the patch must set a rig or params');
   }
-  if (!(Number.isInteger(from) && Number.isInteger(to) && from >= 0 && from < to)) {
-    throw new RangeError(`the range needs integer frames with 0 <= from < to, got [${from}, ${to})`);
-  }
+  checkRange(from, to);
   const out = structuredClone(scene);
-  const layer: LayerSpec | Layer | undefined = layerId === BACKGROUND_ID ? out.background : out.layers.find((l) => l.id === layerId);
-  if (!layer) {
-    const ids = [...out.layers.map((l) => l.id), ...(out.background ? [BACKGROUND_ID] : [])];
-    throw new Error(`no layer "${layerId}" in scene "${scene.id}"; layers: ${ids.join(', ')}`);
-  }
+  const layer = findLayer(out, layerId);
 
   const result: Override[] = [];
   let cursor = from;
@@ -82,6 +89,28 @@ export function applyToSelection(scene: Scene, selection: EditSelection, patch: 
   }
   if (cursor < to) result.push(withPatch(cursor, to, patch));
   layer.overrides = result.sort((a, b) => a.from - b.from);
+  return out;
+}
+
+/**
+ * The scene with the selected layer's overrides cleared over frames [from, to).
+ * Overrides the range partly covers are split, so they still apply outside it.
+ * Refuses a range with no override in it. Returns a new scene.
+ */
+export function removeOverrides(scene: Scene, selection: EditSelection): Scene {
+  const { layerId, from, to } = selection;
+  if (layerId === undefined) throw new Error('removing overrides needs a layerId');
+  checkRange(from, to);
+  const out = structuredClone(scene);
+  const layer = findLayer(out, layerId);
+  const overrides = layer.overrides ?? [];
+  if (!overrides.some((o) => o.from < to && o.to > from)) throw new Error(`layer "${layerId}" has no override in [${from}, ${to})`);
+  const result = overrides.flatMap((o) => {
+    if (o.to <= from || o.from >= to) return [o];
+    return [...(o.from < from ? [{ ...o, to: from }] : []), ...(o.to > to ? [{ ...o, from: to }] : [])];
+  });
+  if (result.length > 0) layer.overrides = result;
+  else delete layer.overrides;
   return out;
 }
 

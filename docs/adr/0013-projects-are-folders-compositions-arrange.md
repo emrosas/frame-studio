@@ -1,6 +1,6 @@
 # 0013: A project is a folder; scenes draw and compositions arrange
 
-Status: accepted, 2026-10-02, amended 2026-11-06 (projects in the sidebar, hand edits). Replaces ADR 0007's projects inside a studio folder, and ADR 0008's one folder per app window.
+Status: accepted, 2026-10-02, amended 2026-11-06 (projects in the sidebar, hand edits) and 2026-11-08 (Footage rows, one thread list). Replaces ADR 0007's projects inside a studio folder, and ADR 0008's one folder per app window.
 
 ## Context
 
@@ -20,8 +20,8 @@ The viewer shows a whole studio folder at once: loose scenes, every project in `
     references/  out/  .frame-studio/
   ```
 
-- **Many projects listed, one on screen.** The canvas shows one scene, so "open" means listed in the sidebar. Each recent project is a group there: a header with its name and a dot for its threads, then its videos, its scenes and any older films. The project on screen sits open at the top; the others stay folded until you open them. The + menu makes a new project and opens another folder. A browser shows the one group and can't switch.
-- **Two views of the same groups (amended 2026-11-06).** The sidebar switches between Footage and Threads, with the same project headers and folds. Threads shows every listed project's threads as cards, and a card in another project opens that project on the thread's scene with the conversation, in one load.
+- **Many projects listed, one on screen.** The canvas shows one scene, so "open" means listed in the sidebar. Each recent project is a row there, the one on screen first (amended 2026-11-08): a click opens its library, where its videos, scenes and older films are picked, and a row never unfolds. Footage shows no thread status, since nothing there can be settled. The + menu makes a new project and opens another folder. A browser shows the one project and can't switch.
+- **Two views of the same groups (amended 2026-11-06).** The sidebar switches between Footage and Threads. Threads shows every listed project's threads in one list, newest first, each card naming its project rather than sitting in a project's fold (amended 2026-11-08), and a card in another project opens that project on the thread's scene with the conversation, in one load.
 - **The app lists a project without starting it.** It reads each recent project's videos, scenes, older films and posters from disk, as it reads its threads, so a project's server runs only when the project is on screen, an agent works there, or you've just left it. Clicking a row of another project loads that project's server in the window, on that scene.
 - **Projects keep working in the background.** The app keeps a project's studio server, and its render worker, running after you switch away while a thread there is working or waiting for an agent. The two projects left most recently stay warm for ten minutes as well, so going back takes under a second; then the server stops. A project's header shows the most pressing of its threads: waiting on your input, your turn, or working, read from the project's own thread files.
 - **What the viewer keeps belongs to the app.** Each project's server has its own port, so its page has its own storage. In the app, folds, layout, recent models and the agent picked live in the app's settings, and unsent prompts in the main process per project. A browser keeps them in its own storage.

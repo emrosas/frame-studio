@@ -28,6 +28,7 @@
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Composer from './Composer.svelte';
   import Icon from './Icon.svelte';
+  import Markdown from './Markdown.svelte';
   import ModelPicker from './ModelPicker.svelte';
   import QuestionCard from './QuestionCard.svelte';
   import SelectionToken from './SelectionToken.svelte';
@@ -136,6 +137,26 @@
     return () => follow.disconnect();
   });
 
+  /** How many of a run of steps show until you ask for the rest: the newest, as T3 Code's work log does. */
+  const STEPS_SHOWN = 4;
+  // The runs of steps you opened, by turn and place.
+  let openSteps = $state<Record<string, boolean>>({});
+  const STEP_ICON = { running: 'working', done: 'check', failed: 'close' } as const;
+
+  // A prompt's Copy says so for a moment.
+  let copiedAsk = $state<number | null>(null);
+  async function copyAsk(k: number, text: string): Promise<void> {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      return;
+    }
+    copiedAsk = k;
+    setTimeout(() => {
+      if (copiedAsk === k) copiedAsk = null;
+    }, 1500);
+  }
+
   const frameUrl = (turn: number, file: string) => `/__studio/requests/${thread.id}/turns/${turn}/frames/${encodeURIComponent(file)}`;
   const settingsText = (s: TurnSettings | undefined) =>
     s ? [s.model, s.effort, s.access === 'full' ? 'full access' : null].filter(Boolean).join(' · ') : '';
@@ -187,30 +208,45 @@
         {@const transcript = foldTurn(ui.turnEvents[`${thread.id}:${k}`] ?? [])}
         <li class="turn is-{turn.status}" aria-label="Turn {k + 1}">
           <div class="ask">
-            <p class="ask-prompt">{turn.ask.prompt}</p>
-            {#if turn.ask.references.length > 0}
-              <ul class="composer-refs" aria-label="Reference images">
-                {#each turn.ask.references.filter(isReferencePath) as ref (ref)}<li><img src="/{ref}" alt={ref} /></li>{/each}
-              </ul>
-            {/if}
+            <div class="ask-bubble">
+              <p class="ask-prompt">{turn.ask.prompt}</p>
+              {#if turn.ask.references.length > 0}
+                <ul class="composer-refs" aria-label="Reference images">
+                  {#each turn.ask.references.filter(isReferencePath) as ref (ref)}<li><img src="/{ref}" alt={ref} /></li>{/each}
+                </ul>
+              {/if}
+            </div>
             <p class="ask-meta">
-              {askLabel(turn.ask.selection)}{turn.attempt && turn.attempt > 1 ? ` · attempt ${turn.attempt}` : ''}{settingsText(turn.settings) && !(thread.held && k === thread.turns.length - 1) ? ` · ${settingsText(turn.settings)}` : ''}
+              <button type="button" class="ask-copy" aria-label="Copy prompt" title="Copy" onclick={() => void copyAsk(k, turn.ask.prompt)}><Icon name={copiedAsk === k ? 'check' : 'copy'} /></button>
+              <span>{askLabel(turn.ask.selection)}{turn.attempt && turn.attempt > 1 ? ` · attempt ${turn.attempt}` : ''}{settingsText(turn.settings) && !(thread.held && k === thread.turns.length - 1) ? ` · ${settingsText(turn.settings)}` : ''}</span>
             </p>
           </div>
 
           <div class="work">
             {#each groupSteps(transcript.items) as item, i (i)}
               {#if item.kind === 'text'}
-                <p class="work-text">{item.text}</p>
+                <div class="work-text"><Markdown text={item.text} /></div>
               {:else if item.kind === 'steps'}
                 {@const running = item.steps.some((step) => step.status === 'running')}
                 {@const failed = item.steps.some((step) => step.status === 'failed')}
-                <details class="work-steps" class:is-running={running} class:is-failed={failed}>
-                  <summary>{item.steps.length} {item.steps.length === 1 ? 'step' : 'steps'}</summary>
-                  {#each item.steps as step (step.id)}
-                    <p class="work-step is-{step.status}" title={step.detail ?? ''}>{step.label}</p>
-                  {/each}
-                </details>
+                {@const key = `${k}:${i}`}
+                {@const hidden = openSteps[key] ? 0 : Math.max(0, item.steps.length - STEPS_SHOWN)}
+                <section class="work-log" class:is-running={running} class:is-failed={failed} aria-label="Steps">
+                  <header class="work-log-head">
+                    <span>{item.steps.length} {item.steps.length === 1 ? 'step' : 'steps'}</span>
+                    {#if item.steps.length > STEPS_SHOWN}
+                      <button type="button" class="link-btn" aria-expanded={hidden === 0} onclick={() => (openSteps[key] = hidden > 0)}>{hidden > 0 ? `Show ${hidden} more` : 'Show less'}</button>
+                    {/if}
+                  </header>
+                  <ul>
+                    {#each item.steps as step, j (step.id)}
+                      <li class="work-step is-{step.status}" title={step.detail ?? ''} hidden={j < hidden}>
+                        <Icon name={STEP_ICON[step.status]} />
+                        <span>{step.label}</span>
+                      </li>
+                    {/each}
+                  </ul>
+                </section>
               {:else if item.kind === 'frames'}
                 <div class="work-frames">
                   {#each item.frames as f (f.file)}
@@ -254,15 +290,14 @@
           </div>
 
           <footer class="turn-foot">
-            <span class="turn-status">{turn.status === 'working' && turn.waitingSince ? 'waiting for you' : TURN_LABELS[turn.status]}</span>
+            <span class="turn-status">{#if turn.status === 'working' && !turn.waitingSince}<span class="working-dots" aria-hidden="true"><i></i><i></i><i></i></span>{/if}{turn.status === 'working' && turn.waitingSince ? 'waiting for you' : TURN_LABELS[turn.status]}</span>
             {#if transcript.usage}<span class="turn-usage">{describeUsage(transcript.usage)}</span>{/if}
             {#if turn.checkpointAt && canRevert(thread, k, ui.studio.requests)}
               <button type="button" class="btn is-ghost is-small" aria-label="Revert to before turn {k + 1}" title="Put the scene back as it was before this turn" onclick={() => run(() => actions.revert(thread.id, k))}>
                 <Icon name="revert" />Revert to here
               </button>
             {/if}
-            {#if external && turn.summary}<span class="turn-summary">{turn.summary}</span>{/if}
-            {#if !external && turn.summary && transcript.items.length === 0}<span class="turn-summary">{turn.summary}</span>{/if}
+            {#if (external || transcript.items.length === 0) && turn.summary}<div class="turn-summary"><Markdown text={turn.summary} /></div>{/if}
           </footer>
         </li>
       {/each}

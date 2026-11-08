@@ -6,13 +6,13 @@
  */
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { KeyStore, type KeyCipher } from '../../desktop/keys';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { KeyRefused, KeyStore, type KeyCipher } from '../../desktop/keys';
 import { projectCode } from '../../tools/studio/project-code';
 import { CodeHost, withheldCode } from '../../tools/studio/code';
 import { studioFolder } from '../../tools/studio/folder';
@@ -172,7 +172,46 @@ describe('the key store', () => {
     mkdirSync(join(folder, 'keys.json'), { recursive: true });
     const store = new KeyStore(join(folder, 'keys.json'), cipher());
     await expect(store.save('elevenlabs', KEY)).rejects.toThrow(/can't read its key file/);
-    expect(await store.list()).toEqual([]);
+    await expect(store.remove('elevenlabs')).rejects.toBeInstanceOf(KeyRefused);
+    await expect(store.reveal('elevenlabs')).rejects.toBeInstanceOf(KeyRefused);
+    await expect(store.list()).rejects.toBeInstanceOf(KeyRefused);
+  });
+
+  it('moves a file with a broken entry aside, instead of throwing where it reads one', async () => {
+    for (const entry of [null, 'x', { cipher: 'x', last4: 1, added: 'y' }]) {
+      const folder = mkdtempSync(join(dir, 'store-entry-'));
+      const file = join(folder, 'keys.json');
+      writeFileSync(file, JSON.stringify({ version: 1, keys: { elevenlabs: entry } }));
+      const store = new KeyStore(file, cipher());
+      expect(await store.list()).toEqual([]);
+      expect(await store.reveal('elevenlabs')).toBeNull();
+      expect(readdirSync(folder).filter((f) => f.includes('damaged'))).toHaveLength(1);
+    }
+  });
+
+  it('says a key it holds will not decrypt', async () => {
+    const file = join(dir, 'store-decrypt', 'keys.json');
+    await new KeyStore(file, cipher()).save('elevenlabs', KEY);
+    const broken = new KeyStore(file, cipher({ decryptString: () => { throw new Error('keychain changed'); } }));
+    await expect(broken.reveal('elevenlabs')).rejects.toBeInstanceOf(KeyRefused);
+    await expect(broken.reveal('elevenlabs')).rejects.toThrow(/can't decrypt/);
+  });
+
+  it('takes changes one at a time, so neither is lost', async () => {
+    const store = new KeyStore(join(dir, 'store-parallel', 'keys.json'), cipher());
+    await store.save('old', KEY);
+    await Promise.all([store.save('one', KEY), store.save('two', KEY), store.remove('old')]);
+    expect((await store.list()).map((k) => k.provider).sort()).toEqual(['one', 'two']);
+  });
+
+  it('keeps working after a change that failed', async () => {
+    const file = join(dir, 'store-after', 'keys.json');
+    mkdirSync(file, { recursive: true });
+    const store = new KeyStore(file, cipher());
+    await expect(store.save('elevenlabs', KEY)).rejects.toThrow();
+    rmSync(file, { recursive: true });
+    await store.save('elevenlabs', KEY);
+    expect(await store.reveal('elevenlabs')).toBe(KEY);
   });
 
   it('forgets a removed key', async () => {
@@ -396,10 +435,51 @@ describe('saving a generated voice', () => {
   it('saves under a name it picks, and never over another file', async () => {
     const root = join(dir, 'save-ok');
     mkdirSync(root);
-    const first = await saveVoiceFile(root, 'test', '.mp3', new Uint8Array([1]));
-    const second = await saveVoiceFile(root, 'test', '.mp3', new Uint8Array([2]));
-    expect(first).toMatch(/^media\/voice-test-/);
-    expect(second).not.toBe(first);
+    // One clock reading, so both want the same name.
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-11-07T12:00:00Z') });
+    try {
+      const first = await saveVoiceFile(root, 'test', '.mp3', new Uint8Array([1]));
+      const second = await saveVoiceFile(root, 'test', '.mp3', new Uint8Array([2]));
+      expect(first).toBe('media/voice-test-20261107-120000.mp3');
+      expect(second).toBe('media/voice-test-20261107-120000-2.mp3');
+      expect(readFileSync(join(root, first))[0]).toBe(1);
+      expect(readFileSync(join(root, second))[0]).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
     expect(readdirSync(join(root, 'media')).filter((n) => n.endsWith('.part'))).toEqual([]);
+  });
+
+  it('refuses before billing whatever could not take the file', async () => {
+    const asFile = join(dir, 'save-file');
+    mkdirSync(asFile);
+    writeFileSync(join(asFile, 'media'), 'not a folder');
+    await expect(checkMediaFolder(asFile)).rejects.toThrow(/can't write/);
+
+    const dangling = join(dir, 'save-dangling');
+    mkdirSync(dangling);
+    symlinkSync(join(dir, 'nowhere'), join(dangling, 'media'));
+    await expect(checkMediaFolder(dangling)).rejects.toThrow(/can't write/);
+
+    const locked = join(dir, 'save-locked');
+    mkdirSync(join(locked, 'media'), { recursive: true });
+    chmodSync(join(locked, 'media'), 0o500);
+    await expect(checkMediaFolder(locked)).rejects.toThrow(/can't write/);
+    chmodSync(join(locked, 'media'), 0o700);
+
+    const noMedia = join(dir, 'save-readonly');
+    mkdirSync(noMedia);
+    chmodSync(noMedia, 0o500);
+    await expect(checkMediaFolder(noMedia)).rejects.toThrow(/can't write/);
+    chmodSync(noMedia, 0o700);
+  });
+
+  it('takes a folder named Media where the disk ignores case', async () => {
+    const root = join(dir, 'save-case');
+    mkdirSync(join(root, 'Media'), { recursive: true });
+    if (!existsSync(join(root, 'media'))) return;
+    await checkMediaFolder(root);
+    await saveVoiceFile(root, 'test', '.mp3', new Uint8Array([1]));
+    expect(readdirSync(join(root, 'Media'))).toHaveLength(1);
   });
 });

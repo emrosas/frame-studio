@@ -634,9 +634,12 @@ export const LAYER_EDIT_FIELDS = ['params', 'tracks', 'overrides', 'mask', 'star
  */
 export const cueTarget = (cueId: string): string => `audio/${cueId}`;
 export const MARKERS_TARGET = 'markers/';
+/** A whole timeline edit (ADR 0018): its length, tracks and sound, restored together, for undo. */
+export const STRUCTURE_TARGET = 'structure/';
+export const STRUCTURE_FIELDS = ['duration', 'tracks', 'audio'];
 export const isLayerTarget = (id: string): boolean => !id.includes('/');
 /** The fields a target's edit may change. */
-export const editFields = (target: string): readonly string[] => (target === MARKERS_TARGET ? ['markers'] : target.startsWith('audio/') ? ['words'] : LAYER_EDIT_FIELDS);
+export const editFields = (target: string): readonly string[] => (target === STRUCTURE_TARGET ? STRUCTURE_FIELDS : target === MARKERS_TARGET ? ['markers'] : target.startsWith('audio/') ? ['words'] : LAYER_EDIT_FIELDS);
 
 /** A hand edit of one layer or clip: each field in `set` is replaced whole, and null removes it (ADR 0015). */
 export interface LayerEdit {

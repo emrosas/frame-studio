@@ -1,60 +1,51 @@
 <!--
   The sidebar: the logo with search and one + menu, then a switch between
   Footage and Threads (Command-1 and 2), so the threads have a place of their
-  own beside the conversation. Both list one group per project (ADR 0013): the
-  one on screen open at the top, the other recent projects below it, folded
-  until you open them. Footage has the library above them. Which are open is
-  kept in the app, since every project's page has an origin of its own. The
-  filter stays out of sight until Command-F or the search icon, and spans every
-  project. At the bottom, the app's update when it has one. Sound files live in
-  the library. A browser has the one group.
+  own beside the conversation. Footage lists the projects (ADR 0013), the one
+  on screen first, and a click opens one's library in the middle, where its
+  videos and scenes are picked. Threads is one list for every project, newest
+  first, each card naming its project, with the settled ones under a Done
+  fold. Whether that fold is open is kept in the app, since every project's
+  page has an origin of its own. The filter stays out of sight until Command-F
+  or the search icon, and spans every project. At the bottom, the app's update
+  when it has one. A browser has the one project.
 -->
 <script lang="ts">
-  import { tick, untrack } from 'svelte';
+  import { tick } from 'svelte';
   import { desktop, type ProjectEntry } from '../desktop';
   import { readPref, writePref } from '../prefs';
-  import { projectGroups } from '../project-groups';
+  import { projectRows } from '../project-rows';
   import { threadSummary } from '../../studio/protocol';
-  import { isSeen, sceneDots, threadGroups } from '../thread-groups';
+  import { isSeen, threadBadge, threadList, type ThreadEntry } from '../thread-groups';
   import type { ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
   import Logo from './Logo.svelte';
   import Popover from './Popover.svelte';
-  import ProjectGroup from './ProjectGroup.svelte';
-  import ThreadGroup from './ThreadGroup.svelte';
+  import ProjectRow from './ProjectRow.svelte';
+  import ThreadCard from './ThreadCard.svelte';
   import UpdateCard from './UpdateCard.svelte';
 
   let { ui, actions, hidden }: { ui: ViewerUi; actions: ViewerActions; hidden: boolean } = $props();
 
-  /** Which folds you've set and the last project on screen. */
+  /** Whether the Done fold is open. */
   const SIDEBAR_KEY = 'frame-studio:sidebar';
 
-  function savedSidebar(): { folds: Record<string, boolean>; last: string | null } {
+  function savedDone(): boolean {
     try {
-      const saved = JSON.parse(readPref(SIDEBAR_KEY) ?? '{}') as { folds?: Record<string, boolean>; last?: string };
-      return { folds: saved.folds ?? {}, last: saved.last ?? null };
+      return (JSON.parse(readPref(SIDEBAR_KEY) ?? '{}') as { done?: boolean }).done === true;
     } catch {
-      return { folds: {}, last: null };
+      return false;
     }
   }
 
   const folder = $derived(ui.folder?.path ?? '');
   const canSwitch = $derived(ui.folder?.canSwitch ?? false);
-  const saved = savedSidebar();
-  let folds = $state<Record<string, boolean>>(saved.folds);
-  // A project just arrived on screen sits open, even if you left it folded. Each switch loads the page, so this runs once per project.
-  const arrived = untrack(() => folder);
-  if (saved.last !== arrived && folds[arrived] === false) delete folds[arrived];
+  let doneOpen = $state(savedDone());
   let projects = $state.raw<readonly ProjectEntry[]>(desktop()?.boot.projects ?? []);
 
-  function keep(): void {
-    writePref(SIDEBAR_KEY, JSON.stringify({ folds: $state.snapshot(folds), last: arrived }));
-  }
-  keep();
-
-  function fold(key: string, open: boolean): void {
-    folds[key] = open;
-    keep();
+  function foldDone(open: boolean): void {
+    doneOpen = open;
+    writePref(SIDEBAR_KEY, JSON.stringify({ done: open }));
   }
 
   async function refresh(): Promise<void> {
@@ -78,15 +69,18 @@
   let field = $state<HTMLInputElement | null>(null);
   const name = $derived(folder.split(/[\\/]/).filter(Boolean).pop() ?? folder);
   const query = $derived(filtering ? filter : '');
-  const groups = $derived(projectGroups({ entries: projects, scenes: ui.scenes, folder: { path: folder, name }, folds, query }));
+  const rows = $derived(projectRows({ entries: projects, scenes: ui.scenes, folder: { path: folder, name }, query }));
 
   const threads = $derived(ui.layout.side === 'threads');
   const live = $derived(ui.studio.requests.map((r) => threadSummary(r, ui.studio.now, { poster: ui.thumbs[r.sceneId] ?? null })));
-  const threadsIn = (q: string) => threadGroups({ entries: projects, live, folder: { path: folder, name }, folds, seen: ui.threadsSeen, query: q });
+  const threadsIn = (q: string) => threadList({ entries: projects, live, folder: { path: folder, name }, seen: ui.threadsSeen, query: q });
   const allThreads = $derived(threadsIn(''));
-  const shownThreads = $derived(query.trim() === '' ? allThreads : threadsIn(query));
-  const waiting = $derived(allThreads.reduce((sum, g) => sum + g.waiting, 0));
-  const dots = $derived(Object.fromEntries(allThreads.map((g) => [g.path, sceneDots(g.threads, (t) => isSeen(ui.threadsSeen, g.path, t))])));
+  const list = $derived(query.trim() === '' ? allThreads : threadsIn(query));
+  const waiting = $derived(allThreads.waiting);
+  // One project needs no name on every card.
+  const named = $derived(projects.length > 1);
+  const showDone = $derived(doneOpen || query.trim() !== '');
+  const settledHere = $derived(list.done.some((e) => e.current));
 
   function show(side: 'footage' | 'threads'): void {
     ui.layout.side = side;
@@ -124,19 +118,19 @@
     actions.openFolder();
   }
 
-  // Showing a scene of an older film opens its fold; after that you can fold it again.
-  const film = $derived(ui.scenes.find((s) => s.key === ui.selectedScene)?.film ?? null);
-  $effect(() => {
-    const id = film;
-    if (id === null) return;
-    untrack(() => {
-      if (folds[`${folder}#films`] !== true || folds[`${folder}#film:${id}`] === false) {
-        folds[`${folder}#films`] = true;
-        folds[`${folder}#film:${id}`] = true;
-        keep();
-      }
-    });
-  });
+  const isOpen = (e: ThreadEntry) => (ui.switching ? ui.switching.path === e.path && ui.switching.thread === e.thread.id : e.current && ui.studio.open === e.thread.id);
+
+  async function pick(e: ThreadEntry, event: MouseEvent & { currentTarget: HTMLButtonElement }): Promise<void> {
+    // Hand focus back so Space and the arrow keys drive playback again.
+    event.currentTarget.blur();
+    if (e.current) {
+      ui.layout.panel = true;
+      actions.openThread(e.thread.id);
+      return;
+    }
+    const problem = await actions.openProject(e.path, e.name, { scene: e.thread.sceneId, thread: e.thread.id });
+    note = problem ? { text: problem, error: true } : null;
+  }
 </script>
 
 <svelte:window
@@ -151,6 +145,15 @@
     }
   }}
 />
+
+{#snippet cards(entries: readonly ThreadEntry[])}
+  <ul class="thread-cards">
+    {#each entries as e (`${e.path}#${e.thread.id}`)}
+      {@const open = isOpen(e)}
+      <li><ThreadCard {ui} thread={e.thread} badge={threadBadge(e.thread, !open && isSeen(ui.threadsSeen, e.path, e.thread))} project={e.current ? null : e.path} projectName={named ? e.name : null} {open} onopen={(event) => void pick(e, event)} /></li>
+    {/each}
+  </ul>
+{/snippet}
 
 <nav class="sidebar" aria-label="Studio" {hidden}>
   <header class="sidebar-head">
@@ -190,22 +193,13 @@
     </button>
   </div>
 
-  {#if !threads}
-    <div class="sidebar-top">
-      <button type="button" class="side-item" aria-current={ui.home ? 'page' : undefined} onclick={(e) => { actions.showHome(true); e.currentTarget.blur(); }}>
-        <Icon name="library" />
-        <span class="name">Library</span>
-      </button>
-    </div>
-  {/if}
-
   <div class="sidebar-scroll">
     {#if filtering}
       <input
         class="side-filter"
         type="search"
         placeholder="Filter"
-        aria-label={threads ? 'Filter threads' : 'Filter videos and scenes'}
+        aria-label={threads ? 'Filter threads' : 'Filter projects, videos and scenes'}
         autocomplete="off"
         spellcheck="false"
         bind:this={field}
@@ -220,17 +214,30 @@
     {/if}
     {#if note}<p class="side-empty panel-note" class:is-error={note.error} role="status">{note.text}</p>{/if}
     {#if threads}
-      {#each shownThreads as group (group.path)}
-        <ThreadGroup {group} {ui} {actions} onfold={fold} onnote={(next) => (note = next)} onforget={() => void refresh()} />
-      {:else}
-        <p class="side-empty">No matches.</p>
-      {/each}
+      {#if list.threads.length > 0}
+        {@render cards(list.threads)}
+      {:else if list.done.length === 0}
+        <p class="side-empty">{query.trim() === '' ? 'No threads yet.' : 'No matches.'}</p>
+      {/if}
+      {#if list.done.length > 0}
+        <section class="side-section" aria-label="Done">
+          <div class="done-head">
+            <button type="button" class="side-label side-fold" aria-expanded={showDone} onclick={() => foldDone(!showDone)}>
+              <span class="chevron" class:is-closed={!showDone}><Icon name="chevronDown" /></span>
+              Done
+            </button>
+            {#if settledHere}<button type="button" class="link-btn" title={named ? `Clears the settled threads in ${name}` : undefined} onclick={() => actions.clearFinished()}>Clear settled</button>{/if}
+          </div>
+          {#if showDone}{@render cards(list.done)}{/if}
+        </section>
+      {/if}
     {:else}
-      {#each groups as group (group.path)}
-        <ProjectGroup group={{ ...group, status: allThreads.find((g) => g.path === group.path)?.status ?? group.status }} {ui} {actions} filtering={query.trim() !== ''} {folds} dots={dots[group.path] ?? {}} onfold={fold} onnote={(next) => (note = next)} onforget={() => void refresh()} />
-      {:else}
-        <p class="side-empty">No matches.</p>
-      {/each}
+      <ul class="project-list" aria-label="Projects">
+        {#each rows as row (row.path)}
+          <ProjectRow {row} {ui} {actions} onnote={(next) => (note = next)} onforget={() => void refresh()} />
+        {/each}
+      </ul>
+      {#if rows.length === 0}<p class="side-empty">No matches.</p>{/if}
     {/if}
   </div>
 

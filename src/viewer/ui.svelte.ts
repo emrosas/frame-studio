@@ -8,7 +8,8 @@ import type { OpenTarget, ProjectEntry, UpdateState } from './desktop';
 import type { KeyLane, KeyMark, KeyTarget, SelectedKey } from './keyframes';
 import { readPref } from './prefs';
 import type { FrameRange } from './selection';
-import type { ClipPlace, VisibleSpan } from './timeline';
+import type { Transition } from '../studio/timeline-edit';
+import type { ClipPlace, CuePlace, VisibleSpan } from './timeline';
 import type { RequestAction } from './studio-client';
 import type { GeneratedVoice } from './speech';
 import type { VoiceLine } from './voice';
@@ -103,6 +104,8 @@ export interface SoundBand {
   file?: { path: string; from: number; to: number };
   /** A sound file with no words yet can be timed (ADR 0016). */
   canTime?: boolean;
+  /** Where it sits, for dragging it. A video clip's own sound follows the clip and has none (ADR 0018). */
+  place?: CuePlace;
 }
 
 /** A timing job on screen (ADR 0016): asking to fetch the model first, working, or why it stopped. */
@@ -137,6 +140,33 @@ export interface StackMenu {
 }
 
 /** A shot on the scrubber: a scene layer's span in the scene on screen (ADR 0007). */
+/** A row head on the clips section: a composition's track, top of the stack first, or a film's overlap row. */
+export interface ShotHead {
+  name: string;
+  /** How many rows it takes: clips that overlap on a track show one under the other. */
+  lanes: number;
+  /** The first of them. */
+  lane: number;
+  /** The composition track, which a clip can be dragged to. */
+  track?: string;
+  /** A track with nothing on it, which can go, unless it's the last. */
+  removable?: boolean;
+}
+
+/** What an edit from a right-click acts on, in place of the selection. */
+export type EditTarget = { clip: string } | { cue: string };
+
+/** The clips section of the timeline. */
+export interface ShotRows {
+  bands: ShotBand[];
+  heads: ShotHead[];
+  lanes: number;
+  frameCount: number;
+  locked: boolean;
+  /** A video's tracks, which can be edited, rather than a film's shots. */
+  composition: boolean;
+}
+
 export interface ShotBand {
   layerId: string;
   /** The placed scene's id. */
@@ -148,6 +178,8 @@ export interface ShotBand {
   selected: boolean;
   /** Where the clip sits, for dragging it, on a composition. */
   clip?: ClipPlace;
+  /** The composition track it's on. */
+  track?: string;
 }
 
 export interface TimelineReadout {
@@ -256,8 +288,24 @@ export interface ViewerActions {
   showHome(on: boolean): void;
   /** Sets the frame range from a drag on the ruler; null covers every frame. */
   dragRange(range: FrameRange | null): void;
-  /** Moves or trims a clip of the composition on screen. Says why not in the selection bar. Resolves to whether it saved. */
-  moveClip(layerId: string, place: ClipPlace): Promise<boolean>;
+  /** Moves or trims a clip of the composition on screen, to `track` if it changes. Says why not in the selection bar. Resolves to whether it saved. */
+  moveClip(layerId: string, place: ClipPlace, track?: string): Promise<boolean>;
+  /** Adds a scene, composition or picture at the playhead, growing the video if it has to. */
+  addClip(source: { scene: string } | { file: string }): void;
+  /** Splits the selected clip or sound at the playhead, or `target` if given. */
+  splitAtPlayhead(target?: EditTarget): void;
+  /** Puts a copy of the selected clip or sound after it. */
+  duplicateSelected(target?: EditTarget): void;
+  /** Deletes the selected clip or sound. */
+  deleteSelected(target?: EditTarget): void;
+  addTrack(): void;
+  deleteTrack(track: string): void;
+  /** Writes a transition onto a clip's start, or takes it off with null. */
+  setTransition(clip: string, preset: Transition | null): void;
+  /** Moves or trims a sound, or sets its fades. Resolves to whether it saved. */
+  saveCue(id: string, place: CuePlace): Promise<boolean>;
+  /** Moves a sound out of a video into a scene of its own, with captions. */
+  moveCueToScene(id: string): void;
   /** Starts a drag of keys or a bar. False when they can't move, and the selection bar says why. */
   startKeyDrag(target: KeyTarget): boolean;
   /** Shows the drag: a diamond's frame, or the frames a bar or fade moved. */
@@ -484,7 +532,7 @@ export class ViewerUi {
   /** The frame range band on the scrubber. */
   band = $state<{ range: FrameRange; frameCount: number } | null>(null);
   /** Shot bands under the scrubber, on a scene that places shots. */
-  shots = $state<{ bands: ShotBand[]; lanes: number; frameCount: number; locked: boolean } | null>(null);
+  shots = $state<ShotRows | null>(null);
   /** The scene a shot was opened from, for the link back. */
   back = $state<{ key: string; label: string } | null>(null);
   exporting = $state<ExportState>({ open: false, running: null, result: null, canReveal: false });
@@ -500,6 +548,8 @@ export class ViewerUi {
   selectedKey = $state.raw<SelectedKey | null>(null);
   /** Whether keys can be edited: on, locked while an agent works on the scene, or off where the timeline shows clips. */
   keyEdit = $state<'on' | 'locked' | 'off'>('off');
+  /** Sound can be moved, trimmed and faded: on a valid scene or video, while no agent works there (ADR 0018). */
+  soundEdit = $state(false);
   /** The sound cues with words, as voice rows under the layers (ADR 0016). */
   voices = $state<readonly VoiceLine[]>([]);
   voiceJob = $state<VoiceJob | null>(null);

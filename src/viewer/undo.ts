@@ -9,11 +9,13 @@
 // (an agent's edit, a hand edit of the file) ends the history, since the
 // inverse of an edit is no longer known to be right. Pure, so it is unit tested
 // without a browser. A cue's words and the markers go through the same stack,
-// under the ids protocol.ts gives them (ADR 0016).
+// under the ids protocol.ts gives them (ADR 0016). A timeline edit that adds or
+// removes things goes under one more, holding the file's length, tracks and
+// sound whole (ADR 0018).
 
 import type { Layer, Scene } from '../engine/types';
 import { BACKGROUND_ID } from '../engine/types';
-import { cueTarget, editFields, MARKERS_TARGET, type LayerChange } from '../studio/protocol';
+import { cueTarget, editFields, MARKERS_TARGET, STRUCTURE_TARGET, type LayerChange } from '../studio/protocol';
 import type { FrameRange } from './selection';
 
 type LayerJson = LayerChange['before'];
@@ -43,20 +45,36 @@ export interface SceneState {
   layers: ReadonlyMap<string, string>;
 }
 
-export function sceneState(scene: Scene): SceneState {
+/** A timeline edit's whole subject (ADR 0018): the length, the clips' order on their tracks, and the sound without its words. */
+interface Structure {
+  duration?: unknown;
+  tracks?: readonly { id: string; clips: readonly { id: string }[] }[];
+  audio?: readonly ({ id: string; words?: unknown } & object)[];
+}
+
+function structureKey({ duration, tracks, audio }: Structure): string {
+  return JSON.stringify([duration, tracks?.map((t) => [t.id, t.clips.map((c) => c.id)]), (audio ?? []).map(({ words: _words, ...cue }) => [cue.id, layerKey(cue)])]);
+}
+
+/** What a timeline edit writes: itself, and each clip and cue's words as `sceneState` files them. */
+function structureEntries(structure: Structure): string[] {
+  const clips = structure.tracks?.flatMap((t) => t.clips) ?? [];
+  const words = (structure.audio ?? []).flatMap((cue) => (cue.words ? [`${cueTarget(cue.id)}|${layerKey({ words: cue.words })}`] : []));
+  return [`${STRUCTURE_TARGET}|${structureKey(structure)}`, ...clips.map((clip) => `${clip.id}|${layerKey(clip)}`), ...words];
+}
+
+export function sceneState(scene: Scene, composition?: Structure): SceneState {
   const layers = new Map(scene.layers.map((layer) => [layer.id, layerKey(layer)]));
   if (scene.background) layers.set(BACKGROUND_ID, layerKey(scene.background));
-  const { layers: _layers, background: _background, markers, ...rest } = scene;
+  const { layers: _layers, background: _background, markers, duration, audio: allCues, ...rest } = scene;
   // A video clip's own sound is a cue that follows it.
-  const audio = scene.audio
-    ?.filter((cue) => !layers.has(cue.id.replace(/:sound$/, '')))
-    .map(({ words, ...cue }) => {
-      if (words) layers.set(cueTarget(cue.id), layerKey({ words }));
-      return cue;
-    });
-  const ids = [...layers.keys()];
+  const audio = allCues?.filter((cue) => !(cue.id.endsWith(':sound') && layers.has(cue.id.slice(0, -':sound'.length))));
+  for (const cue of audio ?? []) if (cue.words) layers.set(cueTarget(cue.id), layerKey({ words: cue.words }));
+  layers.set(STRUCTURE_TARGET, structureKey({ duration, tracks: composition?.tracks, audio }));
+  const ids = [...layers.keys()].filter((id) => id.indexOf('/') < 0);
   if (markers) layers.set(MARKERS_TARGET, layerKey({ markers }));
-  return { rest: JSON.stringify({ ...rest, audio, ids: ids.filter((id) => id.indexOf('/') < 0) }), layers };
+  // Clips come and go on a composition, which its structure says. A scene's layers don't.
+  return { rest: JSON.stringify({ ...rest, ids: composition ? [] : ids }), layers };
 }
 
 /** What turns one target's JSON into another's: its changed fields, and null for a field that goes. */
@@ -115,8 +133,11 @@ export class EditHistory {
   record(key: string, edit: LayerRecord): void {
     if (key !== (this.latest?.key ?? this.key)) return;
     if (layerKey(edit.before) === layerKey(edit.after)) return;
-    this.saved.add(`${edit.layerId}|${layerKey(edit.before)}`);
-    this.saved.add(`${edit.layerId}|${layerKey(edit.after)}`);
+    if (edit.layerId === STRUCTURE_TARGET) for (const side of [edit.before, edit.after]) for (const entry of structureEntries(side as Structure)) this.saved.add(entry);
+    else {
+      this.saved.add(`${edit.layerId}|${layerKey(edit.before)}`);
+      this.saved.add(`${edit.layerId}|${layerKey(edit.after)}`);
+    }
     this.done.push(edit);
     this.undone = [];
   }

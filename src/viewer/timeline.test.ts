@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dragClip, dragSpan, formatClock, labelFits, markerLabels, rulerTicks, snapDelta, snapFrame, visibleSpans } from './timeline';
+import { clipEdges, clipRunOn, clipUnder, dragClip, dragCue, dragFade, dragSpan, formatClock, labelFits, markerLabels, rulerTicks, snapDelta, snapFrame, visibleSpans, type CuePlace } from './timeline';
 
 describe('formatClock', () => {
   it('reads minutes, seconds and hundredths', () => {
@@ -174,5 +174,84 @@ describe('visibleSpans', () => {
   it('holds on stepFps as the layer does', () => {
     const spans = visibleSpans({ ...opacity([1, 0], [1.25, 1]), stepFps: 4 }, 12, 48);
     expect(spans[0].from).toBe(15);
+  });
+});
+
+
+describe('dragging sound (ADR 0018)', () => {
+  const cue: CuePlace = { from: 12, to: 36, in: 1, fadeIn: 0, fadeOut: 0, length: 5, file: true };
+  const noise: CuePlace = { from: 12, to: 36, in: 0, fadeIn: 0, fadeOut: 0, length: null, file: false };
+
+  it('moves a cue whole, inside the timeline', () => {
+    expect(dragCue(cue, 'move', 6, 48, 12)).toMatchObject({ from: 18, to: 42, in: 1 });
+    expect(dragCue(cue, 'move', -100, 48, 12)).toMatchObject({ from: 0, to: 24 });
+    expect(dragCue(cue, 'move', 100, 48, 12)).toMatchObject({ from: 24, to: 48 });
+  });
+
+  it('trims the start through the file, no further than its beginning', () => {
+    expect(dragCue(cue, 'start', 6, 48, 12)).toMatchObject({ from: 18, to: 36, in: 1.5 });
+    expect(dragCue(cue, 'start', -6, 48, 12)).toMatchObject({ from: 6, in: 0.5 });
+    expect(dragCue(cue, 'start', -100, 48, 12)).toMatchObject({ from: 0, in: 0 });
+    expect(dragCue(cue, 'start', 100, 48, 12).from).toBe(35);
+  });
+
+  it('trims the end no further than the file or the timeline', () => {
+    expect(dragCue(cue, 'end', -6, 48, 12).to).toBe(30);
+    expect(dragCue(cue, 'end', 100, 48, 12).to).toBe(48);
+    expect(dragCue({ ...cue, length: 3 }, 'end', 100, 48, 12).to).toBe(36);
+    expect(dragCue({ ...cue, length: 1.5 }, 'end', 2, 48, 12).to).toBe(36);
+    expect(dragCue(cue, 'end', -100, 48, 12).to).toBe(13);
+  });
+
+  it('gives a generator no file to run out of', () => {
+    expect(dragCue(noise, 'start', 6, 48, 12)).toMatchObject({ from: 18, in: 0 });
+    expect(dragCue(noise, 'end', 100, 48, 12).to).toBe(48);
+  });
+
+  it('keeps fades inside the cue and off each other', () => {
+    expect(dragFade(cue, 'in', 18, 12).fadeIn).toBe(0.5);
+    expect(dragFade(cue, 'in', 0, 12).fadeIn).toBe(0);
+    expect(dragFade(cue, 'in', 99, 12).fadeIn).toBe(2);
+    expect(dragFade({ ...cue, fadeOut: 1.5 }, 'in', 99, 12).fadeIn).toBe(0.5);
+    expect(dragFade(cue, 'out', 30, 12).fadeOut).toBe(0.5);
+    expect(dragFade({ ...cue, fadeIn: 2 }, 'out', 0, 12).fadeOut).toBe(0);
+  });
+});
+
+describe('clipEdges', () => {
+  it('names the edges each handle carries', () => {
+    const clip = { from: 10, in: 2, out: 8, length: 20 };
+    expect(clipEdges(clip, 'move')).toEqual([10, 16]);
+    expect(clipEdges(clip, 'start')).toEqual([10]);
+    expect(clipEdges(clip, 'end')).toEqual([16]);
+  });
+});
+
+describe('clipUnder', () => {
+  const stacked = (id: string, order: number, from: number, frames: number, length = 100) => ({ id, order, from, in: 0, out: frames, length });
+
+  it('finds the clip that ends where this one starts, beneath it, with more to show', () => {
+    const a = stacked('a', 0, 0, 24);
+    const b = stacked('b', 1, 24, 24);
+    expect(clipUnder([a, b], b, 6)).toEqual({ id: 'a', out: 30 });
+  });
+
+  it('stops at the end of what it places', () => {
+    const a = stacked('a', 0, 0, 24, 26);
+    const b = stacked('b', 1, 24, 24);
+    expect(clipUnder([a, b], b, 6)).toEqual({ id: 'a', out: 26 });
+  });
+
+  it('finds the clip a transition ran on, to take it back', () => {
+    const b = stacked('b', 1, 24, 24);
+    expect(clipRunOn([stacked('a', 0, 0, 30), b], b, 6)).toEqual({ id: 'a', out: 24 });
+    expect(clipRunOn([stacked('a', 0, 0, 28), b], b, 6)).toBeNull();
+  });
+
+  it('finds nothing for a clip with no more to show, one above it, or a gap', () => {
+    const b = stacked('b', 1, 24, 24);
+    expect(clipUnder([stacked('a', 0, 0, 24, 24), b], b, 6)).toBeNull();
+    expect(clipUnder([stacked('a', 2, 0, 24), b], b, 6)).toBeNull();
+    expect(clipUnder([stacked('a', 0, 0, 20), b], b, 6)).toBeNull();
   });
 });

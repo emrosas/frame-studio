@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyToSelection, formatSceneJson, mergePatch } from './scene-edit';
+import { applyToSelection, formatSceneJson, mergePatch, removeOverrides } from './scene-edit';
 import type { Override, Scene } from './types';
 
 describe('mergePatch (RFC 7386)', () => {
@@ -70,6 +70,60 @@ describe('formatSceneJson', () => {
     const text = formatSceneJson(value, 20);
     expect(JSON.parse(text)).toEqual(value);
     expect(formatSceneJson(JSON.parse(text), 20)).toBe(text);
+  });
+});
+
+describe('removeOverrides', () => {
+  const base: Scene = {
+    id: 's',
+    fps: 12,
+    duration: 8,
+    size: [100, 100],
+    seed: 1,
+    background: { rig: 'paper', overrides: [{ from: 0, to: 12, params: { tone: '#223344' } }] },
+    layers: [
+      { id: 'bruno', rig: 'bear', overrides: [{ from: 12, to: 24, params: { x: 1 } }, { from: 48, to: 72, rig: 'bear.bandaged' }] },
+      { id: 'pip', rig: 'bear' },
+    ],
+  };
+  const bruno = (scene: Scene) => scene.layers[0];
+
+  it('drops an override the range covers, and leaves the others', () => {
+    expect(bruno(removeOverrides(base, { layerId: 'bruno', from: 48, to: 72 })).overrides).toEqual([{ from: 12, to: 24, params: { x: 1 } }]);
+  });
+
+  it('splits one the range sits inside, so it still applies around it', () => {
+    expect(bruno(removeOverrides(base, { layerId: 'bruno', from: 60, to: 66 })).overrides).toEqual([
+      { from: 12, to: 24, params: { x: 1 } },
+      { from: 48, to: 60, rig: 'bear.bandaged' },
+      { from: 66, to: 72, rig: 'bear.bandaged' },
+    ]);
+  });
+
+  it('trims the overrides at both ends of a range across several', () => {
+    expect(bruno(removeOverrides(base, { layerId: 'bruno', from: 18, to: 60 })).overrides).toEqual([
+      { from: 12, to: 18, params: { x: 1 } },
+      { from: 60, to: 72, rig: 'bear.bandaged' },
+    ]);
+  });
+
+  it('leaves no empty list behind, on a layer or the background', () => {
+    expect(bruno(removeOverrides(base, { layerId: 'bruno', from: 0, to: 96 }))).not.toHaveProperty('overrides');
+    expect(removeOverrides(base, { layerId: 'background', from: 0, to: 12 }).background).not.toHaveProperty('overrides');
+  });
+
+  it('leaves the scene it was given alone', () => {
+    const before = structuredClone(base);
+    removeOverrides(base, { layerId: 'bruno', from: 0, to: 96 });
+    expect(base).toEqual(before);
+  });
+
+  it('refuses a range with no override, a missing layer, and a bad range', () => {
+    expect(() => removeOverrides(base, { layerId: 'bruno', from: 24, to: 48 })).toThrow(/no override in \[24, 48\)/);
+    expect(() => removeOverrides(base, { layerId: 'pip', from: 0, to: 4 })).toThrow(/no override/);
+    expect(() => removeOverrides(base, { layerId: 'nobody', from: 0, to: 4 })).toThrow(/no layer "nobody"/);
+    expect(() => removeOverrides(base, { from: 0, to: 4 })).toThrow(/layerId/);
+    expect(() => removeOverrides(base, { layerId: 'bruno', from: 5, to: 5 })).toThrow(RangeError);
   });
 });
 
