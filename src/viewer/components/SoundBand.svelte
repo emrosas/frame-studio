@@ -2,7 +2,8 @@
   One sound cue on the timeline (ADR 0012), in a row under the clips: its id
   when that fits, and for a sound file its waveform over the seconds of the file
   the cue plays. The waveform comes once the file has decoded for the scene's
-  sound. Read-only, but for Timing on a sound file without words (ADR 0016),
+  sound. It drags to move, its edges trim, and the marks in its top corners set
+  the fades (ADR 0018). A sound file without words offers Timing (ADR 0016),
   which gets it a voice row.
 -->
 <script lang="ts">
@@ -10,7 +11,11 @@
   import { spanLabel } from '../selection';
   import type { SoundBand, ViewerActions } from '../ui.svelte';
 
-  let { band, style, ready, actions, px, fps, selected }: { band: SoundBand; style: string; ready: boolean; actions: ViewerActions; px: number; fps: number; selected: boolean } = $props();
+  let { band, style, ready, actions, px, fps, selected, editable }: { band: SoundBand; style: string; ready: boolean; actions: ViewerActions; px: number; fps: number; selected: boolean; editable: boolean } = $props();
+
+  const seconds = $derived(band.place ? (band.place.to - band.place.from) / fps : 0);
+  const fades = $derived(editable && band.place?.file === true);
+  const title = $derived(`${band.label}, ${spanLabel(band, fps)}. ${editable && band.place ? 'Drag to move, drag an edge to trim. ' : ''}Click, then X to mark it.`);
 
   const BUCKETS = 160;
   let path = $state('');
@@ -32,9 +37,21 @@
   });
 </script>
 
-<div class="sound-band" class:is-file={band.file !== undefined} class:is-selected={selected} {style} data-cue={band.id} title="{band.label}, {spanLabel(band, fps)}. Click, then X to mark it." role="img" aria-label="Sound {band.label}">
+<div class="sound-band" class:is-file={band.file !== undefined} class:is-selected={selected} class:is-editable={editable && band.place !== undefined} {style} data-cue={band.id} {title} role="img" aria-label="Sound {band.label}">
   {#if path}
     <svg class="waveform" viewBox="0 0 {BUCKETS} 1" preserveAspectRatio="none" aria-hidden="true"><path d={path} /></svg>
+  {/if}
+  {#if band.place && seconds > 0}
+    {#if band.place.fadeIn > 0}<span class="sound-fade is-in" style="width: {(band.place.fadeIn / seconds) * 100}%"></span>{/if}
+    {#if band.place.fadeOut > 0}<span class="sound-fade is-out" style="width: {(band.place.fadeOut / seconds) * 100}%"></span>{/if}
+  {/if}
+  {#if editable && band.place}
+    <span class="clip-edge is-start" data-edge="start"></span>
+    <span class="clip-edge is-end" data-edge="end"></span>
+    {#if fades && seconds > 0}
+      <span class="fade-mark is-in" data-fade="in" title="Fade in" style="left: {(band.place.fadeIn / seconds) * 100}%"></span>
+      <span class="fade-mark is-out" data-fade="out" title="Fade out" style="right: {(band.place.fadeOut / seconds) * 100}%"></span>
+    {/if}
   {/if}
   {#if labelFits(band.id, px)}<span class="sound-label">{band.id}</span>{/if}
   {#if band.canTime && px >= 64}

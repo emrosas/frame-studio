@@ -1,7 +1,8 @@
 <!--
   One thread in the sidebar: its scene's poster with a status badge on the
   corner, the first prompt, then scene, model and time, then the status in
-  words. The same card for the live queue and for a project read off disk.
+  words with its project on the right. The same card for the live queue and
+  for a project read off disk.
   Colour, icon and word all say the status, so none of them has to alone.
 -->
 <script lang="ts" module>
@@ -35,6 +36,7 @@
     thread,
     badge,
     project,
+    projectName,
     open,
     onopen,
   }: {
@@ -43,6 +45,8 @@
     badge: ThreadBadge;
     /** The project's path when it isn't on screen, so the poster comes off disk. */
     project: string | null;
+    /** The project it belongs to, named when the list holds more than one. */
+    projectName: string | null;
     open: boolean;
     onopen: (e: MouseEvent & { currentTarget: HTMLButtonElement }) => void;
   } = $props();
@@ -50,7 +54,7 @@
   const model = $derived(modelLabel(ui.studio.agents, thread.agent, thread.model));
 </script>
 
-<article aria-label="Request {thread.id}">
+<article aria-label={projectName ? `Request ${thread.id} in ${projectName}` : `Request ${thread.id}`}>
   <button type="button" class="thread-card is-{badge.kind}" aria-current={open ? 'true' : undefined} title={thread.title} onclick={onopen}>
     <span class="thread-poster">
       <Thumb file={thread.poster} {project} />
@@ -67,7 +71,10 @@
         <span aria-hidden="true">·</span>
         <span class="thread-time">{ago(thread.at, ui.studio.now)}</span>
       </span>
-      <span class="thread-word">{badge.label}</span>
+      <span class="thread-foot">
+        <span class="thread-word">{badge.label}</span>
+        {#if projectName}<span class="thread-project" title={projectName}><Icon name="folder" />{projectName}</span>{/if}
+      </span>
     </span>
   </button>
 </article>

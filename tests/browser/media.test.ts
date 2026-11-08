@@ -186,7 +186,7 @@ describe('the viewer', () => {
       type W = { studio: { frameCount: number; errors: string[] } };
       await page.goto(studio.paired('?scene=voice&frame=12'));
       await page.waitForFunction(() => (window as unknown as W).studio?.frameCount === 48);
-      await page.getByRole('button', { name: 'Library' }).first().click();
+      await page.getByRole('list', { name: 'Projects' }).locator('.project-row').first().click();
       const media = page.getByRole('region', { name: 'Media', exact: true });
       await media.getByText('tone.wav').waitFor();
       await expect.poll(() => media.textContent()).toContain('2 s');

@@ -13,7 +13,8 @@ import { isLoopback, pinnedFetch } from '../tools/voice/pinned.ts';
 import { providers } from '../tools/voice/providers/index.ts';
 import { checkMediaFolder, SaveRefused, saveVoiceFile } from '../tools/voice/save.ts';
 import { estimate, finished, ProviderError, type GeneratedWord, type Provider } from '../tools/voice/types.ts';
-import { KeyRefused, KeyStore } from './keys.ts';
+import { bringForward, reveal, windowOptions } from './background.ts';
+import { KeyRefused, KeyStore, type KeySummary } from './keys.ts';
 
 export interface VoiceHost {
   /** The project on screen, if this came from the main frame of the viewer window; null from anything else. */
@@ -57,9 +58,13 @@ export function registerVoice(host: VoiceHost): void {
   const fromEntry = (event: IpcMainEvent | IpcMainInvokeEvent) => entry !== null && event.sender === entry.window.webContents && event.senderFrame?.url === page;
 
   async function listing() {
-    const keys = await store.list();
+    let unreadable = null as string | null;
+    const keys = await store.list().catch((err: unknown): KeySummary[] => {
+      unreadable = err instanceof KeyRefused ? err.message : 'Frame Studio can\'t read its key file.';
+      return [];
+    });
     return {
-      refusal: store.refusal(),
+      refusal: store.refusal() ?? unreadable,
       providers: providers.map((p) => ({
         id: p.id,
         label: p.label,
@@ -75,11 +80,11 @@ export function registerVoice(host: VoiceHost): void {
   /** The entry window: main's own page and preload, with no way to the viewer. Resolves to whether a key was saved. */
   function askForKey(chosen: Provider): Promise<boolean> {
     if (entry) {
-      entry.window.focus();
+      bringForward(entry.window);
       return Promise.resolve(false);
     }
     const parent = host.window() ?? undefined;
-    const win = new BrowserWindow({
+    const win = new BrowserWindow(windowOptions({
       width: 460,
       height: 330,
       resizable: false,
@@ -89,7 +94,7 @@ export function registerVoice(host: VoiceHost): void {
       ...(parent ? { parent } : {}),
       ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' as const } : {}),
       webPreferences: { preload: join(host.pages, 'key-preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false, devTools: !app.isPackaged, spellcheck: false },
-    });
+    }));
     win.webContents.on('will-navigate', (event) => event.preventDefault());
     win.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
     return new Promise((done) => {
@@ -99,6 +104,7 @@ export function registerVoice(host: VoiceHost): void {
         entry = null;
       });
       void win.loadURL(page);
+      if (!win.isVisible()) reveal(win);
     });
   }
 
@@ -148,7 +154,13 @@ export function registerVoice(host: VoiceHost): void {
       cancelId: 1,
     });
     if (response !== 0) return false;
-    await store.remove(chosen.id);
+    try {
+      await store.remove(chosen.id);
+    } catch (err) {
+      host.log(`could not remove the key for ${chosen.id} (${err instanceof Error ? err.name : 'unknown'})`);
+      await dialog.showMessageBox(parent, { type: 'error', message: `Your ${chosen.label} key is still on this computer.`, detail: err instanceof KeyRefused ? err.message : 'Its file could not be written.', buttons: ['OK'] });
+      return false;
+    }
     host.log(`removed the key for ${chosen.id}`);
     return true;
   });
@@ -198,7 +210,7 @@ export function registerVoice(host: VoiceHost): void {
       host.log(`${chosen.id}: generated ${made.bytes.length} bytes`);
       return { file, ...(made.words ? { words: made.words } : {}) };
     } catch (err) {
-      if (err instanceof SaveRefused) return { error: err.message };
+      if (err instanceof SaveRefused || err instanceof KeyRefused) return { error: err.message };
       if (err instanceof ProviderError) {
         host.log(`${chosen.id}: status ${err.status}`);
         return { error: err.message };

@@ -1,7 +1,8 @@
 <!--
   The project's home, over the stage: videos and scenes as poster cards, then
   the project's sound files and what it has rendered. It's where a project
-  opens with nothing selected, and the way back from any scene. The stage stays
+  opens with nothing selected, where its row in the sidebar leads, and the way
+  back from any scene. A scene's card says which videos use it. The stage stays
   mounted under it, paused. Films made before compositions shrink to a row
   each, with Convert.
 -->
@@ -105,6 +106,7 @@
       <span class="lib-poster"><Thumb file={ui.thumbs[option.key]} /></span>
       <span class="lib-name">{option.label}</span>
       <span class="lib-meta">{details(option)}</span>
+      {#if option.usedIn.length > 0}<span class="lib-meta">Used in {option.usedIn.join(', ')}</span>{/if}
     </button>
   </li>
 {/snippet}

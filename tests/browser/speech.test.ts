@@ -13,7 +13,7 @@
  * - In a browser there's no key store: Kokoro only.
  */
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -54,7 +54,7 @@ function launch(extraEnv: Record<string, string> = {}): Promise<ElectronApplicat
     executablePath: electronBinary(),
     // The mock keychain keeps safeStorage from prompting for your login keychain.
     args: [join(REPO, 'desktop/main.ts'), '--use-mock-keychain'],
-    env: { ...env, FRAME_STUDIO_HOME: home, FRAME_STUDIO_USER_DATA: userData, FRAME_STUDIO_FAKE_AGENT: '1', FRAME_STUDIO_FAKE_KOKORO: '1', FRAME_STUDIO_WARM_MS: '0', FRAME_STUDIO_FAKE_PROVIDER: `http://127.0.0.1:${(provider.address() as AddressInfo).port}`, ...extraEnv },
+    env: { ...env, FRAME_STUDIO_HOME: home, FRAME_STUDIO_USER_DATA: userData, FRAME_STUDIO_BACKGROUND: '1', FRAME_STUDIO_FAKE_AGENT: '1', FRAME_STUDIO_FAKE_KOKORO: '1', FRAME_STUDIO_WARM_MS: '0', FRAME_STUDIO_FAKE_PROVIDER: `http://127.0.0.1:${(provider.address() as AddressInfo).port}`, ...extraEnv },
   });
 }
 
@@ -220,6 +220,20 @@ describe('provider keys and Generate Voice in the app', () => {
     expect(readdirSync(join(project, 'media'))).toEqual(before);
   });
 
+  it("says when it can't read the key file, instead of blaming the provider", async () => {
+    const sheet = viewer.getByRole('dialog', { name: 'Generate voice' });
+    const keys = join(userData, 'keys.json');
+    const asked = requests.length;
+    chmodSync(keys, 0);
+    try {
+      await sheet.getByRole('button', { name: 'Generate', exact: true }).click();
+      await sheet.getByRole('alert').getByText(/can't read its key file/).waitFor();
+    } finally {
+      chmodSync(keys, 0o600);
+    }
+    expect(requests).toHaveLength(asked);
+  });
+
   it('places a generated file at the playhead', async () => {
     const sheet = viewer.getByRole('dialog', { name: 'Generate voice' });
     await sheet.getByRole('button', { name: 'Generate', exact: true }).click();
@@ -314,6 +328,18 @@ describe('provider keys and Generate Voice in the app', () => {
     await expect.poll(async () => (await dialogs(app!)).at(-1)?.message).toBe('Remove your ElevenLabs key?');
     await settings.getByText(/Key ending 7Q2x/).waitFor();
     await setAnswer(app!, 'Remove');
+    const keys = join(userData, 'keys.json');
+    chmodSync(keys, 0);
+    try {
+      await settings.getByRole('button', { name: 'Remove ElevenLabs key' }).click();
+      await expect.poll(async () => (await dialogs(app!)).at(-1)?.message).toBe('Your ElevenLabs key is still on this computer.');
+      await settings.getByRole('alert').getByText(/can't read its key file/).waitFor();
+    } finally {
+      chmodSync(keys, 0o600);
+    }
+    await settings.getByRole('button', { name: 'Close' }).click();
+    await viewer.getByRole('button', { name: 'View', exact: true }).click();
+    await viewer.getByRole('button', { name: 'Settings…' }).click();
     await settings.getByRole('button', { name: 'Remove ElevenLabs key' }).click();
     await settings.getByText('No key').waitFor();
     expect(readFileSync(join(userData, 'keys.json'), 'utf8')).not.toContain('7Q2x');
@@ -421,7 +447,7 @@ describe('in a browser', () => {
       await page.getByRole('menuitem', { name: 'Generate voice…' }).click();
       const sheet = page.getByRole('dialog', { name: 'Generate voice' });
       await sheet.getByRole('radio', { name: 'Kokoro' }).waitFor();
-      expect(await sheet.getByRole('radio').count()).toBe(1);
+      expect(await sheet.getByRole('radiogroup', { name: 'Provider' }).getByRole('radio').count()).toBe(1);
       await sheet.getByRole('button', { name: 'Close' }).click();
       await page.getByRole('button', { name: 'View', exact: true }).click();
       await page.getByRole('button', { name: 'Settings…' }).click();

@@ -9,7 +9,9 @@
  * - its frame-studio-mcp command serves every tool through the running app,
  *   and through a headless server of its own when the app is closed;
  * - it times a voice with the whisper-cli it ships (ADR 0016), when the model
- *   and a sample voice are on this machine.
+ *   and a sample voice are on this machine;
+ * - Command-Z, sent through the browser process rather than to the page, takes
+ *   back one hand edit, with the Edit menu holding the same accelerator.
  */
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -31,7 +33,7 @@ let app: ElectronApplication | null = null;
 function env(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined && key !== 'ELECTRON_RUN_AS_NODE') out[key] = value;
-  return { ...out, FRAME_STUDIO_HOME: home, FRAME_STUDIO_USER_DATA: join(home, 'userdata'), PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
+  return { ...out, FRAME_STUDIO_HOME: home, FRAME_STUDIO_USER_DATA: join(home, 'userdata'), FRAME_STUDIO_BACKGROUND: '1', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
 }
 
 async function viewerWindow(electron: ElectronApplication): Promise<Page> {
@@ -80,6 +82,75 @@ describe.skipIf(!existsSync(BINARY))('the packaged app', () => {
     await expect.poll(() => panel.getByRole('button', { name: 'Reveal in Finder' }).count()).toBe(1);
     const mp4 = readFileSync(join(folder, 'out/hello/hello-00000-00024.mp4'));
     expect(mp4.subarray(4, 8).toString()).toBe('ftyp');
+  });
+
+  it('takes back one hand edit at a time on Command-Z, though the Edit menu holds the same key', async () => {
+    const viewer = await viewerWindow(app!);
+    const scene = join(folder, 'scenes/hello.json');
+    const ballX = () => (JSON.parse(readFileSync(scene, 'utf8')) as { layers: { params: { x: number } }[] }).layers[0].params.x;
+    await viewer.evaluate(() => (window as unknown as { studio: { selectScene(id: string): void } }).studio.selectScene('hello'));
+    await viewer.evaluate(() => (window as unknown as { studio: { seek(frame: number): void } }).studio.seek(0));
+    // The export test leaves its panel open over the stage, where the drags go.
+    const exportPanel = viewer.getByRole('region', { name: 'Export' });
+    if ((await exportPanel.count()) > 0) await exportPanel.getByRole('button', { name: 'Close' }).click();
+    await expect.poll(() => exportPanel.count()).toBe(0);
+
+    const undo = await app!.evaluate(({ Menu }) => {
+      const edit = Menu.getApplicationMenu()!.items.find((item) => item.label === 'Edit')!;
+      return edit.submenu!.items.find((item) => item.label === 'Undo')?.accelerator;
+    });
+    expect(undo).toBe('CmdOrCtrl+Z');
+
+    /**
+     * sendInputEvent enters at Chromium's input router, as AppKit's handoff does, so an unhandled key still falls to
+     * the menu. macOS won't let a test bring the app forward, and a window that isn't key gets no real keystroke, so
+     * the hop from the keyboard into that router is the one piece left unexercised.
+     */
+    const press = (shift = false) =>
+      app!.evaluate(({ BrowserWindow }, withShift) => {
+        const { webContents } = BrowserWindow.getAllWindows().find((w) => w.isVisible())!;
+        const modifiers: ('meta' | 'shift')[] = withShift ? ['meta', 'shift'] : ['meta'];
+        webContents.sendInputEvent({ type: 'keyDown', keyCode: 'z', modifiers });
+        webContents.sendInputEvent({ type: 'keyUp', keyCode: 'z', modifiers });
+      }, shift);
+
+    const box = (await viewer.locator('canvas.stage-canvas').boundingBox())!;
+    const step = box.width / 16;
+    const y = box.y + (160 / 720) * box.height;
+    const drag = async (from: number) => {
+      await viewer.mouse.move(from, y);
+      await viewer.mouse.down();
+      await viewer.mouse.move(from + step, y, { steps: 6 });
+      await viewer.mouse.up();
+    };
+    const middle = box.x + box.width / 2;
+    await drag(middle);
+    await expect.poll(ballX, { timeout: 10_000 }).toBe(720);
+    await drag(middle + step);
+    await expect.poll(ballX, { timeout: 10_000 }).toBe(800);
+
+    await press();
+    await expect.poll(ballX, { timeout: 10_000 }).toBe(720);
+    // A second action on the one key would go on to 640.
+    await viewer.waitForTimeout(500);
+    expect(ballX()).toBe(720);
+    await press();
+    await expect.poll(ballX, { timeout: 10_000 }).toBe(640);
+    await press(true);
+    await expect.poll(ballX, { timeout: 10_000 }).toBe(720);
+
+    // Edit > Undo and Redo, clicked with the mouse rather than by their key, reach the same history.
+    const clickMenu = (label: string) =>
+      app!.evaluate(({ Menu, BrowserWindow }, name) => {
+        const edit = Menu.getApplicationMenu()!.items.find((item) => item.label === 'Edit')!;
+        edit.submenu!.items.find((item) => item.label === name)!.click(undefined, BrowserWindow.getAllWindows().find((w) => w.isVisible()));
+      }, label);
+    await clickMenu('Undo');
+    await expect.poll(ballX, { timeout: 10_000 }).toBe(640);
+    await clickMenu('Redo');
+    await expect.poll(ballX, { timeout: 10_000 }).toBe(720);
+    await press();
+    await expect.poll(ballX, { timeout: 10_000 }).toBe(640);
   });
 
   it('serves the MCP tools through the running app', async () => {

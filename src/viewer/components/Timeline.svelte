@@ -3,7 +3,9 @@
   range pinned on top, and rows that scroll under it. A scene has a row per
   layer, top of the stack first and the background last: a bar for when it is on
   screen, its keys as diamonds, its overrides as tinted spans. A composition has
-  rows of clips, one per overlap, and sound takes the rows under either.
+  its tracks, top of the stack first, and clips that overlap on a track take a
+  row each. A film's shots go in rows by overlap. Sound takes the rows under
+  either.
 
   Press the ruler to scrub. The in and out handles drag on the ruler, and
   dragging both back to the ends clears the range. A click on a row or a band
@@ -21,10 +23,13 @@
   at once and save through the server's checked edit, and they stay locked while
   an agent works there.
 
-  On a composition a clip drags to move and its edges drag to trim, snapping to
-  frames. It saves through the server's checked edit, Command-Z takes it back,
-  and it stays locked while an agent works there. Sound stays read-only. The
-  range input underneath keeps the frame on the keyboard and in the
+  On a composition a clip drags to move, up and down to another track, and its
+  edges drag to trim, snapping to the playhead, markers and every other edge.
+  Sound moves, trims and fades the same way, on scenes too. A right-click on
+  either offers split, duplicate and delete, and on a clip the transitions. The
+  corner adds clips and tracks. It all saves through the server's checked edit,
+  Command-Z takes it back, and it stays locked while an agent works there (ADR
+  0018). The range input underneath keeps the frame on the keyboard and in the
   accessibility tree.
 
   A cue with words gets a row of its own under the layers, VoiceRow.svelte, and
@@ -33,9 +38,12 @@
 -->
 <script lang="ts">
   import type { KeyMark, KeyTarget, SelectedKey } from '../keyframes';
-  import { dragClip, dragSpan, formatClock, labelFits, markerLabels, rulerTicks, snapDelta, snapFrame, type ClipHandle, type ClipPlace, type VisibleSpan } from '../timeline';
+  import { isPictureFile } from '../../engine/picture';
+  import { clipEdges, dragClip, dragCue, dragFade, dragSpan, formatClock, labelFits, markerLabels, rulerTicks, snapDelta, snapFrame, type ClipHandle, type ClipPlace, type CuePlace, type VisibleSpan } from '../timeline';
   import { spanLabel, type FrameRange } from '../selection';
-  import type { LayerRow, ShotBand, SoundBand as SoundBandData, ViewerActions, ViewerUi } from '../ui.svelte';
+  import type { EditTarget, LayerRow, ShotBand, ShotHead, SoundBand as SoundBandData, ViewerActions, ViewerUi } from '../ui.svelte';
+  import type { VoiceLine } from '../voice';
+  import Icon from './Icon.svelte';
   import Popover from './Popover.svelte';
   import SoundBand from './SoundBand.svelte';
   import VoiceCard from './VoiceCard.svelte';
@@ -46,6 +54,7 @@
 
   let ruler = $state<HTMLElement | null>(null);
   let scroller = $state<HTMLElement | null>(null);
+  let shotRows = $state<HTMLElement | null>(null);
   let width = $state(0);
 
   const total = $derived(ui.timeline?.frameCount ?? 0);
@@ -57,7 +66,6 @@
   const labelled = $derived(markerLabels(ui.markers, total, spanPx));
   const range = $derived(ui.band?.range ?? null);
   const showRows = $derived(ui.shots === null && ui.layers.length > 0);
-  const laneName = $derived(ui.header?.video ? 'Clips' : 'Shots');
   const named = (name: string, lane: number) => (lane === 0 ? name : `${name} ${lane + 1}`);
 
   const fraction = (x: number) => {
@@ -139,7 +147,18 @@
   /** What a dragged range edge lands on: markers, clip and sound edges, and these frames of the row itself. */
   function snapTargets(own: readonly number[]): number[] {
     const edges = (bands: readonly { from: number; to: number }[] | undefined) => (bands ?? []).flatMap((b) => [b.from, b.to]);
-    return [...ui.markers.map((m) => m.frame), ...edges(ui.shots?.bands), ...edges(ui.sounds?.bands), ...edges(ui.voices), ...own];
+    return [...ui.markers.map((m) => m.frame), ...(ui.timeline ? [ui.timeline.frame] : []), ...edges(ui.shots?.bands), ...edges(ui.sounds?.bands), ...edges(ui.voices), ...own];
+  }
+
+  /** What a dragged clip or sound lands on: all that, less its own edges. */
+  function bandTargets(band: { from: number; to: number }): number[] {
+    let own = [band.from, band.to];
+    return snapTargets([0, total]).filter((frame) => {
+      const at = own.indexOf(frame);
+      if (at < 0) return true;
+      own = own.filter((_, i) => i !== at);
+      return false;
+    });
   }
 
   /**
@@ -228,7 +247,7 @@
     const target: KeyTarget = pair ? { kind: 'edge', layerId: row.id, pair } : { kind: 'bar', layerId: row.id };
     const edges = edge === 'start' ? [bar.from] : edge === 'end' ? [bar.to] : [bar.from, bar.to];
     // Markers and the range only: at this scale every other layer's keys would catch the drag at random.
-    const targets = [...ui.markers.map((m) => m.frame), ...(range ? [range.from, range.to] : [])];
+    const targets = [...ui.markers.map((m) => m.frame), ...(ui.timeline ? [ui.timeline.frame] : []), ...(range ? [range.from, range.to] : [])];
     const perFrame = perFramePx();
     const from = boundaryAt(e.clientX);
     dragKeys(e, target, (x) => snapDelta(edges, boundaryAt(x) - from, targets, perFrame), () => actions.selectLayer(row.id));
@@ -280,12 +299,13 @@
   // ---- clips ----
 
   /** The clip being dragged, or saving: where it shows until the new file arrives. */
-  let held = $state<{ layerId: string; place: ClipPlace; saving: boolean } | null>(null);
+  let held = $state<{ layerId: string; place: ClipPlace; track?: string; saving: boolean } | null>(null);
   /** The band clicked last, so a double-click opens it even if the first click moved the bands under the pointer. */
   let lastBand: { layerId: string; at: number } | null = null;
   let dragged = false;
 
   const editable = $derived(ui.shots !== null && !ui.shots.locked);
+  const video = $derived(ui.shots?.composition === true);
 
   function shown(band: ShotBand): { from: number; to: number } {
     if (held?.layerId !== band.layerId) return band;
@@ -298,8 +318,23 @@
     if (!held?.saving) return;
     const { layerId, place } = held;
     const band = ui.shots?.bands.find((b) => b.layerId === layerId);
-    if (band?.clip && band.clip.from === place.from && band.clip.in === place.in && band.clip.out === place.out) held = null;
+    if (band?.clip && band.clip.from === place.from && band.clip.in === place.in && band.clip.out === place.out && (held.track === undefined || held.track === band.track)) held = null;
   });
+
+  /** The track under a height on the screen, while a clip is dragged. */
+  function trackAt(y: number): string | undefined {
+    const rows = ui.shots;
+    const box = shotRows?.getBoundingClientRect();
+    if (!rows || !box || box.height <= 0) return undefined;
+    const lane = Math.max(0, Math.min(rows.lanes - 1, Math.floor(((y - box.top) / box.height) * rows.lanes)));
+    return rows.heads.find((h) => lane >= h.lane && lane < h.lane + h.lanes)?.track;
+  }
+
+  /** The row a band shows on: a dragged clip's, on the track it's over. */
+  function laneOf(band: ShotBand): number {
+    if (held?.layerId !== band.layerId || held.track === undefined || held.track === band.track) return band.lane;
+    return ui.shots?.heads.find((h) => h.track === held?.track)?.lane ?? band.lane;
+  }
 
   function startClip(e: PointerEvent, band: ShotBand): void {
     dragged = false;
@@ -308,24 +343,30 @@
     const edge = (e.target as HTMLElement).dataset.edge as ClipHandle | undefined;
     const handle: ClipHandle = edge ?? 'move';
     const startX = e.clientX;
+    const startY = e.clientY;
     const perFrame = ruler ? ruler.getBoundingClientRect().width / total : 1;
+    const targets = bandTargets(band);
+    const edges = clipEdges(clip, handle);
     follow(
       e,
       (ev) => {
-        if (Math.abs(ev.clientX - startX) < 3 && !dragged) return;
+        if (Math.abs(ev.clientX - startX) < 3 && Math.abs(ev.clientY - startY) < 3 && !dragged) return;
         dragged = true;
-        held = { layerId: band.layerId, place: dragClip(clip, handle, Math.round((ev.clientX - startX) / perFrame), total), saving: false };
+        const delta = snapDelta(edges, Math.round((ev.clientX - startX) / perFrame), targets, perFrame);
+        const track = handle === 'move' ? (trackAt(ev.clientY) ?? band.track) : band.track;
+        held = { layerId: band.layerId, place: dragClip(clip, handle, delta, total), ...(track !== undefined ? { track } : {}), saving: false };
       },
       (ev) => {
         if (!held) return;
-        const { place, layerId } = held;
-        const moved = place.from !== clip.from || place.in !== clip.in || place.out !== clip.out;
+        const { place, layerId, track } = held;
+        const changedTrack = track !== band.track ? track : undefined;
+        const moved = place.from !== clip.from || place.in !== clip.in || place.out !== clip.out || changedTrack !== undefined;
         if (!ev || !moved) {
           held = null;
           return;
         }
-        held = { layerId, place, saving: true };
-        void actions.moveClip(layerId, place).then((saved) => {
+        held = { layerId, place, ...(track !== undefined ? { track } : {}), saving: true };
+        void actions.moveClip(layerId, place, changedTrack).then((saved) => {
           if (saved && ui.layerId !== layerId) actions.selectLayer(layerId);
           if (!saved) held = null;
           else setTimeout(() => (held = held?.saving && held.layerId === layerId ? null : held), 2000);
@@ -356,14 +397,140 @@
   function bandTitle(band: ShotBand): string {
     const base = `${band.label}, ${spanLabel(band, fps)}. Click to select, X to mark it, double-click to open.`;
     if (!band.clip) return base;
-    return ui.shots?.locked ? `${base} An agent is working here, so clips stay put.` : `${base} Drag to move, drag an edge to trim.`;
+    return ui.shots?.locked ? `${base} An agent is working here, so clips stay put.` : `${base} Drag to move, drag an edge to trim, right-click for more.`;
+  }
+
+  // ---- sound ----
+
+  /** The sound being dragged, or saving: where it shows until the new file arrives. */
+  let heldCue = $state<{ id: string; place: CuePlace; saving: boolean } | null>(null);
+
+  const samePlace = (a: CuePlace, b: CuePlace) => a.from === b.from && a.to === b.to && Math.abs(a.in - b.in) < 1e-6 && Math.abs(a.fadeIn - b.fadeIn) < 1e-6 && Math.abs(a.fadeOut - b.fadeOut) < 1e-6;
+
+  // As with clips: the held place goes when the file says the same.
+  $effect(() => {
+    if (!heldCue?.saving) return;
+    const { id, place } = heldCue;
+    const now = ui.sounds?.bands.find((b) => b.id === id)?.place ?? ui.voices.find((v) => v.cue.id === id)?.place;
+    if (now && samePlace(now, place)) heldCue = null;
+  });
+
+  function shownBand(band: SoundBandData): SoundBandData {
+    if (heldCue?.id !== band.id) return band;
+    return { ...band, from: heldCue.place.from, to: heldCue.place.to, place: heldCue.place };
+  }
+
+  function shownVoice(voice: VoiceLine): VoiceLine {
+    if (heldCue?.id !== voice.cue.id) return voice;
+    const { place } = heldCue;
+    return { ...voice, from: place.from, to: place.to, place, cue: { ...voice.cue, start: place.from / fps, end: place.to / fps, ...(place.in > 0 ? { in: place.in } : {}) } };
+  }
+
+  /** Runs a drag of a sound. A press that never moves is `click`. */
+  function dragSound(e: PointerEvent, id: string, place: CuePlace, next: (ev: PointerEvent) => CuePlace, click: () => void): void {
+    const startX = e.clientX;
+    let moved = false;
+    follow(
+      e,
+      (ev) => {
+        if (!moved && Math.abs(ev.clientX - startX) < 3) return;
+        moved = true;
+        heldCue = { id, place: next(ev), saving: false };
+      },
+      (ev) => {
+        if (!moved) {
+          if (ev) click();
+          return;
+        }
+        const shown = heldCue?.id === id ? heldCue.place : place;
+        if (!ev || samePlace(shown, place)) {
+          heldCue = null;
+          return;
+        }
+        heldCue = { id, place: shown, saving: true };
+        void actions.saveCue(id, shown).then((saved) => {
+          if (!saved) heldCue = null;
+          else setTimeout(() => (heldCue = heldCue?.saving && heldCue.id === id ? null : heldCue), 2000);
+        });
+      },
+    );
+  }
+
+  /** A press on a sound: its fade marks, its edges, or the band itself. */
+  function pressCue(e: PointerEvent, id: string, place: CuePlace, click: () => void): void {
+    if (e.button !== 0 || !ui.soundEdit || heldCue) {
+      if (e.button === 0) click();
+      return;
+    }
+    e.preventDefault();
+    const target = e.target as HTMLElement;
+    const fade = target.dataset.fade as 'in' | 'out' | undefined;
+    const perFrame = perFramePx();
+    const targets = bandTargets(place);
+    if (fade) {
+      const from = boundaryAt(e.clientX);
+      const mark = fade === 'in' ? place.from + place.fadeIn * fps : place.to - place.fadeOut * fps;
+      dragSound(e, id, place, (ev) => dragFade(place, fade, snapFrame(Math.round(mark + boundaryAt(ev.clientX) - from), targets, perFrame), fps), click);
+      return;
+    }
+    const handle = (target.dataset.edge as ClipHandle | undefined) ?? 'move';
+    const startX = e.clientX;
+    const edges = handle === 'start' ? [place.from] : handle === 'end' ? [place.to] : [place.from, place.to];
+    dragSound(e, id, place, (ev) => dragCue(place, handle, snapDelta(edges, Math.round((ev.clientX - startX) / perFrame), targets, perFrame), total, fps), click);
+  }
+
+  // ---- menus ----
+
+  /** The right-click on a clip or sound, and the corner's list of what can be added. */
+  let editMenu = $state<{ x: number; y: number; target: EditTarget; label: string; voice: boolean } | null>(null);
+  let addMenu = $state<{ x: number; y: number } | null>(null);
+
+  const addable = $derived(ui.scenes.filter((s) => !s.invalid && s.film === null && s.key !== ui.header?.key));
+  const pictures = $derived(ui.media.filter((m) => isPictureFile(m.file)));
+  const menuLocked = $derived(video ? !editable : !ui.soundEdit);
+  const fileName = (file: string) => file.slice(file.lastIndexOf('/') + 1);
+
+  function openEditMenu(e: MouseEvent, target: EditTarget, label: string, voice: boolean): void {
+    e.preventDefault();
+    if (menuLocked) return;
+    editMenu = { x: Math.min(e.clientX + 8, window.innerWidth - 212), y: Math.min(e.clientY, window.innerHeight - 260), target, label, voice };
+  }
+
+  function clipMenu(e: MouseEvent, band: ShotBand): void {
+    if (!band.clip) return;
+    actions.selectLayer(band.layerId, { from: band.from, to: band.to });
+    openEditMenu(e, { clip: band.layerId }, band.layerId, false);
+  }
+
+  function soundMenu(e: MouseEvent): void {
+    const id = (e.target as HTMLElement).closest<HTMLElement>('[data-cue]')?.dataset.cue;
+    const band = ui.sounds?.bands.find((b) => b.id === id);
+    if (band?.place) openEditMenu(e, { cue: band.id }, band.id, band.place.file);
+  }
+
+  function runMenu(run: (target: EditTarget) => void): void {
+    if (editMenu) run(editMenu.target);
+    editMenu = null;
+  }
+
+  function openAddMenu(e: MouseEvent): void {
+    const box = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    addMenu = { x: box.left, y: Math.max(8, box.top - 8) };
+  }
+
+  function add(source: { scene: string } | { file: string }): void {
+    addMenu = null;
+    actions.addClip(source);
   }
 
   function pressSounds(e: PointerEvent, bands: readonly SoundBandData[]): void {
     const id = (e.target as HTMLElement).closest<HTMLElement>('[data-cue]')?.dataset.cue;
     const band = bands.find((b) => b.id === id);
     if (band) {
-      if (e.button === 0) actions.selectCue(band.id, { from: band.from, to: band.to });
+      if (e.button !== 0) return;
+      const click = () => actions.selectCue(band.id, { from: band.from, to: band.to });
+      if (band.place) pressCue(e, band.id, band.place, click);
+      else click();
       return;
     }
     startSpan(e, null, [], () => {});
@@ -387,6 +554,20 @@
   ></button>
 {/snippet}
 
+{#snippet shotHeads(rows: readonly ShotHead[])}
+  <div class="tl-heads">
+    {#each rows as head (head.lane)}
+      <span class="row-head" style="height: calc({head.lanes} * var(--row))">
+        {head.name}
+        {#if head.removable && editable && head.track}
+          {@const track = head.track}
+          <button type="button" class="track-remove" aria-label="Remove track {track}" title="Remove this empty track" onclick={() => actions.deleteTrack(track)}><Icon name="close" /></button>
+        {/if}
+      </span>
+    {/each}
+  </div>
+{/snippet}
+
 {#snippet heads(name: string, lanes: number)}
   <div class="tl-heads" aria-hidden="true">
     {#each { length: lanes } as _, lane (lane)}
@@ -398,7 +579,12 @@
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div class="tl" class:is-empty={!ui.timeline} oncontextmenu={(e) => e.preventDefault()}>
   <div class="tl-top">
-    <div class="tl-corner"></div>
+    <div class="tl-corner">
+      {#if video}
+        <button type="button" class="tl-add" disabled={!editable} title="Add a scene, video or picture at the playhead" onclick={openAddMenu}><Icon name="plus" />Clip</button>
+        <button type="button" class="tl-add" disabled={!editable} title="Add a track on top" onclick={() => actions.addTrack()}><Icon name="plus" />Track</button>
+      {/if}
+    </div>
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="ruler" bind:this={ruler} bind:clientWidth={width} onpointerdown={startScrub}>
       {#if ui.markers.length > 0}
@@ -452,10 +638,11 @@
   <div class="tl-scroll" bind:this={scroller}>
     {#if ui.shots}
       <div class="tl-section">
-        {@render heads(laneName, ui.shots.lanes)}
+        {@render shotHeads(ui.shots.heads)}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div
           class="shots"
+          bind:this={shotRows}
           role="group"
           aria-label="Shots"
           style="--lanes: {ui.shots.lanes}"
@@ -464,6 +651,9 @@
             if (e.target === e.currentTarget) startSpan(e, null, [], () => {});
           }}
         >
+          {#each ui.shots.heads as head (head.lane)}
+            {#if head.track}<span class="track-lane" class:is-target={held !== null && !held.saving && held.track === head.track} style="--lane: {head.lane}; --span: {head.lanes}"></span>{/if}
+          {/each}
           {#each ui.shots.bands as band (band.layerId)}
             {@const place = shown(band)}
             <button
@@ -476,8 +666,9 @@
               data-layer={band.layerId}
               aria-pressed={ui.layerId === band.layerId}
               aria-label={band.layerId === band.label ? band.label : `${band.layerId} (scene ${band.label})`}
-              style={spanStyle(place.from, place.to, band.lane)}
+              style={spanStyle(place.from, place.to, laneOf(band))}
               title={bandTitle(band)}
+              oncontextmenu={(e) => clipMenu(e, band)}
               onpointerenter={() => actions.hoverLayer(band.layerId)}
               onpointerleave={() => actions.hoverLayer(null)}
               onpointerdown={(e) => startClip(e, band)}
@@ -550,7 +741,7 @@
         <div class="tl-heads" aria-hidden="true"><span class="row-head" title={voice.label}>Voice</span></div>
         <div class="voices">
           <VoiceRow
-            {voice}
+            voice={shownVoice(voice)}
             {ui}
             {actions}
             {fps}
@@ -562,6 +753,13 @@
             {startSpan}
             {follow}
             onmenu={(e, chip) => openWordMenu(e, voice.cue.id, chip)}
+            cueEditable={ui.soundEdit}
+            pressCue={(e) => {
+              if (voice.place) pressCue(e, voice.cue.id, voice.place, () => actions.selectCue(voice.cue.id, { from: voice.from, to: voice.to }));
+            }}
+            oncuemenu={(e) => {
+              if (voice.place) openEditMenu(e, { cue: voice.cue.id }, voice.cue.id, true);
+            }}
           />
         </div>
       </div>
@@ -571,14 +769,52 @@
       <div class="tl-section">
         {@render heads('Sound', sounds.lanes)}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-        <div class="sounds" role="group" aria-label="Sounds" style="--lanes: {sounds.lanes}" onpointerdown={(e) => pressSounds(e, sounds.bands)}>
+        <div class="sounds" role="group" aria-label="Sounds" style="--lanes: {sounds.lanes}" onpointerdown={(e) => pressSounds(e, sounds.bands)} oncontextmenu={soundMenu}>
           {#each sounds.bands as band (band.id)}
-            <SoundBand {band} {actions} {fps} px={spanPx(band.from, band.to)} selected={ui.cue === band.id} ready={ui.sound?.status === 'ready' || ui.sound?.status === 'locked'} style={spanStyle(band.from, band.to, band.lane)} />
+            {@const placed = shownBand(band)}
+            <SoundBand band={placed} {actions} {fps} px={spanPx(placed.from, placed.to)} selected={ui.cue === band.id} editable={ui.soundEdit} ready={ui.sound?.status === 'ready' || ui.sound?.status === 'locked'} style={spanStyle(placed.from, placed.to, band.lane)} />
           {/each}
         </div>
       </div>
     {/if}
   </div>
+
+  {#if editMenu}
+    {@const clip = 'clip' in editMenu.target ? editMenu.target.clip : null}
+    {@const cue = 'cue' in editMenu.target ? editMenu.target.cue : null}
+    <Popover label={editMenu.label} role="menu" class="stack-menu" style="left: {editMenu.x}px; top: {editMenu.y}px; width: 204px" onclose={() => (editMenu = null)}>
+      <div class="menu-list">
+        <button type="button" role="menuitem" class="menu-item" onclick={() => runMenu((t) => actions.splitAtPlayhead(t))}>Split at playhead</button>
+        <button type="button" role="menuitem" class="menu-item" onclick={() => runMenu((t) => actions.duplicateSelected(t))}>Duplicate</button>
+        <button type="button" role="menuitem" class="menu-item" onclick={() => runMenu((t) => actions.deleteSelected(t))}>Delete</button>
+        {#if clip !== null}
+          <button type="button" role="menuitem" class="menu-item" onclick={() => runMenu(() => actions.setTransition(clip, 'crossfade'))}>Crossfade in</button>
+          <button type="button" role="menuitem" class="menu-item" onclick={() => runMenu(() => actions.setTransition(clip, 'wipe'))}>Wipe in</button>
+          <button type="button" role="menuitem" class="menu-item" onclick={() => runMenu(() => actions.setTransition(clip, 'iris'))}>Iris in</button>
+          <button type="button" role="menuitem" class="menu-item" onclick={() => runMenu(() => actions.setTransition(clip, null))}>Remove transition</button>
+        {/if}
+        {#if cue !== null && video && editMenu.voice}
+          <button type="button" role="menuitem" class="menu-item" onclick={() => runMenu(() => actions.moveCueToScene(cue))}>Move to a voice scene</button>
+        {/if}
+      </div>
+    </Popover>
+  {/if}
+
+  {#if addMenu}
+    <Popover label="Add a clip" role="menu" class="stack-menu tl-add-menu" style="left: {addMenu.x}px; bottom: {window.innerHeight - addMenu.y}px; width: 240px" onclose={() => (addMenu = null)}>
+      <div class="menu-list">
+        {#each addable as option (option.key)}
+          <button type="button" role="menuitem" class="menu-item" data-add={option.key} onclick={() => add({ scene: option.key })}>{option.label}</button>
+        {/each}
+        {#each pictures as media (media.file)}
+          <button type="button" role="menuitem" class="menu-item" data-add={media.file} onclick={() => add({ file: media.file })}>{fileName(media.file)}</button>
+        {/each}
+        {#if addable.length === 0 && pictures.length === 0}
+          <span class="menu-empty">Nothing to add yet. Make a scene, or import a picture.</span>
+        {/if}
+      </div>
+    </Popover>
+  {/if}
 
   {#if keyMenu}
     <Popover label="Key" role="menu" class="stack-menu" style="left: {keyMenu.x}px; top: {keyMenu.y}px; width: 140px" onclose={() => (keyMenu = null)}>

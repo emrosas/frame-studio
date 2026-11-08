@@ -19,9 +19,11 @@
     { keys: ['@'], what: 'Pick a layer, in the prompt' },
     { keys: ['Drag'], what: 'Move what is under the pointer on the canvas' },
     { keys: ['Shift', 'Drag'], what: 'Move along one axis' },
-    { keys: ['Delete'], what: 'Remove the selected key' },
+    { keys: ['Delete'], what: 'Remove the selected key, sound or clip' },
+    { keys: ['S'], what: 'Split the selected clip or sound at the playhead' },
+    { keys: ['⌘', 'D'], what: 'Duplicate the selected clip or sound' },
     { keys: ['←', '→'], what: 'Nudge the selected key a frame; Shift for ten' },
-    { keys: ['⌘', 'Z'], what: 'Undo a key, clip or canvas edit' },
+    { keys: ['⌘', 'Z'], what: 'Undo a key, clip, sound or canvas edit' },
   ]);
 </script>
 

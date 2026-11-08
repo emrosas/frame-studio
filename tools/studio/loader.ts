@@ -64,7 +64,15 @@ export function installLoader(builtins: string): void {
         const refusal = importRefusal({ ...home, builtins: root }, from!, specifier, found);
         if (refusal !== null) throw new Error(refusal);
       }
-      if (found === null || !found.endsWith('.ts')) return next(specifier, context);
+      if (found === null || !found.endsWith('.ts')) {
+        const landed = next(specifier, context);
+        // CommonJS finds files findSource doesn't, so a project's import answers for where Node landed.
+        if (home !== null && landed.url.startsWith('file:')) {
+          const refusal = importRefusal({ ...home, builtins: root }, from!, specifier, fileURLToPath(landed.url));
+          if (refusal !== null) throw new Error(refusal);
+        }
+        return landed;
+      }
       const url = pathToFileURL(found);
       if (parent?.startsWith('file:')) url.search = new URL(parent).search;
       return { url: url.href, format: 'module-typescript', shortCircuit: true };

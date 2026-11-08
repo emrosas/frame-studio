@@ -47,6 +47,7 @@ import {
   type StudioRequest,
   type TurnSettings,
 } from '../../src/studio/protocol.ts';
+import { checkTimelineEdit, placeClip, type TimelineEdit, type TimelineFile } from '../../src/studio/timeline-edit.ts';
 import { buildEmbed } from '../bundle/embed.ts';
 import { kokoro } from '../voice/kokoro.ts';
 import { saveVoiceFile } from '../voice/save.ts';
@@ -409,40 +410,15 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     }
   }
 
-  /** Sets a clip's start and trim, leaving out what is the default, through the same validation as update_scene. Returns the clip on either side, for undo. */
+  /** Sets a clip's start and trim through the same validation as update_scene. Returns the clip on either side, for undo. */
   async function moveClip(id: string, edit: ClipEdit): Promise<LayerChange> {
     const w = await ws();
     const { scene } = await w.getScene(id);
-    const { tracks } = scene as { tracks?: { id: string; clips: Record<string, unknown>[] }[] };
+    const { tracks, fps, duration } = scene as unknown as TimelineFile;
     const clip = tracks?.flatMap((t) => t.clips).find((c) => c.id === edit.clip);
     if (!tracks || !clip) throw new Error(`Composition "${id}" has no clip "${edit.clip}".`);
     const before = structuredClone(clip);
-    // Keys and overrides are in composition time, so a fade goes where its clip goes.
-    const moved = edit.start - (typeof clip.start === 'number' ? clip.start : 0) - (edit.in - (typeof clip.in === 'number' ? clip.in : 0));
-    if (moved !== 0) {
-      const { fps } = scene as { fps: number };
-      const shift = (list: unknown) => {
-        for (const track of (Array.isArray(list) ? list : []) as { keys: { t: number }[] }[]) for (const key of track.keys) key.t = Math.max(0, key.t + moved);
-      };
-      shift(clip.tracks);
-      shift((clip.mask as { tracks?: unknown } | undefined)?.tracks);
-      if (Array.isArray(clip.overrides)) {
-        // Kept inside the composition: what slides off an end goes, as the clip's picture does.
-        const { duration } = scene as { duration: number };
-        const total = Math.floor(duration * fps);
-        const delta = Math.round(moved * fps);
-        const clampFrame = (f: number) => Math.min(total, Math.max(0, f + delta));
-        clip.overrides = (clip.overrides as { from: number; to: number }[]).map((o) => ({ ...o, from: clampFrame(o.from), to: clampFrame(o.to) })).filter((o) => o.to > o.from);
-        if ((clip.overrides as unknown[]).length === 0) delete clip.overrides;
-      }
-    }
-    if (edit.start > 0) clip.start = edit.start;
-    else delete clip.start;
-    if (edit.in > 0) clip.in = edit.in;
-    else delete clip.in;
-    // A picture clip always says where it ends; the validator doesn't read files.
-    if (edit.out !== null) clip.out = edit.out;
-    else if (clip.file === undefined) delete clip.out;
+    placeClip(clip, edit, { fps, duration });
     await w.updateScene(id, { tracks });
     return { before: withoutId(before), after: withoutId(clip) };
   }
@@ -677,6 +653,24 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       if (problem) throw new HttpError(400, problem);
       if (await agentWorks(id)) throw new HttpError(409, 'An agent is working on this composition, so its clips stay put until it finishes.');
       return send(res, 200, await created(() => moveClip(id, input)));
+    }
+    // The timeline as an editor (ADR 0018): adding, splitting, duplicating and deleting clips and sound, tracks, fades and transitions.
+    if (req.method === 'POST' && path === '/timeline') {
+      const input = await json<{ scene?: unknown; edit?: unknown }>(req);
+      if (typeof input?.scene !== 'string' || input.scene === '') throw new HttpError(400, 'Send { scene, edit }.');
+      const problem = checkTimelineEdit(input.edit);
+      if (problem) throw new HttpError(400, problem);
+      const { scene } = input;
+      if (await agentWorks(scene)) throw new HttpError(409, 'An agent is working on this scene, so it stays put until the agent finishes.');
+      return send(res, 200, await created(() => ws().then((w) => w.editTimeline(scene, input.edit as TimelineEdit))));
+    }
+    // Moving a voice out of a video into a scene of its own, with captions (ADR 0018).
+    if (req.method === 'POST' && path === '/voice-scene') {
+      const input = await json<{ scene?: unknown; cue?: unknown }>(req);
+      if (typeof input?.scene !== 'string' || typeof input.cue !== 'string') throw new HttpError(400, 'Send { scene, cue }.');
+      const { scene, cue } = input;
+      if (await agentWorks(scene)) throw new HttpError(409, 'An agent is working on this scene, so it stays put until the agent finishes.');
+      return send(res, 200, await created(() => ws().then((w) => w.moveCueToScene(scene, cue))));
     }
     // A hand edit of a layer from the timeline or the canvas, or undoing one (ADR 0015). The same lock as a clip's.
     if (req.method === 'POST' && path === '/layers') {

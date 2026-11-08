@@ -306,5 +306,7 @@ export async function openTakesEnv(): Promise<boolean> {
  */
 export function relaunchCommand(bundle: string, env: Record<string, string>, passEnv: boolean): string {
   const vars = passEnv ? Object.entries(env).map(([key, value]) => `--env ${sh(`${key}=${value}`)}`) : [];
-  return ['/usr/bin/open', '-n', ...vars, sh(bundle)].join(' ');
+  // A test's app comes back without taking focus (desktop/background.ts).
+  const quiet = env.FRAME_STUDIO_BACKGROUND === '1' ? ['-g'] : [];
+  return ['/usr/bin/open', '-n', ...quiet, ...vars, sh(bundle)].join(' ');
 }

@@ -78,3 +78,19 @@ describe('keyAction', () => {
     expect(keyAction(press('a'), 12)).toBeNull();
   });
 });
+
+
+describe('timeline edits', () => {
+  it('takes S for split and Command-D for duplicate', () => {
+    expect(keyAction(press('s'), 12)).toEqual({ type: 'split' });
+    expect(keyAction(press('S'), 12)).toEqual({ type: 'split' });
+    expect(keyAction(press('d', { metaKey: true }), 12)).toEqual({ type: 'duplicate' });
+    expect(keyAction(press('d', { ctrlKey: true }), 12)).toEqual({ type: 'duplicate' });
+  });
+
+  it('leaves Command-S, Shift-Command-D and a plain D alone', () => {
+    expect(keyAction(press('s', { metaKey: true }), 12)).toBeNull();
+    expect(keyAction(press('d', { metaKey: true, shiftKey: true }), 12)).toBeNull();
+    expect(keyAction(press('d'), 12)).toBeNull();
+  });
+});

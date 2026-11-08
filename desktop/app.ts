@@ -14,11 +14,12 @@ import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/prom
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, utilityProcess, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, utilityProcess, webContents, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
 import { convertFilm } from '../tools/studio/convert.ts';
 import { createStudioFolder, writeTsconfig } from './folders.ts';
 import { createProject, hasAgentWork, listProjects, projectPoster, WARM_MS, warmProjects, type ProjectEntry } from './projects.ts';
 import { appPaths } from './paths.ts';
+import { bringForward, reveal, stayInBackground, windowOptions } from './background.ts';
 import { adoptShellPath } from './shell-path.ts';
 import { checkForUpdates, checkFromMenu, installUpdate, openReleaseNotes, startUpdates, type UpdateState, updatesEnabled, updateState } from './updater.ts';
 import { projectCode, dialogName } from '../tools/studio/project-code.ts';
@@ -390,7 +391,7 @@ function windowLook(): Electron.BrowserWindowConstructorOptions {
 function showViewer(url: string, name: string, target?: OpenTarget): void {
   if (!main || main.isDestroyed()) {
     const bounds = settings.bounds;
-    main = new BrowserWindow({
+    main = new BrowserWindow(windowOptions({
       width: bounds?.width ?? 1400,
       height: bounds?.height ?? 900,
       ...(bounds ? { x: bounds.x, y: bounds.y } : {}),
@@ -399,7 +400,7 @@ function showViewer(url: string, name: string, target?: OpenTarget): void {
       title: 'Frame Studio',
       ...windowLook(),
       webPreferences: { preload: join(paths.desktop, 'preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false },
-    });
+    }));
     guard(main);
     let crashes = 0;
     main.webContents.on('render-process-gone', () => {
@@ -418,24 +419,25 @@ function showViewer(url: string, name: string, target?: OpenTarget): void {
   main.setTitle(`${name} · Frame Studio`);
   const query = new URLSearchParams({ ...(target?.scene ? { scene: target.scene } : {}), ...(target?.thread !== undefined ? { thread: String(target.thread) } : {}), ...(target?.new ? { new: target.new } : {}) }).toString();
   void main.loadURL(`${url}/${query ? `?${query}` : ''}`);
-  main.show();
+  reveal(main);
 }
 
 function showWelcome(): void {
   if (welcome && !welcome.isDestroyed()) {
-    welcome.focus();
+    bringForward(welcome);
     return;
   }
-  welcome = new BrowserWindow({
+  welcome = new BrowserWindow(windowOptions({
     width: 720,
     height: 480,
     resizable: false,
     title: 'Frame Studio',
     ...windowLook(),
     webPreferences: { preload: join(paths.desktop, 'welcome-preload.cjs'), sandbox: true, contextIsolation: true, nodeIntegration: false },
-  });
+  }));
   guard(welcome);
   void welcome.loadFile(join(paths.desktop, 'welcome.html'));
+  if (!welcome.isVisible()) reveal(welcome);
   welcome.on('closed', () => {
     welcome = null;
   });
@@ -518,6 +520,13 @@ async function sampleProject(): Promise<string | null> {
 
 // ---- menus ----
 
+/** The Edit menu's Undo or Redo: the viewer's to work out, or a window of main's own, which has text fields only. */
+function historyStep(step: 'undo' | 'redo'): void {
+  const focused = webContents.getFocusedWebContents() ?? main?.webContents ?? null;
+  if (session !== null && focused === main?.webContents) focused?.send('frame-studio:history', step);
+  else focused?.[step]();
+}
+
 function buildMenu(): void {
   const recent: MenuItemConstructorOptions[] = settings.recent.length
     ? settings.recent.map((path) => ({ label: path, click: () => report(openFolder(path)) }))
@@ -565,7 +574,21 @@ function buildMenu(): void {
         { role: 'close' },
       ],
     },
-    { role: 'editMenu' },
+    {
+      label: 'Edit',
+      // A role here would only undo text. The viewer decides: a text field's own, else the hand edits'.
+      submenu: [
+        { label: 'Undo', accelerator: 'CmdOrCtrl+Z', click: () => historyStep('undo') },
+        { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z', click: () => historyStep('redo') },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'pasteAndMatchStyle' },
+        { role: 'delete' },
+        { role: 'selectAll' },
+      ],
+    },
     {
       label: 'View',
       submenu: [{ role: 'reload' }, { role: 'forceReload' }, { role: 'toggleDevTools' }, { type: 'separator' }, { role: 'togglefullscreen' }],
@@ -725,6 +748,7 @@ export function runApp(): void {
   app.setName('Frame Studio');
   const userData = process.env.FRAME_STUDIO_USER_DATA ?? join(app.getPath('appData'), 'Frame Studio');
   app.setPath('userData', userData);
+  stayInBackground();
   app.setAppLogsPath(process.env.FRAME_STUDIO_USER_DATA ? join(userData, 'logs') : join(homedir(), 'Library/Logs/Frame Studio'));
   if (!app.requestSingleInstanceLock()) {
     app.quit();
@@ -740,7 +764,7 @@ export function runApp(): void {
       return;
     }
     if (win.isMinimized()) win.restore();
-    win.focus();
+    bringForward(win);
   });
   app.on('window-all-closed', () => app.quit());
   nativeTheme.on('updated', () => main?.setBackgroundColor(pageColour()));

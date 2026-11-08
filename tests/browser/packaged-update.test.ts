@@ -47,7 +47,7 @@ const pushes: UpdateState[] = [];
 function env(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(process.env)) if (value !== undefined && key !== 'ELECTRON_RUN_AS_NODE') out[key] = value;
-  return { ...out, FRAME_STUDIO_HOME: home, FRAME_STUDIO_USER_DATA: userData, FRAME_STUDIO_UPDATE_FEED: feedUrl, PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
+  return { ...out, FRAME_STUDIO_HOME: home, FRAME_STUDIO_USER_DATA: userData, FRAME_STUDIO_UPDATE_FEED: feedUrl, FRAME_STUDIO_BACKGROUND: '1', PATH: '/usr/bin:/bin:/usr/sbin:/sbin' };
 }
 
 // Polled during the swap too, when the bundle is briefly missing, so its complaints stay quiet.

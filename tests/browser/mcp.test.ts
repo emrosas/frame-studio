@@ -187,6 +187,28 @@ describe('an agent session', () => {
     expect(textOf(swap)).toMatch(/rig swap needs a layerId/);
   });
 
+  it('clears overrides over a range, and saves the scene without them', async () => {
+    const overrides = async (id: string) =>
+      json<{ scene: { layers: { id: string; overrides?: { from: number; to: number }[] }[] } }>(await call('get_scene', { id: ID })).scene.layers.find((l) => l.id === id)?.overrides;
+    const select = { sceneId: ID, layerId: 'bruno' };
+    const bad = await call('apply_to_selection', { selection: { ...select, from: 60, to: 66 }, patch: { remove: true, params: { pose: 'cheer' } } });
+    expect(textOf(bad)).toMatch(/takes no rig or params/);
+    const empty = await call('apply_to_selection', { selection: { ...select, from: 30, to: 40 }, patch: { remove: true } });
+    expect(textOf(empty)).toMatch(/no override in \[30, 40\)/);
+
+    const before = (await overrides('bruno'))!;
+    json(await call('apply_to_selection', { selection: { ...select, from: 66, to: 72 }, patch: { remove: true } }));
+    expect(await overrides('bruno')).toEqual(before.filter((o) => o.from !== 66));
+
+    // With no layer it reaches every layer with one there; the override-free range around them is refused.
+    json(await call('apply_to_selection', { selection: { sceneId: ID, from: 90, to: 96 }, patch: { remove: true } }));
+    expect((await overrides('bruno'))?.some((o) => o.from === 90)).toBe(false);
+    expect(await overrides('pip')).toBeUndefined();
+    expect(JSON.parse(readFileSync(SCENE_FILE, 'utf8')).layers.find((l: { id: string }) => l.id === 'pip')).not.toHaveProperty('overrides');
+    const none = await call('apply_to_selection', { selection: { sceneId: ID, from: 90, to: 96 }, patch: { remove: true } });
+    expect(textOf(none)).toMatch(/no layer has an override/);
+  });
+
   it('runs tool calls one at a time, so parallel renders come back right', async () => {
     const serial = [await imageHash(await render(5)), await imageHash(await render(50))];
     const parallel = await Promise.all([render(5), render(50), call('list_scenes'), render(5)]);

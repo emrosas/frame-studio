@@ -107,7 +107,7 @@ Rules:
 - The canvas renders at the scene's fixed resolution and is scaled with CSS for display. Handle devicePixelRatio for preview only; exports are always native resolution.
 - UI is regular HTML/CSS positioned over the canvas, never drawn into it.
 - The studio ships as a web app and as an Electron app from one viewer (`docs/adr/0001-web-and-electron-targets.md`, ADR 0008). `src/viewer` uses web platform APIs only. Anything that needs the machine goes through the studio server, which serves the viewer, and the app's preload adds only native features (`src/viewer/desktop.ts`).
-- **A project is a folder** (ADR 0013), the studio folder the app and the tools work on (ADR 0008): `project.json` (name, default format, cast), `scenes/`, `compositions/`, `projects/` (old films, until converted), `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The app lists each recent project in the sidebar, read from disk, and shows one on screen. A project's server runs while it's on screen, while a thread there works, and for ten minutes after you leave it (the last two left). Folds, layout and recent models live in the app's settings, since each server has its own port. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
+- **A project is a folder** (ADR 0013), the studio folder the app and the tools work on (ADR 0008): `project.json` (name, default format, cast), `scenes/`, `compositions/`, `projects/` (old films, until converted), `rigs/`, `audio/`, `media/` (sound files, ADR 0012), `references/`, `out/`, `.frame-studio/`. The app lists each recent project in the sidebar, read from disk, and shows one on screen; a project's row opens its library, and Threads lists every project's threads in one list. A project's server runs while it's on screen, while a thread there works, and for ten minutes after you leave it (the last two left). The Done fold, layout and recent models live in the app's settings, since each server has its own port. The built-in rigs and generators ship read-only inside the app; the repo is a studio folder whose built-ins are `src/`. A studio rig can't take a built-in's id.
 - The viewer stays plain TypeScript until M6, then its UI moves to Svelte 5 with Vite, not SvelteKit (`docs/adr/0002-svelte-from-m6.md`). The runtime never imports Svelte.
 
 ## Scene format (JSON)
@@ -178,7 +178,7 @@ Engine support required from the start:
 
 ## Hand edits (ADR 0015)
 
-The timeline edits a scene's key times, and a press on the canvas drags a layer. Hand edits change when and where; values, drawing and easing stay the agent's. A drag shows through a patched copy of the scene in the viewer, and `render()` never hears about it. A canvas drag writes params when untracked, a key at the playhead when tracked, and an override when a range is set around the playhead (`src/viewer/drag.ts`). Everything saves through the server's checked edit, stays locked while an agent works on the scene, and shares one Command-Z stack with clip moves. A spoken word's text and timing are hand-editable too (ADR 0016), and dragging a key anchored to a word detaches it.
+The timeline edits a scene's key times, and a press on the canvas drags a layer. On a composition it also adds, splits, duplicates, deletes and moves clips between tracks, and sound moves, trims, fades, splits and duplicates on scenes and compositions alike (ADR 0018, `src/studio/timeline-edit.ts`). Hand edits change when and where; values, drawing and easing stay the agent's, but for the transition presets, which write plain keys. A drag shows through a patched copy of the scene in the viewer, and `render()` never hears about it. A canvas drag writes params when untracked, a key at the playhead when tracked, and an override when a range is set around the playhead (`src/viewer/drag.ts`). Everything saves through the server's checked edit, stays locked while an agent works on the scene, and shares one Command-Z stack, which the Edit menu reaches too. A spoken word's text and timing are hand-editable too (ADR 0016), and dragging a key anchored to a word detaches it.
 
 ## Reference images
 
@@ -224,7 +224,7 @@ Before a folder's `rigs/` or `audio/` load the first time, main asks. Trust is s
 - `render_frame(sceneId, frame | timecode)`: returns a PNG so the agent can see its work
 - `render_contact_sheet(sceneId, from, to, every)`: a grid of frames for reviewing motion
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
-- `apply_to_selection(selection, patch)`: writes a scoped override for the selection
+- `apply_to_selection(selection, patch)`: writes a scoped override for the selection, or with `{ remove: true }` clears the overrides in it
 - `check(sceneId, from?, to?)`: measures a scene or composition before anyone watches it (format, black, freeze, flashing, loudness, sync; ADR 0014)
 - `export(sceneId, target, from?, to?, silent?, media?)`: `mp4` | `gif` | `html`, returns an output path; `media` inlines sound files in HTML
 - `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request threads and current selection (ADR 0003, ADR 0006). `complete_request` ends a turn; the user replies or settles. Plus the `/frame-studio:next` prompt and the `selection://current` resource
@@ -243,6 +243,7 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 
 - TypeScript 6, strict mode. Vite for the viewer, with Svelte 5 for its UI (ADR 0002). Vitest for tests. `npm run typecheck` runs tsc for app and Node code and svelte-check for components. TypeScript 7 has no JavaScript API, which svelte-check needs, so the repo stays on 6.
 - `npm test` is the unit suite. `npm run test:browser` runs Playwright against the viewer, the render worker, the embed, the handoff, the MCP shim, the app from source, and the packaged app when `npm run desktop:build` has built it.
+- Tests that launch the app set `FRAME_STUDIO_BACKGROUND=1` (`desktop/background.ts`), so its windows never take focus or show over the person's work. Check viewer UI in Playwright's headless Chromium, not in a shown window.
 - `npm run voice:setup` builds the pinned whisper-cli. Without it the timing tests skip.
 - `npm run dev` runs the studio server on the repo and prints the viewer's paired URL. `npm run desktop` runs the app from the repo; `npm run desktop:build` packages it for macOS arm64 and checks the result. `npm run desktop:release` builds a release for the app's updater (ADR 0009, `docs/RELEASING.md`).
 - After changing drawing code, verify visually with `render_frame` or a contact sheet rather than assuming it looks right.
@@ -254,7 +255,7 @@ An AI inside the studio that works request threads like a chat in T3 Code (`docs
 - Generate Video. Providers allow the kind and a poll seam (ADR 0017); nothing else exists.
 - The app signed and notarized, with electron-updater in place of the unsigned updater (ADR 0009), and Windows and Linux builds (ADR 0008 left them for later). The same viewer also ships as a web app (ADR 0001), so build nothing Electron-only into `src/viewer`.
 - A rig-controls panel generated from param schemas.
-- Scene transitions as a library, multi-shot story files.
+- Multi-shot story files.
 - Hosted service: cloud rendering, prompt-crafting and style-steering UI, subscription instead of bring-your-own-key.
 
 ## Agent skills

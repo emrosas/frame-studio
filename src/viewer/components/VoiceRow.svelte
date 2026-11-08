@@ -5,7 +5,8 @@
   be prompted against. On a scene that isn't locked, a double-click edits a word's
   text and a drag on a chip's edge retimes it, snapping to frames. A right-click
   anchors the selected key or marker to the word. Every edit saves through the
-  server's checked edit, on the one undo stack.
+  server's checked edit, on the one undo stack. The grip at its start moves the
+  whole voice and its ends trim it (ADR 0018), on a video too.
 -->
 <script lang="ts">
   import type { SpokenWord } from '../../engine/types';
@@ -26,6 +27,9 @@
     startSpan,
     follow,
     onmenu,
+    cueEditable,
+    pressCue,
+    oncuemenu,
   }: {
     voice: VoiceLine;
     ui: ViewerUi;
@@ -39,6 +43,9 @@
     startSpan: (e: PointerEvent, layerId: string | null, own: readonly number[], click: () => void) => void;
     follow: (e: PointerEvent, move: (e: PointerEvent) => void, end: (e: PointerEvent | null) => void, on?: HTMLElement | null) => void;
     onmenu: (e: MouseEvent, chip: WordChip) => void;
+    cueEditable: boolean;
+    pressCue: (e: PointerEvent) => void;
+    oncuemenu: (e: MouseEvent) => void;
   } = $props();
 
   const BUCKETS = 240;
@@ -117,7 +124,7 @@
     const startX = e.clientX;
     const perFrame = (row?.getBoundingClientRect().width ?? 0) / Math.max(1, voice.to - voice.from);
     // The word's own other edge and neighbours' far edges are limits, not targets, so only markers catch it.
-    const targets = ui.markers.map((m) => m.frame);
+    const targets = [...ui.markers.map((m) => m.frame), ...(ui.timeline ? [ui.timeline.frame] : [])];
     let moved = false;
     dragging = true;
     follow(
@@ -182,7 +189,12 @@
   aria-label="Voice {voice.label}"
   style="--in: {total > 0 ? voice.from / total : 0}; --out: {total > 0 ? voice.to / total : 1}"
   onpointerdown={(e) => {
+    const target = e.target as HTMLElement;
+    if (target.dataset.edge !== undefined || target.dataset.fade !== undefined || target.classList.contains('voice-grip')) return pressCue(e);
     if (e.target === e.currentTarget || (e.target as Element).closest('svg')) startSpan(e, null, edges(), () => actions.selectCue(voice.cue.id, { from: voice.from, to: voice.to }));
+  }}
+  oncontextmenu={(e) => {
+    if (!(e.target as Element).closest('.word-chip')) oncuemenu(e);
   }}
 >
   {#if path}
@@ -209,6 +221,16 @@
       {#if editable}<span class="word-edge is-start" data-edge="start"></span><span class="word-edge is-end" data-edge="end"></span>{/if}
     </span>
   {/each}
+  {#if cueEditable && voice.place}
+    {@const seconds = (voice.place.to - voice.place.from) / fps}
+    {#if voice.place.fadeIn > 0}<span class="sound-fade is-in" style="width: {(voice.place.fadeIn / seconds) * 100}%"></span>{/if}
+    {#if voice.place.fadeOut > 0}<span class="sound-fade is-out" style="width: {(voice.place.fadeOut / seconds) * 100}%"></span>{/if}
+    <span class="voice-grip" title="Drag to move this voice"></span>
+    <span class="clip-edge is-start" data-edge="start"></span>
+    <span class="clip-edge is-end" data-edge="end"></span>
+    <span class="fade-mark is-in" data-fade="in" title="Fade in" style="left: {(voice.place.fadeIn / seconds) * 100}%"></span>
+    <span class="fade-mark is-out" data-fade="out" title="Fade out" style="right: {(voice.place.fadeOut / seconds) * 100}%"></span>
+  {/if}
   {#if editing !== null}
     {@const chip = chips.find((c) => c.index === editing)}
     {#if chip}

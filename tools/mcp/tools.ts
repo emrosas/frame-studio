@@ -349,7 +349,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'Apply to a selection',
       description:
-        'A scoped edit: over frames [from, to) of one layer, swap its rig to a variant and/or override params, written as overrides in the scene file. Overrides the range partly covers are split so they keep applying outside it. Use layerId "background" for the background. Leave out layerId to select the whole frame range: params then go to every layer whose rig takes all of them. Frames outside the range are untouched. The result is validated before saving.',
+        'A scoped edit: over frames [from, to) of one layer, swap its rig to a variant and/or override params, written as overrides in the scene file. With patch { remove: true } it clears overrides over the range instead. Overrides the range partly covers are split so they keep applying outside it. Use layerId "background" for the background. Leave out layerId to select the whole frame range: params then go to every layer whose rig takes all of them, and remove reaches every layer with an override there. Frames outside the range are untouched. The result is validated before saving.',
       inputSchema: {
         selection: z.object({
           sceneId,
@@ -361,6 +361,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
         patch: z.object({
           rig: z.string().optional().describe('A rig or variant id to draw with over the range, e.g. bear.bandaged'),
           params: z.record(z.string(), paramValue).optional().describe('Param values to hold over the range'),
+          remove: z.boolean().optional().describe('True to clear overrides over the range. Takes no rig or params'),
         }),
       },
     },
@@ -368,7 +369,7 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
       'apply_to_selection',
       async (
         w,
-        { selection, patch }: { selection: { sceneId: string; layerId?: string; partId?: string; from: number | string; to: number | string }; patch: { rig?: string; params?: Record<string, number | string | boolean> } },
+        { selection, patch }: { selection: { sceneId: string; layerId?: string; partId?: string; from: number | string; to: number | string }; patch: { rig?: string; params?: Record<string, number | string | boolean>; remove?: boolean } },
       ) => text(await w.applyToSelection(selection, patch)),
     ),
   );

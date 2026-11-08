@@ -4,6 +4,7 @@
 // edits a word's text and timing; nothing else. Pure, so it's unit tested
 // without a browser.
 
+import type { CuePlace } from './timeline';
 import { cueWords } from '../engine/speech';
 import { timeToFrame } from '../engine/time';
 import type { AudioCue, SpokenWord } from '../engine/types';
@@ -26,6 +27,8 @@ export interface WordChip {
 /** A cue with words, as a row of the timeline. */
 export interface VoiceLine {
   cue: VoiceCue;
+  /** Where it sits, for moving and trimming it (ADR 0018). */
+  place?: CuePlace;
   label: string;
   from: number;
   to: number;

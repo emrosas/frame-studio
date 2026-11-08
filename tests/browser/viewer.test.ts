@@ -47,7 +47,9 @@ type Picked = { studio: { selection: { layerId?: string; from: number; to: numbe
 const picked = (page: Page) => page.evaluate(() => (window as unknown as Picked).studio.selection);
 const sidebar = (page: Page) => page.getByRole('navigation', { name: 'Studio' });
 /** The scene the sidebar marks as the one on screen. */
-const currentScene = (page: Page) => sidebar(page).locator('[aria-current="page"]').getAttribute('data-key');
+const currentScene = (page: Page) => page.evaluate(() => (window as unknown as { studio: { selection: { sceneId: string } | null } }).studio.selection?.sceneId ?? null);
+/** The sidebar's row for the project on screen, which opens its library. */
+const projectRow = (page: Page) => sidebar(page).getByRole('list', { name: 'Projects' }).locator('.project-row').first();
 
 /** Viewport position of scene pixel (x, y) on the canvas. */
 async function scenePoint(page: Page, x: number, y: number): Promise<{ x: number; y: number }> {
@@ -104,11 +106,15 @@ describe('the viewer', () => {
     await page.close();
   });
 
-  it('seeks with the scrubber and switches scenes from the sidebar', async () => {
+  it("seeks with the scrubber and switches scenes from the project's library", async () => {
     const page = await open('?scene=shapes-test&frame=0');
     await page.getByRole('slider', { name: 'Frame' }).fill('30');
     await expect.poll(() => readout(page)).toBe('frame 30 of 72');
-    await sidebar(page).getByRole('button', { name: 'hello', exact: true }).click();
+    // Footage lists projects, not scenes: the row opens the library, and a card there opens the scene.
+    expect(await sidebar(page).getByRole('button', { name: 'hello', exact: true }).count()).toBe(0);
+    await projectRow(page).click();
+    await expect.poll(() => projectRow(page).getAttribute('aria-current')).toBe('page');
+    await page.getByRole('region', { name: 'Library' }).getByRole('button', { name: 'hello', exact: true }).click();
     await expect.poll(() => readout(page)).toBe('frame 0 of 72');
     expect(await page.getByRole('status', { name: 'Frame rate' }).textContent()).toMatch(/^24 fps/);
     await expect.poll(() => page.url()).toContain('scene=hello');
@@ -322,14 +328,17 @@ describe('selecting, every way', () => {
 
   it('keeps the filter out of sight until Command-F, and Escape puts it away', async () => {
     const page = await open('?scene=shapes-test&frame=0');
-    const filter = sidebar(page).getByRole('searchbox', { name: 'Filter videos and scenes' });
+    const filter = sidebar(page).getByRole('searchbox', { name: 'Filter projects, videos and scenes' });
     expect(await filter.count()).toBe(0);
     await page.keyboard.press('Meta+f');
     await filter.waitFor();
     await expect.poll(() => filter.evaluate((el) => el === document.activeElement)).toBe(true);
-    await page.keyboard.type('hel');
-    expect(await sidebar(page).locator('button[data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('data-key')))).toContain('hello');
-    expect(await sidebar(page).getByRole('button', { name: 'bear-test', exact: true }).count()).toBe(0);
+    // A project stays listed while something in it matches, counting what does.
+    await page.keyboard.type('shapes-tes');
+    await expect.poll(() => projectRow(page).locator('.count').textContent()).toBe('1');
+    await page.keyboard.type('nope');
+    await expect.poll(() => projectRow(page).count()).toBe(0);
+    expect(await sidebar(page).getByText('No matches.').count()).toBe(1);
     await page.keyboard.press('Escape');
     await expect.poll(() => filter.count()).toBe(0);
     await page.close();
@@ -339,7 +348,7 @@ describe('selecting, every way', () => {
     const page = await open('?scene=shapes-test&frame=0');
     await page.getByRole('button', { name: 'Export', exact: true }).click();
     await page.getByRole('region', { name: 'Export' }).waitFor();
-    await sidebar(page).getByRole('button', { name: 'Library' }).click();
+    await projectRow(page).click();
     await expect.poll(() => page.getByRole('region', { name: 'Export' }).count()).toBe(0);
     await page.close();
   });
@@ -396,16 +405,20 @@ describe('projects (ADR 0007)', () => {
   const shots = (page: Page) => page.evaluate(() => (window as unknown as { studio: { shots: Shots } }).studio.shots);
   const url = (page: Page) => new URL(page.url()).searchParams;
 
-  it('lists old films in the sidebar under their names, and opens a film scene by its qualified id', async () => {
+  it("lists old films in the library under their names, and opens a film scene by its qualified id", async () => {
     const page = await open(`?scene=${encodeURIComponent('bears-story/pip')}&frame=12`);
     await expect.poll(() => readout(page)).toBe('frame 12 of 48');
     expect(await currentScene(page)).toBe('bears-story/pip');
-    const project = sidebar(page).getByRole('group', { name: "Bears' story" });
-    expect(await project.locator('button[data-key]').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label')))).toEqual(['film', 'meet', 'pip', 'together']);
-    expect(await project.getByRole('button', { name: 'film', exact: true }).textContent()).toContain('main');
-    // Loose scenes stay outside the project.
-    expect(await sidebar(page).getByRole('region', { name: 'Scenes' }).getByRole('button', { name: 'bear-test', exact: true }).count()).toBe(1);
     expect(await page.title()).toBe('bears-story/pip · Frame Studio');
+    await projectRow(page).click();
+    const library = page.getByRole('region', { name: 'Library' });
+    const films = library.getByRole('region', { name: 'Older films' });
+    expect(await films.getByRole('listitem').filter({ hasText: "Bears' story" }).textContent()).toContain('4 scenes');
+    // Loose scenes stay outside the film.
+    expect(await library.getByRole('region', { name: 'Scenes' }).getByRole('button', { name: 'bear-test', exact: true }).count()).toBe(1);
+    // The film's name opens its main scene.
+    await films.getByRole('button', { name: "Bears' story" }).click();
+    await expect.poll(() => currentScene(page)).toBe('bears-story/film');
     await page.close();
   });
 

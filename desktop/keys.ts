@@ -40,9 +40,16 @@ const LONGEST = 512;
 /** A key refused for a reason written here, in fixed words that never quote it. Anything else that fails says nothing. */
 export class KeyRefused extends Error {}
 
+const isStored = (entry: unknown): entry is StoredKey => {
+  const { cipher, last4, added } = (entry ?? {}) as Partial<StoredKey>;
+  return typeof cipher === 'string' && typeof last4 === 'string' && typeof added === 'string';
+};
+
 export class KeyStore {
   private readonly file: string;
   private readonly cipher: KeyCipher;
+  /** The last save or removal, which the next one waits for. */
+  private latest: Promise<unknown> = Promise.resolve();
 
   constructor(file: string, cipher: KeyCipher) {
     this.file = file;
@@ -67,7 +74,7 @@ export class KeyStore {
     }
     try {
       const parsed = JSON.parse(text) as Partial<KeyFile>;
-      if (typeof parsed.keys === 'object' && parsed.keys !== null && !Array.isArray(parsed.keys)) return { version: 1, keys: parsed.keys };
+      if (typeof parsed.keys === 'object' && parsed.keys !== null && !Array.isArray(parsed.keys) && Object.values(parsed.keys).every(isStored)) return { version: 1, keys: parsed.keys };
     } catch {
       // Falls through to moving it aside.
     }
@@ -84,8 +91,20 @@ export class KeyStore {
     await rename(partial, this.file);
   }
 
+  /** Reads, edits and writes one at a time: two at once would lose a key. */
+  private change(edit: (file: KeyFile) => void): Promise<void> {
+    const turn = this.latest.then(async () => {
+      const file = await this.read();
+      edit(file);
+      await this.write(file);
+    });
+    this.latest = turn.catch(() => {});
+    return turn;
+  }
+
+  /** Throws KeyRefused when the file can't be read, which isn't the same as holding no keys. */
   async list(): Promise<KeySummary[]> {
-    const { keys } = await this.read().catch((): KeyFile => ({ version: 1, keys: {} }));
+    const { keys } = await this.read();
     return Object.entries(keys).map(([provider, { last4, added }]) => ({ provider, last4, added }));
   }
 
@@ -94,22 +113,27 @@ export class KeyStore {
     if (problem) throw new KeyRefused(problem);
     const clean = key.trim();
     if (clean.length < 8 || clean.length > LONGEST || !/^[\x21-\x7e]+$/.test(clean)) throw new KeyRefused('That doesn\'t look like an API key. Paste the whole key, with no spaces.');
-    const file = await this.read();
-    file.keys[provider] = { cipher: this.cipher.encryptString(clean).toString('base64'), last4: clean.slice(-4), added: new Date().toISOString().slice(0, 10) };
-    await this.write(file);
+    await this.change((file) => {
+      file.keys[provider] = { cipher: this.cipher.encryptString(clean).toString('base64'), last4: clean.slice(-4), added: new Date().toISOString().slice(0, 10) };
+    });
   }
 
   /** The key itself. For the one request about to use it; nothing keeps the result. */
   async reveal(provider: string): Promise<string | null> {
     const problem = this.refusal();
-    if (problem) throw new Error(problem);
+    if (problem) throw new KeyRefused(problem);
     const stored = (await this.read()).keys[provider];
-    return stored ? this.cipher.decryptString(Buffer.from(stored.cipher, 'base64')) : null;
+    if (!stored) return null;
+    try {
+      return this.cipher.decryptString(Buffer.from(stored.cipher, 'base64'));
+    } catch {
+      throw new KeyRefused('Frame Studio can\'t decrypt this key. Remove it and add it again.');
+    }
   }
 
   async remove(provider: string): Promise<void> {
-    const file = await this.read();
-    delete file.keys[provider];
-    await this.write(file);
+    await this.change((file) => {
+      delete file.keys[provider];
+    });
   }
 }

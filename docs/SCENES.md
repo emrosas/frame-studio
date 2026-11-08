@@ -659,7 +659,7 @@ A clip can show an image or video from `media/` instead of a scene (ADR 0014):
 
 ### Masks
 
-Any layer or clip can take a `mask`: a rig with params and tracks. It then shows only where the mask rig paints, and the mask's own colours don't show. An iris is a round mask with a growing radius; a wipe is a rect that slides.
+Any layer or clip can take a `mask`: a rig with params and tracks. It then shows only where the mask rig paints, and the mask's own colours don't show. An iris is a round mask with a growing radius; a wipe is a rect that slides. The built-in `mask-iris` and `mask-wipe` take `progress`, 0 to 1, whatever the stage's size, and the timeline's transition presets write them.
 
 ```json
 { "id": "again", "scene": "meet", "start": 10, "in": 1,

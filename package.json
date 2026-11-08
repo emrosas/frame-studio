@@ -1,6 +1,6 @@
 {
   "name": "frame-studio",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -32,6 +32,7 @@
     "electron-builder": "^26.15.3",
     "es-module-lexer": "^2.3.2",
     "fontkit": "^2.0.4",
+    "marked": "18.1.0",
     "music-metadata": "^11.16.1",
     "playwright": "1.63.0",
     "rolldown": "^1.2.9",

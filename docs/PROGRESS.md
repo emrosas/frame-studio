@@ -1,8 +1,43 @@
 # Progress
 
-Last updated 2026-11-06, after keyframe editing, canvas drag, thread cards, the Footage / Threads switch, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016).
+Last updated 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
 
 ## Done
+
+### Threads read like T3 Code's chat
+
+- An agent's words are Markdown now: headings, lists (nested and task), quotes, tables, inline code, and code blocks with their language and Copy that scroll sideways instead of widening the panel. `marked` (dev dependency, viewer only) reads it; `src/viewer/markdown.ts` turns the tokens into a small tree that `Markdown.svelte` draws as Svelte text, so an agent's HTML shows as text, links go only to http, https and mailto, and images show as links.
+- Your prompt is a bubble on the right with Copy on hover. Steps sit in a quiet work log card showing the newest four, with Show more. A working turn shows breathing dots.
+- `tests/browser/thread-view.test.ts` checks all of it in headless Chromium; `THREAD_SHOTS=<dir>` saves the panel in light and dark.
+
+### App tests stay out of your way
+
+- `FRAME_STUDIO_BACKGROUND=1` (`desktop/background.ts`), set by every test that launches the app: no Dock icon, no focus, and windows that show fully transparent with clicks passing through. Playwright drives the pages over the DevTools protocol, so nothing else changes. The first app test checks no window has focus and every shown one is transparent. An update's relaunch in this mode uses `open -g`.
+
+### The sidebar: projects in Footage, one list in Threads
+
+- Footage lists one row per project, with what it holds counted and a + on hover. A click opens that project's library in the middle, where its videos and scenes are picked; another project's opens in one load. Rows don't unfold, so the scene rows, the separate Library row and the thread dots there are gone. Nothing in Footage could be settled, so it shows no status.
+- Threads is one list, newest first, across every project, as in T3 Code. Each card names its project on the right when more than one is listed. Settled threads sit under one Done fold, and the filter matches titles and project names.
+- A scene's card in the library says which videos use it, which the sidebar's "Used in" line used to say.
+
+### M15: The timeline as an editor (ADR 0018)
+
+- Clips split with S, duplicate with Command-D and delete with Delete, from the keyboard or a right-click, each one undo step. A test hashes every frame and the audio before and after a split.
+- A composition shows its real tracks, top of the stack first. A drag up or down moves a clip between them, and the corner adds tracks. An empty one can go.
+- The corner's Clip button adds a scene, a composition or a picture at the playhead, on the selected clip's track if there's room, else the lowest with room, else a new one. A clip past the end grows the video. Pictures could already be placed from the Library; that placing, and placing sound, is now undoable too.
+- Clip and sound drags snap to the playhead, markers and every other edge, and the playhead joins key, bar and word drags. Trim handles take a quarter of a short clip at most: at a 17 px clip they used to cover it, so it couldn't be moved.
+- Sound moves, trims and fades by hand on scenes and compositions, and splits, duplicates and deletes like a clip. A voice row moves by its grip. Generators don't split, and neither does a voice that captions or anchors read.
+- Transitions: Crossfade, Wipe and Iris write plain keys on a clip, with new built-in rigs `mask-wipe` and `mask-iris`, and run the clip before on underneath.
+- Move to a voice scene settles the composition cue limit: a video's sound goes into a new scene with captions, placed as a clip.
+- Edit > Undo and Redo now reach the hand edits when clicked.
+
+### Leftovers after the merge
+
+- The review of `8b8a8ee` found a gap in the trust work: a relative import that `findSource` couldn't name passed, and CommonJS `require` could then reach `node_modules` or follow a `package.json` out of the code folders, none of it hashed. The loader and the export now check where the import landed. Three tests prove it, red without the fix.
+- Keys. A broken entry in `keys.json` counts as a damaged file. Saves and removals run one at a time. A key file that can't be read, or a key that won't decrypt, says so instead of blaming the provider, and Settings shows it. A failed removal says the key is still there.
+- Saving. `checkMediaFolder` now catches a file named `media`, a dangling link, and read-only folders before the dialog, so nothing is billed for a voice that can't land. A folder named `Media` on a disk that ignores case no longer reads as outside the project. A failed write leaves no `.part`.
+- Tests that proved nothing got fixed: a fixture Node could never run, and a collision that never collided. `tests/node/save.test.ts` covers the copy for disks without hard links, and a failed write.
+- `apply_to_selection` takes `{ remove: true }`: it clears overrides over the range, splitting those it partly covers. Without a `layerId` it reaches every layer with an override there.
 
 ### M14.6: Provider keys, Generate Voice, Kokoro, folder trust (ADR 0017)
 
@@ -908,49 +943,39 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 
 ## Next
 
-1. **Your own test of a complete creation**, with the MCP server in Claude Code:
-   1. Approve `frame-studio` with `/mcp` in a session started in the repo.
-   2. Run `npm run dev` and open the viewer.
-   3. Select something, send a request, and run `/frame-studio:next` in Claude Code.
-   4. Check the result with View, and export it yourself.
-
-   Request #1 from the M6 demo is still in the queue, reverted. **Clear finished** archives it.
-2. Try the sound: open `audio-test` in the viewer, click play, and export it with `npm run export -- --scene audio-test --target mp4` or `--target html`.
-3. Try the integrated AI: in the viewer, select something, pick Claude or Codex in the agent panel's composer, and ask for a change.
-4. Try compositions: Open the sample project in the app (or convert Bears' story from Older films), open `film`, double-click a clip, and make a composition that places `film`.
-5. Try the app: `npm run desktop:build`, then open `build/desktop/dist/Frame-Studio-0.0.0-arm64.dmg`, or run it from the repo with `npm run desktop`. New studio folder makes `~/Frame Studio`. Register its MCP command with `claude mcp add frame-studio -- "/Applications/Frame Studio.app/Contents/Resources/bin/frame-studio-mcp"` from that folder.
-6. **Try 0.4.0.** [v0.4.0](https://github.com/emrosas/frame-studio/releases/tag/v0.4.0) adds the project switcher (M13) and compositions (M14): one project on screen at a time, compositions that arrange scenes on tracks, "Used in" on scenes, and Convert to a project for older films.
-7. **M15, the timeline as an editor** (ADR 0012, ADR 0013): tracks and clips you drag, trim and cut on the timeline, sound files on tracks. Then M16, stills.
-8. **Next for type:** typefaces of your own in a project folder, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer).
-9. Other candidates, from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
+1. **Take feedback from real use first.** The user is making videos in the installed app. What they run into outranks everything below.
+2. **One real ElevenLabs Generate, by the user, with their own key.** Voices, model and price have only run against a fake host, and the Spanish voice list is the likeliest thing to need fixing.
+3. **Publish 0.5.0 when the user asks.** `package.json` says 0.5.0 and the build is installed on this computer. The updater and other computers only see a GitHub release, and tagging and publishing need the user's word (`docs/RELEASING.md`).
+4. M16, stills.
+5. Typefaces of a project's own, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer).
+6. Other candidates, from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 
 ## Open questions
 
 - The repo has two test-only fake contexts. `src/engine/testing/recording-context.ts` tracks full canvas state and serves the engine tests, `tests/scenes.test.ts` and the rig smoke tests. `src/rigs/testing/recording-context.ts` logs plain strings, throws on `ctx.canvas`, and serves the older rig tests. Should they merge? The engine one could take an option to throw on `ctx.canvas`.
 - The HTML export builds with Vite and Rolldown in Node. Electron's main process is Node, so it can run the same build if it ships Vite, Rolldown's native binary and the rig sources. A browser tab can't run Vite, but the planned backend can, and Rolldown has a WebAssembly build. Which each shell uses is a packaging choice for the shell work (ADR 0001).
 - Should the embed offer a sharper high-DPI mode? It would trade pixel parity with the PNGs for crispness on retina screens.
-- Only a test enforces the rule that a scene file is named after its id. The viewer now opens a scene by file name too, and gives a shared id to the file named after it, but it does not flag a mismatch. Should the viewer or validator flag one? MCP `get_scene(id)` in M5 will need to map an id to a file.
+- Only a test enforces the rule that a scene file is named after its id. The viewer now opens a scene by file name too, and gives a shared id to the file named after it, but it does not flag a mismatch. Should the viewer or validator flag one?
 
 ## Known issues
 
 - ElevenLabs has only run against a fake host: its voice list, model and price estimate still need a real key. The real path is one Generate from the app.
 - Kokoro's Spanish needs espeak-ng data, which is GPL. It arrives only through the optional download, never in the app. The maintainer accepted that on 2026-11-07, since the step is optional.
-- A scene can't read a composition's cue, so captions need the voice in a scene. The check tool warns.
-
-- Command-Z in the packaged app relies on the page handling the key before the Edit menu. Untested: the browser tests send keys to the page directly.
-
+- A scene can't read a composition's cue, so captions need the voice in a scene. The check tool warns, and right-click > Move to a voice scene fixes it.
+- Command-Z in the packaged app: `tests/browser/packaged.test.ts` sends the key through the browser process with `sendInputEvent`, and one press takes back one edit. The hop from the keyboard into Chromium stays untested, because macOS won't let a test bring a background app forward, and a window that isn't key gets no posted keystroke.
+- Undoing Move to a voice scene leaves the new scene in the library with nothing playing it.
+- Trimming a clip's start leaves its transition's keys behind. Apply the preset again.
+- A mask rig that uses its rng draws differently on the second half of a split clip, since the seed comes from the layer's id. The preset rigs don't use it.
 - A turn you sent that was still waiting when the server stopped needs Start afterwards. The new server can't tell it from a planted one.
 - Safe-zone guides are approximations, not measured from each app.
-- Voice rows are read-only on a composition, as its keys are. Timing is scenes only in the viewer; `align_voice` takes either.
+- A voice row's words are read-only on a composition, as its keys are, though the voice itself moves and trims. Timing is scenes only in the viewer; `align_voice` takes either.
 - `voice.test.ts` needs the pinned whisper-cli, the model and sample voices outside the repo, and skips without them.
 - whisper-cli's first run on a machine takes about 18 s while Metal compiles.
 - A composition's check reads its own markers, not those inside its clips.
 - `check` has no progress over MCP, only in the viewer.
 - A video clip past its file's end holds the last frame.
 - Scrubbing video in the viewer shows the nearest decoded frame until the exact one arrives. Exports never do.
-
 - Question cards work for agents the studio runs. An external agent over MCP asks in its own interface.
-
 - URL writes are throttled to one per 400 ms. During playback, or just after switching scenes, `location.search` trails what is on screen until the next write. A reload still lands on the right frame, because `pagehide` stores the frame in sessionStorage and the reloaded page reads it. `pagehide` also flushes the URL, which covers Back and Forward. A copied URL can still be a few frames behind.
 - Pausing freezes on the last frame drawn. That frame can be one behind the wall clock if the next animation frame had not fired yet, as in the 23 versus 24 frames seen after 2.0 s.
 - `paper` paints black when `tone` is `none`. The validator accepts `none` for every colour param, but a background has no sensible "no paint".
@@ -958,7 +983,6 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 - The selection outline traces every gap where the ground shows through a layer, such as the small triangle between `bruno`'s left ear and his head. It follows the pixels correctly but reads as a stray mark.
 - A hover probe draws every layer in full, 5 to 11 ms on `bear-test`. Scenes with many layers or heavier rigs will feel it. A bounds cull would need rigs to declare bounds.
 - The interface tests need Playwright's Chromium downloaded once (`npx playwright install chromium-headless-shell`); renders come from Electron, which `npm install` brings. This shell's environment sets `ELECTRON_RUN_AS_NODE=1`, which turns Electron into plain Node; the tools strip it, but run `electron` by hand with `env -u ELECTRON_RUN_AS_NODE`.
-- `apply_to_selection` can add or merge overrides, but not remove one. In the user's first MCP test on 2026-09-24 ("remove the plaster"), the agent removed bruno's `bear.bandaged` override through `update_scene`, sending the whole `layers` array. Both the agent and I flagged this as clunky. A small "remove override" option on `apply_to_selection` would fix it.
 - Opus plays 312 samples (6.5 ms) late in AVFoundation, which ignores the start delay Opus carries. It's the fallback only where there is no AAC encoder, such as Linux, and the error is well under a frame.
 - Windows AAC exports assume AudioToolbox's 2112 priming samples. Media Foundation's count is unmeasured, so audio in MP4s exported on Windows may be off by a few milliseconds until someone measures it on a Windows machine.
 - Mediabunny's reader ignores the trimmed audio edit list and reports an audio-bearing MP4 about 30 ms longer than it is. ffprobe and AVFoundation read it right. The tests read durations with ffprobe.

@@ -34,4 +34,4 @@ export {
   type SceneLayerPlacement,
   type SceneLayerSpan,
 } from './scene-layer';
-export { applyToSelection, formatSceneJson, mergePatch, type EditSelection, type SelectionPatch } from './scene-edit';
+export { applyToSelection, formatSceneJson, mergePatch, removeOverrides, type EditSelection, type SelectionPatch } from './scene-edit';

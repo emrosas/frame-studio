@@ -1,13 +1,12 @@
-// The sidebar's Threads view: one group per listed project (ADR 0013), the
-// project on screen first with its live queue, the others from what the app
-// read off disk, and what a thread's card says. Pure, so it's tested without a
-// browser. Every status word comes from STATUS_LABELS, so a card and the
-// panel's header can't disagree.
+// The sidebar's Threads view: every listed project's threads in one list
+// (ADR 0013), the project on screen's from its live queue, the others' from
+// what the app read off disk, and what a thread's card says. Pure, so it's
+// tested without a browser. Every status word comes from STATUS_LABELS, so a
+// card and the panel's header can't disagree.
 
 import { STATUS_LABELS } from './transcript';
 import type { AgentId, AgentStatus, ThreadSummary } from '../studio/protocol';
 import type { ProjectEntry } from './desktop';
-import { groupStatus, type GroupStatus } from './project-groups';
 
 /** Marks turns as seen by the time they ended, so a newer turn counts as new. */
 export const seenKey = (project: string, id: number) => `${project}#${id}`;
@@ -57,78 +56,53 @@ export function modelLabel(agents: readonly AgentStatus[], agent: AgentId, model
 }
 
 const finished = (t: ThreadSummary) => t.status === 'settled' || t.status === 'cancelled';
-const newestFirst = (a: ThreadSummary, b: ThreadSummary) => Date.parse(b.at) - Date.parse(a.at) || b.id - a.id;
 
-/** A scene's most pressing thread that's working or waiting, as a Footage row shows it, by scene key. */
-export function sceneDots(threads: readonly ThreadSummary[], seen: (t: ThreadSummary) => boolean): Record<string, ThreadBadge> {
-  const rank: Partial<Record<BadgeKind, number>> = { input: 4, stalled: 3, failed: 2, interrupted: 2, your_turn: 2, working: 1, pending: 0 };
-  const dots: Record<string, ThreadBadge> = {};
-  for (const thread of threads) {
-    const badge = threadBadge(thread, seen(thread));
-    const place = rank[badge.kind];
-    if (place === undefined) continue;
-    const held = dots[thread.sceneId];
-    if (!held || place > (rank[held.kind] ?? -1)) dots[thread.sceneId] = badge;
-  }
-  return dots;
-}
-
-export interface ThreadGroup {
+/** A thread with the project it belongs to, since one list holds every project's. */
+export interface ThreadEntry {
+  thread: ThreadSummary;
   path: string;
   name: string;
-  /** On screen. */
+  /** Its project is on screen. */
   current: boolean;
-  missing: boolean;
-  open: boolean;
-  status: GroupStatus | null;
-  /** Newest first. */
-  threads: ThreadSummary[];
+}
+
+export interface ThreadList {
+  /** Working or waiting, newest first, across every project. */
+  threads: ThreadEntry[];
   /** Settled and cancelled, newest first, under the Done fold. */
-  done: ThreadSummary[];
-  doneOpen: boolean;
-  /** What the fold hides. */
-  count: number;
+  done: ThreadEntry[];
   /** Threads waiting on you, whatever the filter shows. */
   waiting: number;
 }
 
-export function threadGroups(input: {
+const newestFirst = (a: ThreadEntry, b: ThreadEntry) => Date.parse(b.thread.at) - Date.parse(a.thread.at) || b.thread.id - a.thread.id;
+
+/**
+ * The sidebar's Threads view: one list, newest first, each thread naming its
+ * project, so no project needs a fold of its own (ADR 0013). The project on
+ * screen brings its live queue, the others what the app read off disk.
+ */
+export function threadList(input: {
   /** The recent projects, most recent first. Empty in a browser. */
   entries: readonly ProjectEntry[];
   /** The live queue of the project on screen. */
   live: readonly ThreadSummary[];
   folder: { path: string; name: string };
-  /** The sidebar's folds: by path as in Footage, and `<path>#done` for a Done fold. */
-  folds: Readonly<Record<string, boolean>>;
   seen: Readonly<Record<string, string>>;
+  /** Matches a thread's title or its project's name. */
   query: string;
-}): ThreadGroup[] {
+}): ThreadList {
   const query = input.query.trim().toLowerCase();
   const onScreen = input.entries.find((e) => e.current) ?? input.entries.find((e) => e.path === input.folder.path);
-
-  const group = (path: string, name: string, current: boolean, entry: ProjectEntry | undefined): ThreadGroup => {
-    const all = current ? input.live : (entry?.threads ?? []);
-    const shown = all.filter((t) => query === '' || t.title.toLowerCase().includes(query)).sort(newestFirst);
-    const missing = entry?.missing === true;
-    const threads = shown.filter((t) => !finished(t));
-    const count = (kind: ThreadSummary['status']) => all.filter((t) => t.status === kind).length;
-    return {
-      path,
-      name,
-      current,
-      missing,
-      open: !missing && (query !== '' || (input.folds[path] ?? current)),
-      status: groupStatus({ working: count('working'), input: count('input'), yours: all.filter((t) => t.status === 'your_turn' && !isSeen(input.seen, path, t)).length }),
-      threads,
-      done: shown.filter(finished),
-      doneOpen: query !== '' || (input.folds[`${path}#done`] ?? false),
-      count: threads.length,
-      waiting: all.filter((t) => needsYou(t, isSeen(input.seen, path, t))).length,
-    };
+  const projects = [
+    { path: onScreen?.path ?? input.folder.path, name: onScreen?.name ?? input.folder.name, current: true, threads: input.live },
+    ...input.entries.filter((e) => e !== onScreen && e.missing !== true).map((e) => ({ path: e.path, name: e.name, current: false, threads: e.threads })),
+  ];
+  const all = projects.flatMap((p) => p.threads.map((thread): ThreadEntry => ({ thread, path: p.path, name: p.name, current: p.current })));
+  const shown = all.filter((e) => query === '' || e.thread.title.toLowerCase().includes(query) || e.name.toLowerCase().includes(query)).sort(newestFirst);
+  return {
+    threads: shown.filter((e) => !finished(e.thread)),
+    done: shown.filter((e) => finished(e.thread)),
+    waiting: all.filter((e) => needsYou(e.thread, isSeen(input.seen, e.path, e.thread))).length,
   };
-
-  const first = group(onScreen?.path ?? input.folder.path, onScreen?.name ?? input.folder.name, true, onScreen);
-  const others = input.entries.filter((e) => e !== onScreen).map((e) => group(e.path, e.name, false, e));
-  const groups = [first, ...others];
-  return query === '' ? groups : groups.filter((g) => g.threads.length + g.done.length > 0);
 }

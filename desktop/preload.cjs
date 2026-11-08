@@ -53,5 +53,10 @@ contextBridge.exposeInMainWorld('frameStudioDesktop', {
     ipcRenderer.on('frame-studio:open-settings', listener);
     return () => ipcRenderer.removeListener('frame-studio:open-settings', listener);
   },
+  onHistory: (cb) => {
+    const listener = (_event, step) => cb(step === 'redo' ? 'redo' : 'undo');
+    ipcRenderer.on('frame-studio:history', listener);
+    return () => ipcRenderer.removeListener('frame-studio:history', listener);
+  },
   ...(ipcRenderer.sendSync('frame-studio:updates') ? { updates: updates() } : {}),
 });

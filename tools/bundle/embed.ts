@@ -16,7 +16,7 @@
 // disk. Node only; runs as TypeScript through Node's type stripping.
 
 import { readFile, stat } from 'node:fs/promises';
-import { dirname, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, sep } from 'node:path';
 import { rolldown, type Plugin } from 'rolldown';
 import { parseAst } from 'rolldown/parseAst';
 import { transformSync } from 'rolldown/utils';
@@ -79,12 +79,16 @@ const ENTRY = 'virtual:frame-studio-embed';
 function guardPlugin(folder: StudioFolder): Plugin {
   return {
     name: 'frame-studio-project-imports',
-    resolveId(id, importer) {
+    async resolveId(id, importer) {
       if (!importer || codeFolderOf(folder.root, importer) === null) return null;
       const named = /^@frame-studio\/(.+)$/.exec(id);
       const path = named ? join(folder.builtins, named[1]) : id.startsWith('.') ? join(dirname(importer), id) : null;
       const refusal = importRefusal(folder, importer, id, path === null ? null : findSource(path));
       if (refusal !== null) throw new Error(refusal);
+      // The bundler finds files findSource doesn't, so an import answers for where it landed.
+      const landed = await this.resolve(id, importer, { skipSelf: true });
+      const after = landed && isAbsolute(landed.id) ? importRefusal(folder, importer, id, landed.id) : null;
+      if (after !== null) throw new Error(after);
       return null;
     },
   };
