@@ -42,6 +42,6 @@
 
 <span class="thumb" aria-hidden="true">
   {#if src}
-    <img {src} alt="" class:is-loaded={loaded === src} onload={() => (loaded = src)} />
+    <img {src} alt="" draggable="false" class:is-loaded={loaded === src} onload={() => (loaded = src)} />
   {/if}
 </span>

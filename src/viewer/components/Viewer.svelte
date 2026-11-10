@@ -3,13 +3,16 @@
   scenes), the canvas with its top bar and timeline dock, and the agent panel
   (threads). The stage (canvas and selection overlay, drawn by the App class in
   plain TypeScript) has the error panel and the finished-thread toast over it.
-  The library covers the stage and the dock, with both still in place under it.
+  The library covers the stage, with it still in place under it, and the dock
+  too unless it's over the scene you came from: then the dock stays in view, so
+  a Library item can be dragged onto the timeline.
   The App finds .stage and .stage-frame after this mounts, so they are never
   inside an {#if}. Which side columns show and the dock's height are ui.layout,
   kept with the viewer's prefs.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
+  import { mediaFiles } from '../drop';
   import { writePref } from '../prefs';
   import { LAYOUT_KEY, type ViewerActions, type ViewerUi } from '../ui.svelte';
   import AgentPanel from './AgentPanel.svelte';
@@ -37,14 +40,12 @@
     if (ui.studio.open !== null) untrack(() => (ui.layout.panel = true));
   });
 
-  // Sound, video and image files dropped anywhere but the composer (which takes reference images) import into media/ (ADR 0012, 0014).
-  const MEDIA = /\.(mp3|wav|m4a|aac|flac|ogg|opus|png|jpe?g|webp|mp4|m4v|mov|webm)$/i;
-  const sounds = (files: FileList | undefined | null) => [...(files ?? [])].filter((f) => f.type.startsWith('audio/') || f.type.startsWith('video/') || MEDIA.test(f.name));
+  // Sound, video and image files dropped anywhere but the composer (which takes reference images) or the timeline (which places them too) import into media/ (ADR 0012, 0014).
   let dropping = $state(false);
   async function dropSounds(e: DragEvent): Promise<void> {
     dropping = false;
     if (e.defaultPrevented) return;
-    const files = sounds(e.dataTransfer?.files);
+    const files = mediaFiles(e.dataTransfer?.files);
     if (files.length === 0) return;
     e.preventDefault();
     ui.mediaNote = { text: `Importing ${files.length === 1 ? files[0].name : `${files.length} files`}…`, error: false };
@@ -57,6 +58,7 @@
   const DOCK_MIN = 92;
   const dockMax = () => Math.round(window.innerHeight * 0.55);
   let dock = $state<HTMLElement | null>(null);
+  let dockHeight = $state(0);
   const setDock = (height: number) => (ui.layout.dock = Math.max(DOCK_MIN, Math.min(dockMax(), Math.round(height))));
   function startDockDrag(e: PointerEvent): void {
     if (e.button !== 0 || !dock) return;
@@ -101,7 +103,8 @@
 <main class="viewer" class:has-sidebar={ui.layout.sidebar} class:has-panel={ui.layout.panel} class:is-dropping={dropping}>
   <!-- Both side columns stay mounted when hidden, so a draft, a scroll position or a folded project survives. -->
   <Sidebar {ui} {actions} hidden={!ui.layout.sidebar} />
-  <section class="main" aria-label="Canvas">
+  <!-- Over the scene you came from, the library leaves the dock in view, so Library items can be dragged onto the timeline. -->
+  <section class="main" class:is-docked={ui.libraryOverScene} aria-label="Canvas" style="--dock-h: {dockHeight}px">
     <Topbar {ui} {actions} sidebar={ui.layout.sidebar} panel={ui.layout.panel} ontogglesidebar={toggleSidebar} ontogglepanel={togglePanel} />
     <div class="stage-area">
       <div class="stage" inert={ui.home}>
@@ -114,7 +117,7 @@
       <ErrorPanel errors={ui.errors} />
       <Toast toast={ui.toast} {actions} onview={showPanel} />
     </div>
-    <footer class="dock" class:is-sized={ui.layout.dock !== null} bind:this={dock} inert={ui.home} style={ui.layout.dock === null ? '' : `height: ${ui.layout.dock}px`}>
+    <footer class="dock" class:is-sized={ui.layout.dock !== null} bind:this={dock} bind:clientHeight={dockHeight} inert={ui.home && !ui.libraryOverScene} style={ui.layout.dock === null ? '' : `height: ${ui.layout.dock}px`}>
       <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
       <div
         class="dock-grip"

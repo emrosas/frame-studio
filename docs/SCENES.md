@@ -462,7 +462,7 @@ A cue can play a recorded sound file instead, such as a voiceover or music (ADR 
 
 A file cue takes no `params`. The studio decodes the file at 48 kHz and copies its samples into the scene's sound, so it plays the same in the viewer, the MP4 and every render. A placed shot brings its file cues with it, shifted and trimmed with the shot.
 
-In the viewer, the Media list in the sidebar shows the folder's sound files with their lengths. Import by its **+** or by dropping files anywhere in the window, and **+** on a file places it at the playhead, to the end of the file or the scene. Cues show under the timeline, files with their waveform. A missing file is an error in the viewer, and its cue plays silence; an MP4 export with a missing file fails rather than drop it. Agents use `list_media` and `import_media`, and place cues with `update_scene`.
+In the viewer, the Media list in the sidebar shows the folder's sound files with their lengths. Import by its **+** or by dropping files anywhere in the window, and Add at playhead on a file places it at the playhead, to the end of the file or the scene. A file dragged from the Media list onto the timeline lands where it's dropped instead, and so does a file dragged in from the computer. Cues show under the timeline, files with their waveform. A missing file is an error in the viewer, and its cue plays silence; an MP4 export with a missing file fails rather than drop it. Agents use `list_media` and `import_media`, and place cues with `update_scene`.
 
 The HTML export leaves sound files out, since they'd make it as big as its sound, and says which it left out. Tick **Include sound files** in the Export panel, or pass `--media` to `npm run export` or `media` to the MCP `export` tool, to inline them.
 
