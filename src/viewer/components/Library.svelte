@@ -8,6 +8,7 @@
 -->
 <script lang="ts">
   import { desktop } from '../desktop';
+  import { DRAG_TYPE, type LibraryItem } from '../drop';
   import type { RenderItem, SceneOption, ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
   import Thumb from './Thumb.svelte';
@@ -83,6 +84,18 @@
     ui.mediaNote = problem ? { text: problem, error: true } : null;
   }
 
+  // Dragging a card or a media row onto the timeline. The item rides in the drag for the drop, and in ui for the ghost,
+  // since a drag shows its data only when it lands. Nothing else goes in it, so the window's file drop ignores it.
+  function startDrag(e: DragEvent, item: LibraryItem): void {
+    const data = e.dataTransfer;
+    if (!data) return;
+    data.clearData();
+    data.setData(DRAG_TYPE, JSON.stringify(item));
+    data.effectAllowed = 'copy';
+    ui.dragging = item;
+  }
+  const endDrag = () => (ui.dragging = null);
+
   // Converting an M9 film into a project folder (ADR 0013). The app asks where; a browser confirms first.
   let convertNote = $state<{ text: string; error: boolean } | null>(null);
   async function convert(id: string, name: string): Promise<void> {
@@ -101,6 +114,9 @@
       data-key={option.key}
       aria-label={option.invalid ? `${option.label} (invalid)` : option.label}
       title={option.usedIn.length > 0 ? `${option.file}, used in ${option.usedIn.join(', ')}` : option.file}
+      draggable={!option.invalid && option.film === null}
+      ondragstart={(e) => startDrag(e, { kind: 'scene', key: option.key, label: option.label, seconds: option.format?.seconds ?? null })}
+      ondragend={endDrag}
       onclick={() => actions.selectScene(option.key)}
     >
       <span class="lib-poster"><Thumb file={ui.thumbs[option.key]} /></span>
@@ -178,7 +194,14 @@
     {:else}
       <ul class="lib-rows">
         {#each ui.media as item (item.file)}
-          <li>
+          <li
+            class="lib-media"
+            data-media={item.file}
+            draggable="true"
+            title={ui.libraryOverScene ? `Drag ${item.name} onto the timeline` : item.file}
+            ondragstart={(e) => startDrag(e, { kind: 'media', file: item.file, label: item.name, seconds: item.duration ?? null })}
+            ondragend={endDrag}
+          >
             <Icon name="volume" />
             <span class="lib-row-name" title={item.file}>{item.name}</span>
             {#if item.duration !== undefined}<span class="media-length">{length(item.duration)}</span>{/if}

@@ -6,6 +6,7 @@ import type { CheckReport } from '../export/check';
 import type { AgentId, AgentStatus, ApprovalDecision, KokoroStatus, NewScene, NewVideo, QuestionAnswers, StudioRequest, TurnEvent, TurnSettings } from '../studio/protocol';
 import type { OpenTarget, ProjectEntry, UpdateState } from './desktop';
 import type { KeyLane, KeyMark, KeyTarget, SelectedKey } from './keyframes';
+import type { DropTrack, LibraryItem } from './drop';
 import { readPref } from './prefs';
 import type { FrameRange } from './selection';
 import type { Transition } from '../studio/timeline-edit';
@@ -292,6 +293,13 @@ export interface ViewerActions {
   moveClip(layerId: string, place: ClipPlace, track?: string): Promise<boolean>;
   /** Adds a scene, composition or picture at the playhead, growing the video if it has to. */
   addClip(source: { scene: string } | { file: string }): void;
+  /**
+   * A Library item dropped on the timeline, starting at `frame`: a clip on a composition's track (or a new one),
+   * or a sound cue. Refusals say why in the selection bar. One undo step.
+   */
+  dropOnTimeline(item: LibraryItem, frame: number, track: DropTrack | null): void;
+  /** Files from the computer dropped on the timeline: imported into media/, then placed as dropOnTimeline places them. */
+  dropFiles(files: File[], frame: number, track: DropTrack | null): void;
   /** Splits the selected clip or sound at the playhead, or `target` if given. */
   splitAtPlayhead(target?: EditTarget): void;
   /** Puts a copy of the selected clip or sound after it. */
@@ -494,6 +502,8 @@ export class ViewerUi {
   home = $state(false);
   /** You came to the library from a scene, so it offers the way back. False when the project opened on it. */
   homeReturn = $state(false);
+  /** A Library card or media row being dragged, for the timeline's ghost; drag events don't show their data until the drop. */
+  dragging = $state.raw<LibraryItem | null>(null);
   /** Each scene's poster file under .frame-studio/thumbs/, or null until it has one. */
   thumbs = $state.raw<Record<string, string | null>>({});
   /** The files in out/, newest first. */
@@ -527,6 +537,8 @@ export class ViewerUi {
   folder = $state<{ path: string; canSwitch: boolean } | null>(null);
   /** The project the app is switching to, while the stage waits: its name, and the row or thread picked. */
   switching = $state<{ name: string; key: string | null; path: string; thread: number | null } | null>(null);
+  /** The library is up over the scene you came from, so the dock stays in view under it as a place to drop things. */
+  libraryOverScene = $derived(this.home && this.homeReturn && this.header !== null && this.switching === null);
   /** The app's update, when it has one to offer or is installing it; null in a browser. */
   update = $state<UpdateState | null>(null);
   /** The frame range band on the scrubber. */

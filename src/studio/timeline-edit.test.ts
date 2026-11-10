@@ -113,6 +113,31 @@ describe('clips', () => {
     expect(file.tracks![2]).toMatchObject({ id: 'V3', clips: [{ id: 'my-clip', file: 'media/My Clip.png', start: 2, out: 3 }] });
   });
 
+  it('keeps a dropped clip on its track, or makes a new one straight above it when that track is full', () => {
+    const file = video();
+    // V1 is busy from 1 s to 7 s; V2 is empty.
+    applyTimelineEdit(file, { op: 'add-clip', source: { scene: 'two' }, at: 7.5, length: 1, track: 'V1', into: 'track' });
+    expect(file.tracks!.map((t) => t.id)).toEqual(['V1', 'V2']);
+    expect(file.tracks![0].clips.at(-1)).toMatchObject({ id: 'two', start: 7.5 });
+    // Without `into` this would go to V2, the lowest with room; a drop asks for V1 and gets a new track above it.
+    applyTimelineEdit(file, { op: 'add-clip', source: { scene: 'two' }, at: 2, length: 1, track: 'V1', into: 'track' });
+    expect(file.tracks!.map((t) => t.id)).toEqual(['V1', 'V3', 'V2']);
+    expect(file.tracks![1].clips).toEqual([{ id: 'two-2', scene: 'two', start: 2 }]);
+  });
+
+  it('makes a new track on top or at the bottom for a drop above or below the tracks', () => {
+    const file = video();
+    applyTimelineEdit(file, { op: 'add-clip', source: { scene: 'two' }, at: 0, length: 1, track: null, into: 'top' });
+    applyTimelineEdit(file, { op: 'add-clip', source: { file: 'media/p.png' }, at: 0, length: 3, track: null, into: 'bottom' });
+    expect(file.tracks!.map((t) => [t.id, t.clips.map((c) => c.id)])).toEqual([
+      ['V4', ['p']],
+      ['V1', ['a', 'b']],
+      ['V2', []],
+      ['V3', ['two']],
+    ]);
+    expect(() => applyTimelineEdit(file, { op: 'add-clip', source: { scene: 'two' }, at: 0, length: 1, track: 'V9', into: 'track' })).toThrow(/no track "V9"/);
+  });
+
   it('grows a video to hold a new clip', () => {
     const file = video();
     applyTimelineEdit(file, { op: 'add-clip', source: { scene: 'two' }, at: 9, length: 4, track: null });
@@ -291,6 +316,9 @@ describe('checks', () => {
     expect(checkTimelineEdit({ op: 'transition', clip: 'a', preset: 'wipe', seconds: 0 })).toMatch(/seconds/);
     expect(checkTimelineEdit({ op: 'transition', clip: 'a', preset: null, seconds: 0 })).toBeNull();
     expect(checkTimelineEdit({ op: 'add-clip', source: { scene: 'a' }, at: 0 })).toBeNull();
+    expect(checkTimelineEdit({ op: 'add-clip', source: { scene: 'a' }, at: 0, track: 'V1', into: 'track' })).toBeNull();
+    expect(checkTimelineEdit({ op: 'add-clip', source: { scene: 'a' }, at: 0, track: null, into: 'track' })).toMatch(/needs a track/);
+    expect(checkTimelineEdit({ op: 'add-clip', source: { scene: 'a' }, at: 0, into: 'side' })).toMatch(/into must/);
     expect(checkTimelineEdit({ op: 'move-clip', clip: 'a', track: 'V1', start: 0, in: 2, out: 1 })).toMatch(/after in/);
   });
 

@@ -30,8 +30,12 @@ export interface ClipPlaceEdit {
 }
 
 export type TimelineEdit =
-  /** `length` is the seconds of what it places, which the server reads. `track` null means the lowest with room. */
-  | { op: 'add-clip'; source: { scene: string } | { file: string }; at: number; length: number; track: string | null }
+  /**
+   * `length` is the seconds of what it places, which the server reads. `track` null means the lowest with room.
+   * `into`, from a drop: 'track' keeps to `track`, or a new track straight above it when it has no room; 'top'
+   * and 'bottom' make a new track at either end of the stack. Without it, a full `track` falls back to the lowest with room.
+   */
+  | { op: 'add-clip'; source: { scene: string } | { file: string }; at: number; length: number; track: string | null; into?: 'track' | 'top' | 'bottom' }
   | { op: 'split-clip'; clip: string; at: number }
   | { op: 'duplicate-clip'; clip: string }
   | { op: 'delete-clip'; clip: string }
@@ -64,6 +68,8 @@ export function checkTimelineEdit(input: unknown): string | null {
     case 'add-clip': {
       const source = e.source as Json | undefined;
       if (typeof source !== 'object' || source === null || (!name(source.scene) && !name(source.file))) return 'source must be { scene } or { file }';
+      if (e.into !== undefined && e.into !== 'track' && e.into !== 'top' && e.into !== 'bottom') return 'into must be track, top or bottom';
+      if (e.into === 'track' && !name(e.track)) return "into 'track' needs a track";
       return seconds(e.at) ? null : 'at must be seconds, 0 or more';
     }
     case 'split-clip':
@@ -235,14 +241,19 @@ function addClip(file: TimelineFile, edit: Extract<TimelineEdit, { op: 'add-clip
   const tracks = compositionTracks(file);
   const end = round(edit.at + edit.length);
   const preferred = tracks.find((t) => t.id === edit.track);
+  if (edit.into === 'track' && !preferred) throw new Error(`There's no track "${edit.track}".`);
+  // Tracks run bottom of the stack first.
+  const fresh = (at: number) => {
+    const made = { id: freshTrack(tracks), clips: [] as RawClip[] };
+    tracks.splice(at, 0, made);
+    return made;
+  };
+  const roomy = preferred && hasRoom(file, preferred, edit.at, end, clipEnd) ? preferred : undefined;
   const track =
-    (preferred && hasRoom(file, preferred, edit.at, end, clipEnd) ? preferred : undefined) ??
-    tracks.find((t) => hasRoom(file, t, edit.at, end, clipEnd)) ??
-    (() => {
-      const made = { id: freshTrack(tracks), clips: [] as RawClip[] };
-      tracks.push(made);
-      return made;
-    })();
+    edit.into === 'top' ? fresh(tracks.length)
+    : edit.into === 'bottom' ? fresh(0)
+    : edit.into === 'track' ? (roomy ?? fresh(tracks.indexOf(preferred!) + 1))
+    : (roomy ?? tracks.find((t) => hasRoom(file, t, edit.at, end, clipEnd)) ?? fresh(tracks.length));
   const stem = 'scene' in edit.source ? edit.source.scene : edit.source.file.slice(edit.source.file.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '');
   const id = freshId(stem.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'clip', clipIds(file));
   const clip: RawClip = { id, ...edit.source, ...(edit.at > 0 ? { start: edit.at } : {}), ...('file' in edit.source ? { out: edit.length } : {}) };
