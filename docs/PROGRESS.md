@@ -4,6 +4,12 @@ Last updated 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the sh
 
 ## Done
 
+### Check reads text, and ranks what it finds (`.scratch/check-text/`)
+
+- Every result has `rank`, P0 to P3, from one table in `src/export/check.ts` with a reason per rule. Reports and the Check panel list findings by rank, then passes. `status` and `ok` are unchanged.
+- Four text checks, from the layout of `text` and `captions` layers, inside clips too (`src/export/text-marks.ts`, `text-check.ts`): `text-frame` (resting past the frame or a moved clip's edge), `text-safe` (under the platform zones in `safe-area.ts`, or outside title-safe), `reading-time` (0.3 s a word, at least 1 s) and `text-contrast` (WCAG ratio against the frame drawn without the text; 4.5:1, or 3:1 for an em of 1/30 of the short side). The text rig and the check share `textBlock()`.
+- Over the repo, only `type-test` gets findings, and they're real: the paragraph and the typing line are up too briefly, and two small lines in the paper's darker corners are under 4.5:1. Studio rigs that call `drawText` themselves aren't measured.
+
 ### Library items drag onto the timeline
 
 - Scene and video cards and media rows in the Library drag onto the timeline and land at the drop time, snapped like a clip drag, with a ghost and a note while they hover. On a video a scene or picture becomes a clip on the track under the pointer, on a new track above or below the tracks, or above a full one; sound becomes a cue on either. A scene refuses pictures and scenes with a note. Files from the computer dropped on the timeline import, then land the same way. Each drop is one Command-Z step, through the checked edit and the agent lock. Ticket: `.scratch/timeline-drop/issues/01-drag-media-onto-timeline.md`.
