@@ -32,6 +32,12 @@
   0018). The range input underneath keeps the frame on the keyboard and in the
   accessibility tree.
 
+  A Library card or media row dropped here lands at the drop time, snapped like
+  a clip drag, with a ghost while it hovers: on a composition a scene or picture
+  becomes a clip on the track under the pointer (a new one above or below the
+  tracks, or above a full one), and sound becomes a cue on either. Files from
+  the computer import first, then land the same way.
+
   A cue with words gets a row of its own under the layers, VoiceRow.svelte, and
   a sound file without them offers Timing (ADR 0016). A marker's click selects it,
   so a word's right-click can anchor it.
@@ -39,6 +45,7 @@
 <script lang="ts">
   import type { KeyMark, KeyTarget, SelectedKey } from '../keyframes';
   import { isPictureFile } from '../../engine/picture';
+  import { DRAG_TYPE, dropFrames, dropKind, dropStart, dropTrack, mediaFiles, readItem, type DropKind, type DropTrack, type LibraryItem } from '../drop';
   import { clipEdges, dragClip, dragCue, dragFade, dragSpan, formatClock, labelFits, markerLabels, rulerTicks, snapDelta, snapFrame, type ClipHandle, type ClipPlace, type CuePlace, type VisibleSpan } from '../timeline';
   import { spanLabel, type FrameRange } from '../selection';
   import type { EditTarget, LayerRow, ShotBand, ShotHead, SoundBand as SoundBandData, ViewerActions, ViewerUi } from '../ui.svelte';
@@ -523,6 +530,91 @@
     actions.addClip(source);
   }
 
+  // ---- drops from the Library ----
+
+  /** What a drag over the timeline would do: where it starts and how long it runs, in frames, what it becomes, and where. */
+  interface DropPreview {
+    from: number;
+    to: number;
+    kind: DropKind | null;
+    track: DropTrack | null;
+    /** A full track: the clip goes on a new one straight above it. */
+    full: boolean;
+    label: string;
+  }
+  let drop = $state<DropPreview | null>(null);
+
+  const ourDrag = (e: DragEvent) => [...(e.dataTransfer?.types ?? [])].includes(DRAG_TYPE);
+  const fileDrag = (e: DragEvent) => !ourDrag(e) && [...(e.dataTransfer?.types ?? [])].includes('Files');
+
+  function preview(e: DragEvent, item: LibraryItem | null): DropPreview | null {
+    if (!ui.timeline || total === 0) return null;
+    const placed = item ? dropKind(item, video ? 'composition' : 'scene', ui.header?.key ?? null) : null;
+    const kind: DropKind | null = placed && placed.as !== 'refused' && !ui.soundEdit ? { as: 'refused', reason: 'An agent is working here, so nothing can be added until it finishes.' } : placed;
+    const asClip = kind?.as === 'clip';
+    const frames = item ? dropFrames(item, fps) : 1;
+    const from = dropStart(boundaryAt(e.clientX), frames, snapTargets([0, total]), perFramePx(), total, asClip ? 'clip' : 'cue');
+    const to = asClip ? from + frames : Math.min(total, from + frames);
+    const box = shotRows?.getBoundingClientRect();
+    // Files could be clips or sound until they're imported, so they keep a track in case.
+    const track = video && ui.shots && box && (asClip || !item) ? dropTrack(e.clientY - box.top, box.height, ui.shots.lanes, ui.shots.heads) : null;
+    const full = track?.into === 'track' && (ui.shots?.bands.some((b) => b.track === track.track && b.from < to && b.to > from) ?? false);
+    const at = formatClock(from, fps);
+    const where = !track || !asClip ? '' : track.into === 'top' ? ' on a new track on top' : track.into === 'bottom' ? ' on a new track at the bottom' : full ? ` on a new track above ${track.track}` : ` on ${track.track}`;
+    const label = !item ? `Import and place at ${at}` : kind?.as === 'refused' ? kind.reason : `${item.label} at ${at}${where}`;
+    return { from, to, kind, track, full, label };
+  }
+
+  function dragOver(e: DragEvent): void {
+    const files = fileDrag(e);
+    if ((!ourDrag(e) && !files) || !ui.timeline) return;
+    // Ours, or the window's file import would take it.
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    drop = preview(e, files ? null : ui.dragging);
+  }
+
+  function dragLeave(e: DragEvent): void {
+    if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) drop = null;
+  }
+
+  function dropHere(e: DragEvent): void {
+    drop = null;
+    if (!ui.timeline) return;
+    if (ourDrag(e)) {
+      e.preventDefault();
+      const item = ui.dragging ?? readItem(e.dataTransfer?.getData(DRAG_TYPE) ?? '');
+      ui.dragging = null;
+      const landed = item && preview(e, item);
+      if (item && landed) actions.dropOnTimeline(item, landed.from, landed.track);
+      return;
+    }
+    const files = mediaFiles(e.dataTransfer?.files);
+    if (files.length === 0) return;
+    e.preventDefault();
+    const landed = preview(e, null);
+    if (landed) actions.dropFiles(files, landed.from, landed.track);
+  }
+
+  // A drag that ends anywhere else takes its ghost with it.
+  $effect(() => {
+    if (ui.dragging === null && drop?.kind) drop = null;
+  });
+
+  const ghostLane = $derived.by(() => {
+    const track = drop?.track;
+    if (!drop || drop.kind?.as !== 'clip' || track?.into !== 'track' || drop.full) return null;
+    return ui.shots?.heads.find((h) => h.track === track.track)?.lane ?? null;
+  });
+  /** A new track's line: on top, at the bottom, or above the full track. */
+  const ghostLine = $derived.by((): { lane: number } | null => {
+    const track = drop?.track;
+    if (!drop || drop.kind?.as !== 'clip' || !track || ghostLane !== null || !ui.shots) return null;
+    if (track.into === 'top') return { lane: 0 };
+    if (track.into === 'bottom') return { lane: ui.shots.lanes };
+    return { lane: ui.shots.heads.find((h) => h.track === track.track)?.lane ?? 0 };
+  });
+
   function pressSounds(e: PointerEvent, bands: readonly SoundBandData[]): void {
     const id = (e.target as HTMLElement).closest<HTMLElement>('[data-cue]')?.dataset.cue;
     const band = bands.find((b) => b.id === id);
@@ -577,7 +669,7 @@
 {/snippet}
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
-<div class="tl" class:is-empty={!ui.timeline} oncontextmenu={(e) => e.preventDefault()}>
+<div class="tl" class:is-empty={!ui.timeline} class:is-drop={drop !== null} oncontextmenu={(e) => e.preventDefault()} ondragover={dragOver} ondragleave={dragLeave} ondrop={dropHere}>
   <div class="tl-top">
     <div class="tl-corner">
       {#if video}
@@ -654,6 +746,11 @@
           {#each ui.shots.heads as head (head.lane)}
             {#if head.track}<span class="track-lane" class:is-target={held !== null && !held.saving && held.track === head.track} style="--lane: {head.lane}; --span: {head.lanes}"></span>{/if}
           {/each}
+          {#if drop && ghostLane !== null}
+            <span class="drop-ghost" style={spanStyle(drop.from, Math.min(total, drop.to), ghostLane)}></span>
+          {:else if drop && ghostLine}
+            <span class="drop-track" style="{spanStyle(drop.from, Math.min(total, drop.to), 0)}; --at: {ghostLine.lane}"></span>
+          {/if}
           {#each ui.shots.bands as band (band.layerId)}
             {@const place = shown(band)}
             <button
@@ -770,6 +867,9 @@
         {@render heads('Sound', sounds.lanes)}
         <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
         <div class="sounds" role="group" aria-label="Sounds" style="--lanes: {sounds.lanes}" onpointerdown={(e) => pressSounds(e, sounds.bands)} oncontextmenu={soundMenu}>
+          {#if drop?.kind?.as === 'cue'}
+            <span class="drop-ghost" style={spanStyle(drop.from, drop.to, 0)}></span>
+          {/if}
           {#each sounds.bands as band (band.id)}
             {@const placed = shownBand(band)}
             <SoundBand band={placed} {actions} {fps} px={spanPx(placed.from, placed.to)} selected={ui.cue === band.id} editable={ui.soundEdit} ready={ui.sound?.status === 'ready' || ui.sound?.status === 'locked'} style={spanStyle(placed.from, placed.to, band.lane)} />
@@ -859,6 +959,10 @@
     {/if}
     {#if ui.timeline}
       <span class="playhead" style="left: {percent(ui.timeline.frame)}%"></span>
+    {/if}
+    {#if drop}
+      <span class="drop-line" class:is-refused={drop.kind?.as === 'refused'} style="left: {percent(drop.from)}%"></span>
+      <span class="drop-note" class:is-refused={drop.kind?.as === 'refused'} class:is-end={drop.from > total / 2} style="left: {percent(drop.from)}%">{drop.label}</span>
     {/if}
   </div>
 </div>
