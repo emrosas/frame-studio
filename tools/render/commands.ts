@@ -6,6 +6,8 @@
 //   npm run contact-sheet -- --scene bear-test --every 6
 //
 // MP4 and HTML exports carry the scene's audio unless --silent; GIFs never do.
+// A long MP4 splits across render workers, as many as the machine suits;
+// --workers sets the number, and --workers 1 makes it in one page (ADR 0019).
 // HTML leaves sound files out unless --media inlines them (ADR 0012).
 // Frames and range ends take a frame number or an MM:SS:FF timecode. Files go
 // to out/<scene>/ in the studio folder unless --out says otherwise. The
@@ -27,7 +29,7 @@ import { openStudio, writeViaSink, type Studio } from './studio.ts';
 
 const USAGE = `Usage:
   node tools/render/cli.ts frame --scene <id> --frame <n|MM:SS:FF> [--out file.png]
-  node tools/render/cli.ts export --scene <id> --target mp4|gif [--from <n|tc>] [--to <n|tc>] [--silent] [--out file]
+  node tools/render/cli.ts export --scene <id> --target mp4|gif [--from <n|tc>] [--to <n|tc>] [--silent] [--workers <n>] [--out file]
   node tools/render/cli.ts export --scene <id> --target html [--silent] [--media] [--out file.html]
   node tools/render/cli.ts contact-sheet --scene <id> [--from <n|tc>] [--to <n|tc>] [--every <n>] [--columns <n>] [--out file.png]
 Every command takes --folder <studio folder>, the current folder by default.`;
@@ -48,6 +50,7 @@ const { values } = parseArgs({
     trust: { type: 'boolean' },
     silent: { type: 'boolean' },
     media: { type: 'boolean' },
+    workers: { type: 'string' },
     help: { type: 'boolean', short: 'h' },
   },
 });
@@ -81,7 +84,9 @@ if (command === 'export' && target === 'html') {
 }
 if (values.media && (command !== 'export' || target !== 'html')) fail('--media applies to html exports; mp4 always carries sound files');
 if (values.silent && (command !== 'export' || target === 'gif')) fail(`--silent applies to mp4 and html exports; ${target === 'gif' ? 'GIFs are always silent' : `${command} makes no sound`}`);
+if (values.workers !== undefined && (command !== 'export' || target === 'html')) fail('--workers applies to mp4 and gif exports');
 const every = positiveInt('every', values.every);
+const workers = positiveInt('workers', values.workers);
 const columns = positiveInt('columns', values.columns);
 
 const root = resolve(values.folder ?? process.cwd());
@@ -120,10 +125,10 @@ async function run(studio: Studio): Promise<void> {
     const r = await range(studio);
     const suffix = r.from !== undefined || r.to !== undefined ? `-${pad(r.from ?? 0)}-${pad(r.to ?? studio.scene.frameCount)}` : '';
     const path = outPath(`${dir}/${id}${suffix}.${target}`);
-    const result = await writeViaSink(studio, path, (sink) => studio.call('exportVideo', target, sink, { ...r, silent: values.silent }));
+    const result = await studio.exportFile(path, { target, ...r, silent: values.silent, ...(workers !== undefined ? { workers } : {}) });
     const detail = result.codec ? `${result.codec}${result.audioCodec ? ` with ${result.audioCodec} audio` : ''}` : `${result.colours} colours`;
     process.stderr.write(
-      `${id} ${target}: frames [${result.from}, ${result.to}), ${result.frames} frames, ${result.seconds} s at ${studio.scene.fps} fps, ${detail}, ${(result.ms / 1000).toFixed(1)} s to export\n`,
+      `${id} ${target}: frames [${result.from}, ${result.to}), ${result.frames} frames, ${result.seconds} s at ${studio.scene.fps} fps, ${detail}, ${(result.ms / 1000).toFixed(1)} s to export${(result.workers ?? 1) > 1 ? ` on ${result.workers} workers` : ''}\n`,
     );
     process.stdout.write(`${shown(path)}\n`);
     return;

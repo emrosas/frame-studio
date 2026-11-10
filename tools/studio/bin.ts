@@ -79,6 +79,8 @@ const server = await startStudioServer({
 });
 if (parent) parent.postMessage({ url: server.url });
 else process.stdout.write(`${server.url}\n`);
+// The app opens the worker windows, helpers for parallel exports included (ADR 0019).
+if (parent && values.worker !== 'electron') server.pool.setHelperControl((count) => parent.postMessage({ renderHelpers: count }));
 
 const stop = async () => {
   await server.close();

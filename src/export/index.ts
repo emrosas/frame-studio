@@ -7,5 +7,6 @@ export { buildReport, checkSize, FrameMeter, type CheckReport, type CheckResult,
 export { contactSheetFrames, contactSheetLayout, type ContactSheetLayout } from './contact-sheet';
 export { readPixels, type ExportOptions, type ExportProgress, type ExportRange, type FrameCanvas, type FrameSource } from './frames';
 export { exportGif, type GifResult } from './gif';
-export { exportMp4, type Mp4Options, type Mp4Result } from './mp4';
+export { emptyStages, encodeVideo, exportMp4, videoConfig, type ExportStages, type Mp4Options, type Mp4Result } from './mp4';
+export { RecordWriter, type PacketRecord } from './packets';
 export { memorySink, type ByteSink } from './sink';

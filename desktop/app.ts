@@ -14,7 +14,7 @@ import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/prom
 import { homedir } from 'node:os';
 import { basename, join, relative, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, shell, utilityProcess, webContents, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeTheme, powerSaveBlocker, shell, utilityProcess, webContents, type IpcMainEvent, type IpcMainInvokeEvent, type MenuItemConstructorOptions, type Rectangle, type UtilityProcess } from 'electron';
 import { convertFilm } from '../tools/studio/convert.ts';
 import { createStudioFolder, writeTsconfig } from './folders.ts';
 import { createProject, hasAgentWork, listProjects, projectPoster, WARM_MS, warmProjects, type ProjectEntry } from './projects.ts';
@@ -24,7 +24,7 @@ import { adoptShellPath } from './shell-path.ts';
 import { checkForUpdates, checkFromMenu, installUpdate, openReleaseNotes, startUpdates, type UpdateState, updatesEnabled, updateState } from './updater.ts';
 import { projectCode, dialogName } from '../tools/studio/project-code.ts';
 import { registerVoice } from './voice.ts';
-import { openWorkerWindow } from './worker.ts';
+import { openWorkerWindow, setHelperWindows } from './worker.ts';
 
 interface Settings {
   /** Project folders, most recent first. */
@@ -42,6 +42,8 @@ interface Session {
   token: string;
   server: UtilityProcess;
   worker: BrowserWindow;
+  /** Helper render workers a parallel export asked for, by slot (ADR 0019). */
+  helpers: Map<number, BrowserWindow>;
   stopping: boolean;
   /** Its own rigs and generators load (ADR 0017). */
   trusted: boolean;
@@ -140,14 +142,21 @@ function childEnv(): Record<string, string> {
 // ---- the studio server ----
 
 /** Starts the studio server on `folder` and waits until it listens. */
-async function startServer(folder: string, token: string, trust: Trust, codeChanged: () => void): Promise<{ server: UtilityProcess; url: string }> {
+async function startServer(
+  folder: string,
+  token: string,
+  trust: Trust,
+  codeChanged: () => void,
+  helpersWanted: (count: number) => void,
+): Promise<{ server: UtilityProcess; url: string }> {
   const server = utilityProcess.fork(
     paths.server,
     ['--folder', folder, '--viewer', paths.viewer, '--builtins', paths.builtins, '--agents', '--discovery', '--worker', 'app', ...(trust.trusted ? ['--code-hash', trust.hash] : ['--untrusted'])],
     { env: childEnv(), stdio: 'pipe', serviceName: 'Frame Studio server' },
   );
-  server.on('message', (message: { codeChanged?: unknown }) => {
+  server.on('message', (message: { codeChanged?: unknown; renderHelpers?: unknown }) => {
     if (message.codeChanged === true) codeChanged();
+    if (typeof message.renderHelpers === 'number' && Number.isInteger(message.renderHelpers)) helpersWanted(Math.max(0, Math.min(16, message.renderHelpers)));
   });
   server.stdout?.on('data', (chunk: Buffer) => serverLog?.write(chunk));
   server.stderr?.on('data', (chunk: Buffer) => serverLog?.write(chunk));
@@ -171,6 +180,20 @@ async function startServer(folder: string, token: string, trust: Trust, codeChan
   return { server, url };
 }
 
+/** Projects with helper workers open for a parallel export, and the blocker that keeps App Nap off while there are any (ADR 0019). */
+const exporting = new Set<string>();
+let awake: number | null = null;
+
+function exportAwake(folder: string, on: boolean): void {
+  if (on) exporting.add(folder);
+  else exporting.delete(folder);
+  if (exporting.size > 0 && awake === null) awake = powerSaveBlocker.start('prevent-app-suspension');
+  if (exporting.size === 0 && awake !== null) {
+    powerSaveBlocker.stop(awake);
+    awake = null;
+  }
+}
+
 /** Stops a project's server and render worker. */
 function stopSession(target: Session | null): void {
   if (!target) return;
@@ -180,6 +203,8 @@ function stopSession(target: Session | null): void {
   sessions.delete(target.folder);
   target.stopping = true;
   if (!target.worker.isDestroyed()) target.worker.destroy();
+  setHelperWindows(target.helpers, 0, target.url, target.token);
+  exportAwake(target.folder, false);
   target.server.kill();
 }
 
@@ -303,11 +328,22 @@ async function openFolderNow(folder: string, options: { restart?: boolean; targe
     let started: { server: UtilityProcess; url: string };
     let opened: Session | null = null;
     let changed = false;
+    let helpersWanted = 0;
     try {
-      started = await startServer(dir, token, trust, () => {
-        changed = true;
-        if (opened) codeChanged(opened);
-      });
+      started = await startServer(
+        dir,
+        token,
+        trust,
+        () => {
+          changed = true;
+          if (opened) codeChanged(opened);
+        },
+        (count) => {
+          helpersWanted = count;
+          if (opened && !opened.stopping) setHelperWindows(opened.helpers, count, opened.url, opened.token);
+          exportAwake(dir, count > 0);
+        },
+      );
     } catch (err) {
       const why = err instanceof Error ? err.message : String(err);
       log(why);
@@ -315,7 +351,7 @@ async function openFolderNow(folder: string, options: { restart?: boolean; targe
       return why;
     }
     const worker = openWorkerWindow(started.url, token);
-    const here: Session = { folder: dir, url: started.url, token, server: started.server, worker, stopping: false, trusted: trust.trusted };
+    const here: Session = { folder: dir, url: started.url, token, server: started.server, worker, helpers: new Map(), stopping: false, trusted: trust.trusted };
     opened = here;
     target = here;
     sessions.set(dir, here);
@@ -326,6 +362,7 @@ async function openFolderNow(folder: string, options: { restart?: boolean; targe
       else stopSession(here);
     });
     if (changed) codeChanged(here);
+    if (helpersWanted > 0) setHelperWindows(here.helpers, helpersWanted, here.url, here.token);
   }
   const previous = session;
   session = target;

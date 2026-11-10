@@ -922,7 +922,7 @@ export class Workspace {
     const to = options.to === undefined ? undefined : await this.resolveFrame(studio, options.to, true);
     const suffix = from !== undefined || to !== undefined ? `-${pad(from ?? 0)}-${pad(to ?? studio.scene.frameCount)}` : '';
     const path = join(this.folder.out, studio.scene.out, `${scene.id}${suffix}.${target}`);
-    const result = await writeViaSink(studio, path, (sink) => studio.call('exportVideo', target, sink, { from, to, silent: options.silent }));
+    const result = await studio.exportFile(path, { target, from, to, silent: options.silent });
     return { file: this.show(path), ...result };
   }
 

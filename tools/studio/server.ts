@@ -72,6 +72,7 @@ import { MODULES_PATH, ModuleService } from './modules.ts';
 import { Pairing } from './pairing.ts';
 import { isImportable } from './project-code.ts';
 import { electronWorker } from './electron-worker.ts';
+import { exportVideoFile } from './export-video.ts';
 import { RenderPool } from './render-pool.ts';
 import { StudioQueue } from './queue.ts';
 
@@ -367,13 +368,15 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     const ranged = input.from !== undefined || input.to !== undefined;
     const suffix = ranged ? `-${pad(input.from ?? 0)}-${pad(input.to ?? info.scene.frameCount)}` : '';
     const path = join(folder.out, info.scene.out, `${info.scene.id}${suffix}.${input.target}`);
-    const result = await withSink(path, (sink) =>
-      pool.call(input.scene, 'exportVideo', [input.target, sink, { from: input.from, to: input.to, silent: input.silent }], {
-        signal,
-        onProgress: (p) => progress(p.stage, p.done, p.total),
-      }),
-    );
-    return { file: path, ...(result as object) };
+    const result = await exportVideoFile(pool, input.scene, path, {
+      target: input.target,
+      from: input.from,
+      to: input.to,
+      silent: input.silent,
+      signal,
+      onProgress: (p) => progress(p.stage, p.done, p.total),
+    });
+    return { file: path, ...result };
   }
 
   // ---- creating from the viewer ----
@@ -527,7 +530,11 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
 
     // The render worker.
     if (parts[0] === 'worker') {
-      if (req.method === 'GET' && parts[1] === 'stream') return pool.attach(req, res);
+      if (req.method === 'GET' && parts[1] === 'stream') {
+        const slot = Number(url.searchParams.get('slot') ?? 0);
+        if (!Number.isInteger(slot) || slot < 0 || slot > 64) throw new HttpError(400, 'slot must be a whole number from 0 to 64');
+        return pool.attach(req, res, slot);
+      }
       if (req.method === 'POST' && parts[1] === 'jobs' && parts.length === 3) {
         const answer = await json<{ ok: true; value: unknown } | { ok: false; error: string }>(req);
         return send(res, 200, { ok: pool.result(parts[2], answer) });
@@ -567,6 +574,39 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
           signal: abort.signal,
           onProgress: (p) => res.write(`${JSON.stringify({ progress: p })}\n`),
         });
+        res.end(`${JSON.stringify({ ok: true, value })}\n`);
+      } catch (err) {
+        res.end(`${JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) })}\n`);
+      } finally {
+        clearInterval(keepAlive);
+      }
+      return;
+    }
+    // Exports for tools in other processes, split across workers when that helps (ADR 0019).
+    if (req.method === 'POST' && path === '/render/export') {
+      const input = await json<{ scene?: unknown; path?: unknown; target?: unknown; from?: unknown; to?: unknown; silent?: unknown; workers?: unknown }>(req);
+      if (typeof input.scene !== 'string') throw new HttpError(400, 'scene must be a scene id');
+      if (typeof input.path !== 'string' || !input.path.startsWith('/')) throw new HttpError(400, 'path must be absolute');
+      if (input.target !== 'mp4' && input.target !== 'gif') throw new HttpError(400, 'target must be mp4 or gif');
+      const whole = (v: unknown, name: string, min: number) => {
+        if (v === undefined || v === null) return undefined;
+        if (!Number.isInteger(v) || (v as number) < min) throw new HttpError(400, `${name} must be a whole number, ${min} or more`);
+        return v as number;
+      };
+      const job = { target: input.target as 'mp4' | 'gif', from: whole(input.from, 'from', 0), to: whole(input.to, 'to', 0), silent: input.silent === true, workers: whole(input.workers, 'workers', 1) };
+      const target = input.path;
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/x-ndjson');
+      res.setHeader('Cache-Control', 'no-store');
+      res.flushHeaders();
+      const keepAlive = setInterval(() => res.write('\n'), 15_000);
+      const abort = new AbortController();
+      res.on('close', () => {
+        clearInterval(keepAlive);
+        if (!res.writableFinished) abort.abort();
+      });
+      try {
+        const value = await exportVideoFile(pool, input.scene, target, { ...job, signal: abort.signal, onProgress: (p) => res.write(`${JSON.stringify({ progress: p })}\n`) });
         res.end(`${JSON.stringify({ ok: true, value })}\n`);
       } catch (err) {
         res.end(`${JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) })}\n`);
