@@ -54,10 +54,11 @@ describe('splitRange', () => {
 
 describe('defaultWorkers', () => {
   const GB = 2 ** 30;
-  it('takes one per core less one, capped by memory and at 8', () => {
-    expect(defaultWorkers(8, 16 * GB)).toBe(7);
+  it('takes one per core less one, capped by memory and at 4', () => {
+    expect(defaultWorkers(8, 16 * GB)).toBe(4);
+    expect(defaultWorkers(4, 16 * GB)).toBe(3);
     expect(defaultWorkers(8, 8 * GB)).toBe(4);
-    expect(defaultWorkers(32, 128 * GB)).toBe(8);
+    expect(defaultWorkers(32, 128 * GB)).toBe(4);
     expect(defaultWorkers(2, 4 * GB)).toBe(1);
     expect(defaultWorkers(1, 64 * GB)).toBe(1);
   });

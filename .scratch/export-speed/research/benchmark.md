@@ -76,6 +76,6 @@ During a 7-worker export of the 9:16 short, each worker's renderer process held 
 
 ## Open questions
 
-- Is 7 the right default here? It is the formula's answer for 8 cores and 16 GB (one per core less one, capped by memory). The data shows little gain past 4 to 6 on this chip and more encoder contention; a quiet machine should settle it. `FRAME_STUDIO_EXPORT_WORKERS` and `--workers` override it.
+- The default was capped at 4 after review: the data shows little gain past 4 to 6 on this chip and more encoder contention. A quiet machine should confirm it. `FRAME_STUDIO_EXPORT_WORKERS` and `--workers` override it.
 - One early run, while another session was running Electron exports and the machine was heavily loaded, took 914 s instead of 5 s and decoded 46 frames differently from the serial file. It didn't come back in any later run, including one at background QoS, one under 8 busy loops, and every benchmark row above. The likeliest causes are the connection limit above combined with job retries, or VideoToolbox under contention from other processes. The benchmark compares decoded frames on every run so a repeat would show.
 - RGBA to I420 in JavaScript costs 10 to 14 ms a frame, a fifth to a half of a worker's time. Integer arithmetic, or a WebGL or WebGPU pass, could cut that, as long as the output stays the same bytes the colour tests check.

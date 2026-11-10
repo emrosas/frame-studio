@@ -49,15 +49,18 @@ export function splitRange(from: number, to: number, fps: number, options: Split
   return out;
 }
 
+/** More workers than this gained little in the benchmark, and encode time per frame rose (ADR 0019). */
+export const MAX_DEFAULT_WORKERS = 4;
+
 /**
  * Default worker count: one per performance core, less one for the studio
  * server and the system, and no more than memory allows at about 1.5 GB a
- * worker, between 1 and 8.
+ * worker, between 1 and MAX_DEFAULT_WORKERS.
  */
 export function defaultWorkers(cores: number, memoryBytes: number): number {
   const byCores = Math.max(1, cores - 1);
   const byMemory = Math.max(1, Math.floor(memoryBytes / (1.5 * 2 ** 30)) - 1);
-  return Math.max(1, Math.min(8, byCores, byMemory));
+  return Math.max(1, Math.min(MAX_DEFAULT_WORKERS, byCores, byMemory));
 }
 
 /**
