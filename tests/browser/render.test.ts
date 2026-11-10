@@ -7,10 +7,11 @@
  * - Ticket 03 on the pinned build: CPU canvas raster, PNG output that decodes
  *   to exactly the canvas bytes, and identical pixels across launches.
  * - Exports: MP4 and GIF with exactly the frames and duration asked for.
+ * - Parallel MP4 (ADR 0019): split across workers, the same packets as one page.
  */
 import { createHash } from 'node:crypto';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
@@ -18,6 +19,7 @@ import { ALL_FORMATS, BufferSource, Input } from 'mediabunny';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readGifStructure } from '../../src/export/testing/gif-structure';
 import { ROOT, type Studio } from '../../tools/render/studio';
+import { exportVideoFile } from '../../tools/studio/export-video';
 import { renderClient, startStudio, type TestStudio } from './studio-server';
 
 const SCENES = readdirSync(join(ROOT, 'scenes'))
@@ -222,3 +224,81 @@ describe('errors', () => {
     expect(await studio.call('resolveFrame', '00:03:11')).toBe(47);
   });
 });
+
+describe('parallel MP4 export (ADR 0019)', () => {
+  /**
+   * One MD5 per packet of every stream, copied out as stored. SEI units are dropped first: VideoToolbox stamps a
+   * user-data SEI on each key frame whose bytes change from run to run, serial or not, and no decoder reads it.
+   */
+  const packetHashes = (path: string) =>
+    execFileSync('ffmpeg', ['-v', 'error', '-i', path, '-map', '0', '-c', 'copy', '-bsf:v', 'filter_units=remove_types=6', '-f', 'framemd5', '-'])
+      .toString()
+      .split('\n')
+      .filter((l) => l && !l.startsWith('#'));
+  const frameHashes = (path: string) =>
+    execFileSync('ffmpeg', ['-v', 'error', '-i', path, '-map', '0:v', '-f', 'framemd5', '-'])
+      .toString()
+      .split('\n')
+      .filter((l) => l && !l.startsWith('#'));
+  const probe = (path: string) =>
+    execFileSync('ffprobe', ['-v', 'error', '-count_frames', '-show_entries', 'stream=codec_type,nb_read_frames,duration,color_range,color_space,color_primaries,color_transfer:format=duration', '-of', 'json', path]).toString();
+
+  it.skipIf(!hasFfmpeg())('splits a range with sound across workers and muxes the same packets as one page (checked with ffmpeg, dev only)', async () => {
+    const short = await studio.load('why-lakes-stay-liquid');
+    expect(short.audio).toBe(true);
+    // 10 s from 1 s in: the split counts key frames from the range's start, and the sound is sliced to match.
+    const range = { from: 30, to: 330 };
+    const serialPath = join(dir, 'serial.mp4');
+    const parallelPath = join(dir, 'parallel.mp4');
+    const serial = await studio.exportFile(serialPath, { target: 'mp4', ...range, workers: 1 });
+    const progress: number[] = [];
+    const parallel = await exportVideoFile(server.server.pool, 'why-lakes-stay-liquid', parallelPath, {
+      target: 'mp4',
+      ...range,
+      workers: 3,
+      onProgress: (p) => {
+        if (p.stage === 'encoding') progress.push(p.done);
+      },
+    });
+    expect(serial).toMatchObject({ frames: 300, seconds: 10, workers: 1, segments: 1 });
+    expect(parallel).toMatchObject({ target: 'mp4', from: 30, to: 330, frames: 300, seconds: 10, workers: 3, codec: serial.codec, audioCodec: serial.audioCodec });
+    expect(parallel.segments).toBeGreaterThan(2);
+    expect(progress.at(-1)).toBe(300);
+    expect(progress.every((n, i) => i === 0 || n >= progress[i - 1])).toBe(true);
+
+    const info = JSON.parse(probe(parallelPath)) as { streams: Record<string, string>[]; format: { duration: string } };
+    const video = info.streams.find((st) => st.codec_type === 'video')!;
+    const audio = info.streams.find((st) => st.codec_type === 'audio')!;
+    expect(video).toMatchObject({ nb_read_frames: '300', duration: '10.000000', color_range: 'pc', color_space: 'bt709', color_primaries: 'bt709', color_transfer: 'iec61966-2-1' });
+    expect(audio.duration).toBe('10.000000');
+    expect(info.format.duration).toBe('10.000000');
+    expect(probe(parallelPath)).toBe(probe(serialPath));
+
+    // Decoded frames and every stored packet, video and audio, match the serial file (VideoToolbox's SEI aside).
+    expect(frameHashes(parallelPath)).toEqual(frameHashes(serialPath));
+    expect(packetHashes(parallelPath)).toEqual(packetHashes(serialPath));
+    // The audio track keeps its edit list and AAC roll group (audio-track.ts): ffmpeg's trace lists the boxes it parsed.
+    const trace = spawnSync('ffmpeg', ['-v', 'trace', '-i', parallelPath, '-frames:v', '1', '-f', 'null', '-']).stderr.toString();
+    for (const box of ['elst', 'sgpd', 'sbgp']) expect(trace).toContain(`type:'${box}'`);
+  });
+
+  it('stops every worker on cancel and leaves no file', async () => {
+    await studio.load('why-lakes-stay-liquid');
+    const path = join(dir, 'cancelled.mp4');
+    const abort = new AbortController();
+    const done = exportVideoFile(server.server.pool, 'why-lakes-stay-liquid', path, {
+      target: 'mp4',
+      workers: 3,
+      signal: abort.signal,
+      onProgress: (p) => {
+        if (p.stage === 'encoding' && p.done > 0) abort.abort();
+      },
+    });
+    await expect(done).rejects.toThrow('Cancelled.');
+    expect(existsSync(path)).toBe(false);
+    expect(existsSync(`${path}.partial`)).toBe(false);
+    // The pool goes on: the next job runs.
+    expect(await studio.call('renderFrame', 0)).toBe(0);
+  });
+});
+

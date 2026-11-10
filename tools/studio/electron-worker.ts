@@ -1,5 +1,6 @@
 // Starts a render worker without the app (ADR 0008): Electron in worker-only
-// mode, a hidden window on render.html that connects back to this server. The
+// mode, a hidden window on render.html that connects back to this server, and
+// helper windows in the same process when a parallel export asks (ADR 0019). The
 // CLI, the MCP shim and the tests use it; the app opens its own. Electron's
 // Chromium is the pixel reference, so every render comes from the same build.
 // Node only.
@@ -43,8 +44,9 @@ export function electronWorker(url: string, token: string, log: (line: string) =
       child.once('error', fail);
     });
     child.on('error', (err) => log(`the render worker: ${err.message}`));
-    // The address and token go over stdin, so neither shows in the process list.
-    child.stdin?.end(`${JSON.stringify({ url, token })}\n`);
+    // The address and token go over stdin, so neither shows in the process list. Stdin stays open for helper counts (ADR 0019).
+    child.stdin?.on('error', () => {});
+    child.stdin?.write(`${JSON.stringify({ url, token })}\n`);
     const exited = new Promise<void>((done) => {
       child.once('exit', (code, signal) => {
         if (code !== 0 && signal !== 'SIGTERM') log(`the render worker exited (${code ?? signal}).${stderr ? `\n${stderr.trim()}` : ''}`);
@@ -53,6 +55,9 @@ export function electronWorker(url: string, token: string, log: (line: string) =
     });
     return {
       exited,
+      helpers(count) {
+        if (child.stdin?.writable) child.stdin.write(`${JSON.stringify({ helpers: count })}\n`);
+      },
       async close() {
         if (child.exitCode !== null || child.signalCode !== null) return;
         child.kill('SIGTERM');

@@ -15,6 +15,7 @@
     "render": "node tools/render/cli.ts frame",
     "export": "node tools/render/cli.ts export",
     "contact-sheet": "node tools/render/cli.ts contact-sheet",
+    "bench:export": "node tools/bench/export.ts",
     "desktop": "node tools/desktop/run.ts",
     "desktop:build": "node tools/desktop/package.ts",
     "desktop:check": "node tools/desktop/check.ts",

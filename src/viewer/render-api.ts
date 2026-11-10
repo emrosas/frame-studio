@@ -2,6 +2,9 @@
 // render tools can import them without pulling in browser code.
 
 import type { CheckReport } from '../export/check.ts';
+import type { ExportStages } from '../export/mp4.ts';
+
+export type { ExportStages };
 
 export type ExportTarget = 'mp4' | 'gif';
 
@@ -29,6 +32,31 @@ export interface RenderExportResult {
   /** The audio codec string when the MP4 has sound, e.g. "mp4a.40.2" or "opus". GIFs are always silent. */
   audioCodec?: string;
   colours?: number;
+  /** Where an MP4 export's time went, in ms summed over its frames. */
+  stages?: ExportStages;
+  /** Render workers that shared an MP4 export; 1 when one page made it alone (ADR 0019). */
+  workers?: number;
+  /** Segments a parallel export was split into. */
+  segments?: number;
+}
+
+/** One segment of a parallel MP4 export, encoded by one worker (ADR 0019). */
+export interface SegmentResult {
+  from: number;
+  to: number;
+  origin: number;
+  frames: number;
+  codec: string;
+  ms: number;
+  stages: ExportStages;
+}
+
+/** A parallel export's sound, rendered and encoded once (ADR 0005). */
+export interface AudioTrackResult {
+  codec: 'aac' | 'opus';
+  codecString: string;
+  packets: number;
+  ms: number;
 }
 
 export interface RenderHit {
@@ -100,6 +128,15 @@ export interface RenderStudioApi {
     sinkId: string,
     options?: { from?: number; to?: number; silent?: boolean; audioCodec?: 'aac' | 'opus' },
   ): Promise<RenderExportResult>;
+  /**
+   * Draws and encodes frames [from, to) with a fresh H.264 encoder and writes
+   * the packets to the sink as records (src/export/packets.ts), for the server
+   * to mux (ADR 0019). Timestamps and key frames count from `origin`, the
+   * export's first frame; the segment's first frame is always a key frame.
+   */
+  encodeSegment(sinkId: string, options: { from: number; to: number; origin?: number; bitrate?: number }): Promise<SegmentResult>;
+  /** Encodes the scene's sound for frames [from, to) and writes the packets to the sink as records. Null for a silent scene. */
+  encodeAudioTrack(sinkId: string, options?: { from?: number; to?: number; audioCodec?: 'aac' | 'opus' }): Promise<AudioTrackResult | null>;
   /**
    * Measures frames [from, to), drawn small, and the scene's rendered audio: every check in src/export/check.ts.
    * Defaults to the whole scene. With loop, the seam between the last and first frames is judged too.

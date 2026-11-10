@@ -23,10 +23,15 @@ import {
   checkSize,
   contactSheetFrames,
   contactSheetLayout,
+  emptyStages,
+  encodeAudio,
+  encodeVideo,
   exportGif,
   exportMp4,
   FrameMeter,
   readPixels,
+  RecordWriter,
+  videoConfig,
   type AudioTrackSource,
   type ByteSink,
   type CheckReport,
@@ -35,7 +40,7 @@ import {
 } from '../export';
 import { findEntry, type SceneLibrary } from './library';
 import { pair } from './pairing';
-import type { ContactSheetResult, ExportTarget, RenderExportResult, RenderStudioApi } from './render-api';
+import type { AudioTrackResult, ContactSheetResult, ExportTarget, RenderExportResult, RenderStudioApi, SegmentResult } from './render-api';
 import { loadLibrary } from './scenes';
 import { parseFrameText, rangeError } from './selection';
 
@@ -80,6 +85,13 @@ async function blobBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
   const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
   if (!blob) throw new Error('The canvas could not be encoded as PNG.');
   return new Uint8Array(await blob.arrayBuffer());
+}
+
+/** A copy of a decoder config's description as bytes; empty when there is none. */
+function descriptionBytes(description: AllowSharedBufferSource | undefined): Uint8Array {
+  if (!description) return new Uint8Array(0);
+  if (ArrayBuffer.isView(description)) return new Uint8Array(description.buffer, description.byteOffset, description.byteLength).slice();
+  return new Uint8Array(description).slice();
 }
 
 async function hex(data: BufferSource): Promise<string> {
@@ -178,6 +190,15 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       });
     }
     return rendered;
+  };
+
+  /** The scene's audio for frames [from, to), sliced from the one render. */
+  const audioRange = async (from: number, to: number): Promise<AudioTrackSource> => {
+    const { scene: s } = need();
+    const buffer = await sceneAudio();
+    const spf = samplesPerFrame(s.fps);
+    const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).subarray(from * spf, to * spf));
+    return { sampleRate: SAMPLE_RATE, channels };
   };
 
   document.title = scene ? `${scene.id} · render · Frame Studio` : 'render · Frame Studio';
@@ -286,12 +307,12 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       const start = performance.now();
       if (target === 'mp4') {
         let audio: AudioTrackSource | undefined;
+        let audioMs = 0;
         if (sound && !options.silent) {
           progress({ stage: 'rendering audio', done: 0, total: r.to - r.from });
-          const buffer = await sceneAudio();
-          const spf = samplesPerFrame(s.fps);
-          const channels = Array.from({ length: buffer.numberOfChannels }, (_, c) => buffer.getChannelData(c).subarray(r.from * spf, r.to * spf));
-          audio = { sampleRate: SAMPLE_RATE, channels };
+          const at = performance.now();
+          audio = await audioRange(r.from, r.to);
+          audioMs = performance.now() - at;
         }
         const out = await exportMp4(source, r, sink, { onProgress: progress, audio, audioCodec: options.audioCodec });
         return {
@@ -302,6 +323,7 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
           ms: performance.now() - start,
           codec: out.codec,
           ...(out.audio ? { audioCodec: out.audio.codecString } : {}),
+          stages: { ...out.stages, audio: out.stages.audio + audioMs },
         };
       }
       if (target === 'gif') {
@@ -309,6 +331,65 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
         return { target, ...r, frames: out.frames, seconds: out.durationCs / 100, ms: performance.now() - start, colours: out.colours };
       }
       throw new Error(`unknown export target ${JSON.stringify(target)}; use mp4 or gif`);
+    },
+    async encodeSegment(sinkId, options): Promise<SegmentResult> {
+      const { scene: s } = need();
+      const r = range(options.from, options.to);
+      const origin = options.origin ?? r.from;
+      if (!Number.isInteger(origin) || origin < 0 || origin > r.from) throw new RangeError(`origin must be a frame at or before ${r.from}, got ${String(origin)}`);
+      const start = performance.now();
+      const source: FrameSource = { width: s.size[0], height: s.size[1], fps: s.fps, draw, prepare };
+      const config = await videoConfig(s.size[0], s.size[1], s.fps, options.bitrate);
+      const sink = hostSink(sinkId);
+      const stages = emptyStages();
+      const writer = new RecordWriter(async (data, position) => {
+        const at = performance.now();
+        await sink.write(data, position);
+        stages.mux += performance.now() - at;
+      });
+      let frames = 0;
+      await encodeVideo(source, r, {
+        config,
+        origin,
+        stages,
+        onProgress: progress,
+        async onPacket(packet, decoderConfig) {
+          if (decoderConfig) {
+            await writer.add({
+              kind: 'video-config',
+              codec: decoderConfig.codec,
+              codedWidth: decoderConfig.codedWidth ?? s.size[0],
+              codedHeight: decoderConfig.codedHeight ?? s.size[1],
+              data: descriptionBytes(decoderConfig.description),
+            });
+          }
+          // Back to the encoder's whole microseconds, which the server divides again exactly as the page would.
+          await writer.add({ kind: 'video', key: packet.type === 'key', timestamp: Math.round(packet.timestamp * 1e6), duration: Math.round(packet.duration * 1e6), data: packet.data });
+          frames++;
+        },
+      });
+      await writer.flush();
+      await sink.close?.();
+      return { ...r, origin, frames, codec: config.codec, ms: performance.now() - start, stages };
+    },
+    async encodeAudioTrack(sinkId, options = {}): Promise<AudioTrackResult | null> {
+      need();
+      const r = range(options.from, options.to);
+      if (!sound) return null;
+      const start = performance.now();
+      progress({ stage: 'rendering audio', done: 0, total: 1 });
+      const encoded = await encodeAudio(await audioRange(r.from, r.to), options.audioCodec);
+      const sink = hostSink(sinkId);
+      const writer = new RecordWriter((data, position) => sink.write(data, position));
+      const { sampleRate, numberOfChannels, codec: configCodec, description } = encoded.decoderConfig;
+      await writer.add({ kind: 'audio-config', codec: encoded.codec, codecString: encoded.codecString, configCodec, sampleRate, numberOfChannels, priming: encoded.priming, data: descriptionBytes(description) });
+      for (const packet of encoded.packets) {
+        await writer.add({ kind: 'audio', key: packet.type === 'key', start: Math.round(packet.timestamp * sampleRate), length: Math.round(packet.duration * sampleRate), data: packet.data });
+      }
+      await writer.flush();
+      await sink.close?.();
+      progress({ stage: 'rendering audio', done: 1, total: 1 });
+      return { codec: encoded.codec, codecString: encoded.codecString, packets: encoded.packets.length, ms: performance.now() - start };
     },
     async writeSpeech(file, sinkId) {
       const res = await fetch(mediaUrl(file), { cache: 'no-store' });
@@ -524,7 +605,9 @@ async function runWorker(): Promise<void> {
     }
   }
 
-  const stream = new EventSource('/__studio/worker/stream');
+  // render.html?worker is the main worker, slot 0; ?worker=2 is a helper for parallel exports (ADR 0019).
+  const slot = Number(new URLSearchParams(location.search).get('worker') || 0);
+  const stream = new EventSource(`/__studio/worker/stream?slot=${Number.isInteger(slot) && slot > 0 ? slot : 0}`);
   stream.addEventListener('job', (e) => {
     queue.push(JSON.parse((e as MessageEvent<string>).data) as Job);
     void drain();

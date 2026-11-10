@@ -5,22 +5,41 @@
 // carries the export colour space, so the file decodes to the scene's colours
 // in QuickTime, Chromium and ffmpeg alike (ticket 15, see color.ts). Audio,
 // when there is any, is AAC or Opus from audio.ts, interleaved with the video.
+//
+// encodeVideo is the drawing and encoding half. A serial export feeds it
+// straight into the muxer here; a parallel export runs it on one segment per
+// worker and the studio server muxes the segments (ADR 0019). It restarts the
+// encoder at every key frame, so both give the same file.
 
-import {
-  EncodedAudioPacketSource,
-  EncodedPacket,
-  EncodedVideoPacketSource,
-  Mp4OutputFormat,
-  Output,
-  StreamTarget,
-  type StreamTargetChunk,
-} from 'mediabunny';
-import { finishAudioTrack } from './audio-track';
+import { EncodedPacket } from 'mediabunny';
 import { encodeAudio, type AudioCodecName, type AudioTrackSource } from './audio';
 import { EXPORT_COLOR_SPACE, checkEncoderColorSpace, rgbaToI420 } from './color';
 import { readPixels, type ExportOptions, type ExportRange, type FrameSource } from './frames';
+import { Mp4Muxer } from './mp4-mux';
 import type { ByteSink } from './sink';
 import { avcCodecString, frameDurationUs, frameTimestampUs, isKeyFrame } from './timing';
+
+/** Milliseconds spent in each stage of an export, summed over its frames. */
+export interface ExportStages {
+  /** Decoding picture clips before a frame draws (ADR 0014). */
+  prepare: number;
+  /** render(): recording the draw calls. */
+  draw: number;
+  /** getImageData, where Chromium rasterizes what was recorded and copies it out. */
+  raster: number;
+  /** RGBA to I420 and the VideoFrame around it. */
+  convert: number;
+  /** Waiting on the video encoder: its queue, then its flush. */
+  encode: number;
+  /** In the muxer, including writes to the sink. */
+  mux: number;
+  /** Rendering and encoding the sound. */
+  audio: number;
+}
+
+export function emptyStages(): ExportStages {
+  return { prepare: 0, draw: 0, raster: 0, convert: 0, encode: 0, mux: 0, audio: 0 };
+}
 
 export interface Mp4Result {
   frames: number;
@@ -29,6 +48,7 @@ export interface Mp4Result {
   codec: string;
   /** The audio codec, when the export has sound. */
   audio?: { codec: AudioCodecName; codecString: string };
+  stages: ExportStages;
 }
 
 export interface Mp4Options extends ExportOptions {
@@ -43,19 +63,18 @@ export interface Mp4Options extends ExportOptions {
 /** Encoder queue depth to allow before waiting, so memory stays flat on long exports. */
 const MAX_QUEUE = 4;
 
-export async function exportMp4(source: FrameSource, range: ExportRange, sink: ByteSink, options: Mp4Options = {}): Promise<Mp4Result> {
-  const { width, height, fps } = source;
-  const total = range.to - range.from;
-  if (!(total > 0)) throw new RangeError(`nothing to export in [${range.from}, ${range.to})`);
-  if (typeof VideoEncoder === 'undefined') throw new Error('This browser has no WebCodecs VideoEncoder, so it cannot export MP4.');
+export const DEFAULT_BITRATE = 8_000_000;
 
+/** The encoder config for a scene's size and rate. Throws when this browser can't encode it. */
+export async function videoConfig(width: number, height: number, fps: number, bitrate = DEFAULT_BITRATE): Promise<VideoEncoderConfig> {
+  if (typeof VideoEncoder === 'undefined') throw new Error('This browser has no WebCodecs VideoEncoder, so it cannot export MP4.');
   const codec = avcCodecString(width, height, fps);
   const config: VideoEncoderConfig = {
     codec,
     width,
     height,
     framerate: fps,
-    bitrate: options.bitrate ?? 8_000_000,
+    bitrate,
     avc: { format: 'avc' },
     latencyMode: 'quality',
     hardwareAcceleration: 'no-preference',
@@ -64,33 +83,45 @@ export async function exportMp4(source: FrameSource, range: ExportRange, sink: B
   if (!support.supported) {
     throw new Error(`This browser cannot encode H.264 ${codec} at ${width}x${height} and ${fps} fps (${navigator.userAgent}).`);
   }
+  return config;
+}
 
-  if (options.audio) options.onProgress?.({ done: 0, total, stage: 'encoding audio' });
-  const audio = options.audio ? await encodeAudio(options.audio, options.audioCodec) : null;
+export interface EncodeVideoOptions extends ExportOptions {
+  config: VideoEncoderConfig;
+  /**
+   * The export's first frame. Timestamps and key frames count from it, so a
+   * segment of a parallel export lines up with the serial file. Defaults to range.from.
+   */
+  origin?: number;
+  /** Where each stage's time goes. */
+  stages?: ExportStages;
+  /** Each packet in decode order, with the decoder config on the first. Awaited one at a time, in order. */
+  onPacket(packet: EncodedPacket, decoderConfig: VideoDecoderConfig | undefined): Promise<void> | void;
+}
 
-  let moov: { data: Uint8Array; position: number } | null = null;
-  const writable = new WritableStream<StreamTargetChunk>({ write: (chunk) => sink.write(chunk.data, chunk.position) });
-  const output = new Output({
-    // 'reserve' puts the index at the front, so players can start before the whole file loads,
-    // while still streaming to the sink. It needs the packet count up front, which we know.
-    format: new Mp4OutputFormat({ fastStart: 'reserve', onMoov: (data, position) => void (moov = { data: data.slice(), position }) }),
-    target: new StreamTarget(writable, { chunked: true, chunkSize: 4 << 20 }),
-  });
-  const track = new EncodedVideoPacketSource('avc');
-  output.addVideoTrack(track, { frameRate: fps, maximumPacketCount: total });
-  const audioTrack = audio ? new EncodedAudioPacketSource(audio.codec) : null;
-  if (audio && audioTrack) output.addAudioTrack(audioTrack, { maximumPacketCount: audio.packets.length });
-  await output.start();
+/** The bytes of a decoder config's description, as hex, to compare one encoder's with another's. */
+function descriptionHex(description: AllowSharedBufferSource | undefined): string {
+  if (!description) return '';
+  const bytes = ArrayBuffer.isView(description) ? new Uint8Array(description.buffer, description.byteOffset, description.byteLength) : new Uint8Array(description);
+  let out = '';
+  for (const b of bytes) out += b.toString(16).padStart(2, '0');
+  return out;
+}
 
-  // Audio packets go in just ahead of the video they play under, so the file interleaves.
-  let nextAudio = 0;
-  const addAudioUntil = async (seconds: number) => {
-    if (!audio || !audioTrack) return;
-    while (nextAudio < audio.packets.length && audio.packets[nextAudio].timestamp < seconds) {
-      const first = nextAudio === 0;
-      await audioTrack.add(audio.packets[nextAudio++], first ? { decoderConfig: audio.decoderConfig } : undefined);
-    }
-  };
+/**
+ * Draws frames [range.from, range.to) and encodes them. Each key-frame
+ * interval gets an encoder of its own, so no rate-control state crosses a key
+ * frame: the packets for an interval depend only on its frames, and a
+ * parallel export that splits on key frames gives the same bytes as a serial
+ * one (ADR 0019). The first frame is always a key frame, and so is every
+ * frame isKeyFrame picks counting from `origin`.
+ */
+export async function encodeVideo(source: FrameSource, range: ExportRange, options: EncodeVideoOptions): Promise<void> {
+  const { width, height, fps } = source;
+  const total = range.to - range.from;
+  if (!(total > 0)) throw new RangeError(`nothing to export in [${range.from}, ${range.to})`);
+  const origin = options.origin ?? range.from;
+  const stages = options.stages ?? emptyStages();
 
   let failure: unknown = null;
   let rejectFailed: (err: unknown) => void = () => {};
@@ -100,79 +131,136 @@ export async function exportMp4(source: FrameSource, range: ExportRange, sink: B
     failure ??= err;
     rejectFailed(err);
   };
-  // Packets go to the muxer in order; each add waits for the one before it.
-  let muxed: Promise<void> = Promise.resolve();
-  const encoder = new VideoEncoder({
-    output: (chunk, meta) => {
-      if (meta?.decoderConfig) {
-        try {
-          checkEncoderColorSpace(meta.decoderConfig.colorSpace);
-        } catch (err) {
-          fail(err);
-          return;
-        }
-        // Mediabunny writes colr from this. Use what we asked for, not what the encoder
-        // reports: VideoToolbox in Chromium 140 and 152 reports full range as limited.
-        meta = { ...meta, decoderConfig: { ...meta.decoderConfig, colorSpace: EXPORT_COLOR_SPACE } };
+  // Packets go out in order; each waits for the one before it.
+  let delivered: Promise<void> = Promise.resolve();
+  /** The first encoder's description; every later encoder must write the same, since the track holds one. */
+  let description: string | null = null;
+  const output = (chunk: EncodedVideoChunk, meta?: EncodedVideoChunkMetadata) => {
+    let config = meta?.decoderConfig;
+    if (config) {
+      try {
+        checkEncoderColorSpace(config.colorSpace);
+        const mine = descriptionHex(config.description);
+        if (description === null) description = mine;
+        else if (mine !== description) throw new Error('The H.264 encoder wrote a different SPS/PPS after a key frame, so the file cannot hold one track.');
+        else config = undefined;
+      } catch (err) {
+        fail(err);
+        return;
       }
-      const packet = EncodedPacket.fromEncodedChunk(chunk);
-      muxed = muxed
-        .then(async () => {
-          await addAudioUntil(packet.timestamp + packet.duration);
-          await track.add(packet, meta);
-        })
-        .catch(fail);
-    },
-    error: fail,
-  });
+      // Mediabunny writes colr from this. Use what we asked for, not what the encoder
+      // reports: VideoToolbox in Chromium 140 and 152 reports full range as limited.
+      if (config) config = { ...config, colorSpace: EXPORT_COLOR_SPACE };
+    }
+    const packet = EncodedPacket.fromEncodedChunk(chunk);
+    const sent = config;
+    delivered = delivered.then(() => options.onPacket(packet, sent)).catch(fail);
+  };
+  let encoder: VideoEncoder | null = null;
+  /** Flushes and closes the current encoder, timing the wait as encoding. */
+  const drain = async () => {
+    if (!encoder) return;
+    const at = performance.now();
+    try {
+      await Promise.race([encoder.flush(), failed]);
+    } finally {
+      if (encoder.state !== 'closed') encoder.close();
+      encoder = null;
+      stages.encode += performance.now() - at;
+    }
+  };
   // VideoFrame copies the planes, so one buffer serves every frame.
   const i420 = new Uint8Array((width * height * 3) / 2);
 
   try {
-    encoder.configure(config);
     for (let i = 0; i < total; i++) {
       if (failure) throw failure;
-      await source.prepare?.(range.from + i);
-      rgbaToI420(readPixels(source.draw(range.from + i)), width, height, i420);
-      const frame = new VideoFrame(i420, {
+      const frame = range.from + i;
+      const n = frame - origin;
+      const key = i === 0 || isKeyFrame(n, fps);
+      if (key) {
+        await drain();
+        encoder = new VideoEncoder({ output, error: fail });
+        encoder.configure(options.config);
+      }
+      const current = encoder!;
+      let at = performance.now();
+      await source.prepare?.(frame);
+      let now = performance.now();
+      stages.prepare += now - at;
+      at = now;
+      const canvas = source.draw(frame);
+      now = performance.now();
+      stages.draw += now - at;
+      at = now;
+      const pixels = readPixels(canvas);
+      now = performance.now();
+      stages.raster += now - at;
+      at = now;
+      rgbaToI420(pixels, width, height, i420);
+      const video = new VideoFrame(i420, {
         format: 'I420',
         codedWidth: width,
         codedHeight: height,
-        timestamp: frameTimestampUs(i, fps),
-        duration: frameDurationUs(i, fps),
+        timestamp: frameTimestampUs(n, fps),
+        duration: frameDurationUs(n, fps),
         colorSpace: EXPORT_COLOR_SPACE,
       });
+      now = performance.now();
+      stages.convert += now - at;
+      at = now;
       try {
-        encoder.encode(frame, { keyFrame: isKeyFrame(i, fps) });
+        current.encode(video, { keyFrame: key });
       } finally {
-        frame.close();
+        video.close();
       }
-      while (encoder.encodeQueueSize > MAX_QUEUE) {
-        await Promise.race([new Promise((resolve) => encoder.addEventListener('dequeue', resolve, { once: true })), failed]);
+      while (current.encodeQueueSize > MAX_QUEUE) {
+        await Promise.race([new Promise((resolve) => current.addEventListener('dequeue', resolve, { once: true })), failed]);
       }
+      stages.encode += performance.now() - at;
       options.onProgress?.({ done: i + 1, total, stage: 'encoding' });
     }
-    await Promise.race([encoder.flush(), failed]);
-    await muxed;
+    await drain();
+    await delivered;
     if (failure) throw failure;
-    await addAudioUntil(Infinity);
-    await output.finalize();
-    if (audio) {
-      if (!moov) throw new Error('The muxer did not report its moov box, so the audio track cannot be finished.');
-      const { data, position } = moov as { data: Uint8Array; position: number };
-      await sink.write(finishAudioTrack(data, { frames: total, fps, roll: audio.codec === 'aac' }), position);
-    }
-    await sink.close?.();
+  } finally {
+    const left = encoder as VideoEncoder | null;
+    if (left && left.state !== 'closed') left.close();
+  }
+}
+
+export async function exportMp4(source: FrameSource, range: ExportRange, sink: ByteSink, options: Mp4Options = {}): Promise<Mp4Result> {
+  const { width, height, fps } = source;
+  const total = range.to - range.from;
+  if (!(total > 0)) throw new RangeError(`nothing to export in [${range.from}, ${range.to})`);
+  const config = await videoConfig(width, height, fps, options.bitrate);
+  const stages = emptyStages();
+
+  if (options.audio) options.onProgress?.({ done: 0, total, stage: 'encoding audio' });
+  const at = performance.now();
+  const audio = options.audio ? await encodeAudio(options.audio, options.audioCodec) : null;
+  stages.audio += performance.now() - at;
+
+  const muxer = await Mp4Muxer.start(sink, { fps, frames: total, audio });
+  try {
+    await encodeVideo(source, range, {
+      config,
+      stages,
+      onProgress: options.onProgress,
+      onPacket: (packet, decoderConfig) => muxer.addVideo(packet, decoderConfig),
+    });
+    await muxer.finish();
   } catch (err) {
-    if (encoder.state !== 'closed') encoder.close();
-    await output.cancel().catch(() => {});
+    await muxer.cancel();
     throw err instanceof Error ? err : new Error(String(err));
   }
-  if (encoder.state !== 'closed') encoder.close();
+  // Muxing runs while the loop waits on the encoder, so some of it shows in the encode stage too.
+  stages.mux = muxer.ms;
   return {
     frames: total,
     durationUs: frameTimestampUs(total, fps),
-    codec,
+    codec: config.codec,
     ...(audio ? { audio: { codec: audio.codec, codecString: audio.codecString } } : {}),
+    stages,
   };
 }

@@ -84,6 +84,8 @@ tools/
   bundle/     Single-file HTML builder: validates the scene, bundles only the rigs
               it uses with the player, and only the glyphs its text uses, and
               inlines all, with Rolldown. npm run export -- --target html.
+  bench/      npm run bench:export: MP4 export speed by stage through the render
+              worker, serial against parallel (ADR 0019).
   type/       npm run typeface: font file -> typeface module (fontkit, dev only),
               the built-in typefaces' sources, and the embed's glyph cut.
   voice/      Generate Voice (ADR 0017): providers/, one file each, loaded by
@@ -91,7 +93,8 @@ tools/
   mcp/        The MCP tools (docs/MCP.md), and server.ts, the stdio shim an
               external agent starts, which forwards to a studio server.
   studio/     The studio server (ADR 0008): the viewer, pairing, the file
-              store, the module service, the render worker's jobs, exports,
+              store, the module service, the render workers' jobs, exports
+              (long MP4s split across workers and muxed here, ADR 0019),
               the request queue on disk, and agents/, the agents it runs
               itself (M8). bin.ts runs it standalone; connect.ts finds or
               starts one for a folder.
@@ -206,6 +209,7 @@ Before a folder's `rigs/` or `audio/` load the first time, main asks. Trust is s
 - Renders for agents, the CLI and exports come from the **render worker** (ADR 0008): `render.html?worker` in a hidden Electron window (no UI, scene size, CPU raster), taking jobs from the studio server. The app opens it; a server without the app launches Electron in worker-only mode. Electron's Chromium is the pixel reference, so the pixel tests render through it too. Usage: `docs/SCENES.md`, "Rendering and exporting".
 - Playwright drives the viewer's interface in the browser tests, and opens Electron windows where a test compares pixels.
 - The page that draws the frames also encodes them. MP4 is H.264 through WebCodecs `VideoEncoder` at scene fps, muxed with Mediabunny. GIF is gifenc with our own palette code. The CLI, Electron and the web app run the same export code and differ only in where the bytes go (ticket 14, `.scratch/frame-studio/research/export-encoding.md`).
+- An MP4 of 10 s or more splits across render workers (ADR 0019): helper windows on more slots, each with its own session, encode segments that start on key frames, one renders the sound, and the studio server muxes them with the page's muxer (`src/export/mp4-mux.ts`). The encoder restarts at every key frame on both paths, so the worker count never changes the frames. `npm run bench:export` measures it.
 - MP4s are tagged BT.709 primaries, sRGB transfer and BT.709 matrix at full range, in both the SPS VUI and `colr`. WebCodecs only writes that for I420 frames that carry the colour space, so the exporter converts each frame itself (ticket 15, `src/export/color.ts`).
 - No shipped build bundles ffmpeg. It is a dev-only tool for checking exported files: frame count, duration, frame rate, colour.
 - The timing job (ADR 0016, `tools/voice/`) runs `whisper-cli` at a pinned version, built by `npm run voice:setup` for the repo and by `tools/desktop/package.ts` for the app. Its model downloads on first use to `~/.frame-studio/models/`, and the render worker decodes the sound for it.

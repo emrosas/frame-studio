@@ -1,8 +1,16 @@
 # Progress
 
-Last updated 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
+Last updated 2026-11-10 (export speed on the `export-speed` branch). Before that, 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
 
 ## Done
+
+### Export speed: benchmark and parallel MP4 (ADR 0019)
+
+- `npm run bench:export` times MP4 exports through the render worker by stage, for `bear-test`, the 9:16 `why-lakes-stay-liquid` and a long composition it builds in a temp folder. On an M1 Pro one worker takes 34 ms a frame on the long composition and 65 ms on `bear-test`; Chromium's CPU raster and our RGBA to I420 conversion are most of it. Results and 10 and 15 minute projections: `.scratch/export-speed/research/benchmark.md`.
+- MP4s of 10 s or more split across render workers: segments on key frames, one worker for the sound, and the server muxes in order with the muxer the page uses (`src/export/mp4-mux.ts`). 4 workers export the long composition 3.7 times faster, so 15 minutes at 30 fps takes about 4 minutes. Default workers: one per core less one, as memory allows, up to 4; `--workers` and `FRAME_STUDIO_EXPORT_WORKERS` set it.
+- The encoder restarts at every key frame on both paths, so a parallel file decodes to the same frames and has the same packets as a serial one. The browser test checks that with ffmpeg; the unit tests cover splitting, ordering, records and the multi-worker pool.
+- Found on the way: six worker windows in one Electron session hung on Chromium's six-connections-per-host limit, so each helper has its own session; a parallel export stops after two minutes without progress; worker processes keep App Nap off.
+- Tickets: `.scratch/export-speed/issues/`.
 
 ### Check reads text, and ranks what it finds (`.scratch/check-text/`)
 
@@ -1013,7 +1021,8 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 - Updates have no Developer ID signature either: trust rests on HTTPS to GitHub and the feed's checksum. The app must sit in a folder you can write to, such as /Applications, and every update downloads the whole app, about 124 MB.
 - Rig edits reload without a page reload, but the page and the server both keep old copies of the modules. A page with hundreds of edits behind it should be reloaded now and then (View, Reload in the app).
 - The code host reloads every rig and generator after any change, in the server process. Hot code and a loop at import time would hang the server rather than a worker. The research suggested a worker thread for this, which isn't built.
-- The render worker takes one job at a time, so a long export holds up the agents' renders until it ends.
+- Each render worker takes one job at a time. A long serial export, or a GIF, holds up the agents' renders until it ends; a parallel one frees a worker after each segment, so a render waits seconds, not minutes.
+- VideoToolbox writes a user-data SEI before each key frame with two bytes that change from run to run, so two exports of the same frames differ in those bytes and in Mediabunny's creation times. Decoded frames and every other byte match.
 - Node's type stripping still prints an experimental warning; the loader hides it. If Node changes the API, `tools/studio/loader.ts` and `modules.ts` are the places to look.
 - Pixels match within Electron 44.4.5. Upgrading Electron may change them, and the pixel tests would say so.
 - Under `npm run dev`, an edit to `src/engine` reaches the viewer and the render worker, but the server's own validation keeps the old engine until you restart `npm run dev`.

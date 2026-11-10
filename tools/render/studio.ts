@@ -6,15 +6,28 @@
 // imports carry their .ts extension.
 
 import { rename, rm } from 'node:fs/promises';
-import type { RenderSceneInfo, RenderStudioApi } from '../../src/viewer/render-api.ts';
+import type { ExportTarget, RenderExportResult, RenderSceneInfo, RenderStudioApi } from '../../src/viewer/render-api.ts';
 import { ROOT } from '../scene-files.ts';
+import { exportVideoFile } from '../studio/export-video.ts';
 import type { RenderPool, RenderProgress } from '../studio/render-pool.ts';
 
 export { ROOT };
 
+/** What an MP4 or GIF export takes, beyond the scene and the file. */
+export interface FileExportOptions {
+  target: ExportTarget;
+  from?: number;
+  to?: number;
+  silent?: boolean;
+  /** Render workers to share an MP4 across; the machine's default when left out (ADR 0019). */
+  workers?: number;
+}
+
 /** How a client reaches a render worker. */
 export interface RenderTransport {
   call(scene: string, method: string, args: unknown[], onProgress?: (p: RenderProgress) => void): Promise<unknown>;
+  /** Exports to `path` (absolute) through the server, split across workers when that helps. */
+  exportFile(scene: string, path: string, options: FileExportOptions, onProgress?: (p: RenderProgress) => void): Promise<RenderExportResult>;
   openSink(path: string): Promise<string>;
   closeSink(sinkId: string): Promise<void>;
 }
@@ -23,6 +36,7 @@ export interface RenderTransport {
 export function poolTransport(pool: RenderPool): RenderTransport {
   return {
     call: (scene, method, args, onProgress) => pool.call(scene, method, args, { onProgress }),
+    exportFile: (scene, path, options, onProgress) => exportVideoFile(pool, scene, path, { ...options, ...(onProgress ? { onProgress } : {}) }),
     openSink: (path) => pool.openSink(path),
     closeSink: (sinkId) => pool.closeSink(sinkId),
   };
@@ -39,26 +53,31 @@ export function httpTransport(url: string, token: string): RenderTransport {
     if (!res.ok) throw new Error(((await res.json().catch(() => ({}))) as { error?: string }).error ?? `The studio server answered ${res.status}.`);
     return res;
   };
+  /** Progress lines, then one answer. */
+  const answer = async (res: Response, onProgress?: (p: RenderProgress) => void): Promise<unknown> => {
+    let text = '';
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      text += Buffer.from(chunk).toString();
+      let nl: number;
+      while ((nl = text.indexOf('\n')) >= 0) {
+        const raw = text.slice(0, nl).trim();
+        text = text.slice(nl + 1);
+        // Blank lines keep a long wait alive.
+        if (!raw) continue;
+        const line = JSON.parse(raw) as { progress?: RenderProgress; ok?: boolean; value?: unknown; error?: string };
+        if (line.progress) onProgress?.(line.progress);
+        else if (line.ok) return line.value;
+        else throw new Error(line.error ?? 'The render failed.');
+      }
+    }
+    throw new Error('The studio server closed the render call without an answer.');
+  };
   return {
     async call(scene, method, args, onProgress) {
-      const res = await post('/render/call', { scene, method, args });
-      // Progress lines, then one answer.
-      let text = '';
-      for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
-        text += Buffer.from(chunk).toString();
-        let nl: number;
-        while ((nl = text.indexOf('\n')) >= 0) {
-          const raw = text.slice(0, nl).trim();
-          text = text.slice(nl + 1);
-          // Blank lines keep a long wait alive.
-          if (!raw) continue;
-          const line = JSON.parse(raw) as { progress?: RenderProgress; ok?: boolean; value?: unknown; error?: string };
-          if (line.progress) onProgress?.(line.progress);
-          else if (line.ok) return line.value;
-          else throw new Error(line.error ?? 'The render failed.');
-        }
-      }
-      throw new Error('The studio server closed the render call without an answer.');
+      return answer(await post('/render/call', { scene, method, args }), onProgress);
+    },
+    async exportFile(scene, path, options, onProgress) {
+      return (await answer(await post('/render/export', { scene, path, ...options }), onProgress)) as RenderExportResult;
     },
     async openSink(path) {
       return ((await (await post('/render/sinks', { path })).json()) as { sink: string }).sink;
@@ -78,6 +97,8 @@ export interface Studio {
   readonly scene: RenderSceneInfo;
   /** Calls window.studio[name](...args) in the worker, for this scene, and returns the result. */
   call<K extends keyof Methods>(name: K, ...args: Parameters<Methods[K]>): Promise<Awaited<ReturnType<Methods[K]>>>;
+  /** Exports this scene to `path`, through `path`.partial, split across workers when that helps (ADR 0019). */
+  exportFile(path: string, options: FileExportOptions): Promise<RenderExportResult>;
   /** A sink id whose bytes land in `path`. Parent folders are created. */
   fileSink(path: string): Promise<string>;
   /** Closes a sink's file if the worker has not already. Safe to call twice. */
@@ -111,6 +132,7 @@ export async function openStudio(sceneKey: string, options: OpenOptions): Promis
     async call(name, ...args) {
       return (await transport.call(key, name as string, args as unknown[], progress)) as never;
     },
+    exportFile: (path, exportOptions) => transport.exportFile(key, path, exportOptions, progress),
     fileSink: (path) => transport.openSink(path),
     closeSink: (sinkId) => transport.closeSink(sinkId).catch(() => {}),
     async load(next) {
