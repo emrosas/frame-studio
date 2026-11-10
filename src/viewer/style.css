@@ -1618,6 +1618,66 @@ kbd {
   background: var(--accent-soft);
 }
 
+/* A Library item over the timeline: where it would land, and what it would do. */
+.drop-ghost,
+.drop-track {
+  position: absolute;
+  left: calc(var(--in) * 100%);
+  right: calc((1 - var(--out)) * 100%);
+  z-index: 2;
+  pointer-events: none;
+}
+
+.drop-ghost {
+  top: calc(var(--lane) * var(--row) + 2px);
+  height: calc(var(--row) - 4px);
+  border: 1px dashed var(--accent);
+  border-radius: var(--r-s);
+  background: var(--accent-soft);
+}
+
+.drop-track {
+  top: calc(var(--at) * var(--row) - 1px);
+  height: 2px;
+  border-radius: 1px;
+  background: var(--accent);
+}
+
+.drop-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--accent);
+}
+
+.drop-note {
+  position: absolute;
+  top: 2px;
+  max-width: 320px;
+  margin-left: 6px;
+  padding: 0 6px;
+  overflow: hidden;
+  border-radius: var(--r-s);
+  background: var(--accent);
+  color: var(--on-accent);
+  font-size: 11px;
+  line-height: 18px;
+  letter-spacing: var(--track-11);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drop-note.is-end {
+  margin-left: -6px;
+  transform: translateX(-100%);
+}
+
+.drop-line.is-refused,
+.drop-note.is-refused {
+  background: var(--danger);
+}
+
 .ruler {
   position: relative;
   flex: 1 1 auto;
@@ -2362,6 +2422,20 @@ button.check-result:hover {
 
 .check-name {
   color: var(--text);
+}
+
+.check-rank {
+  margin-left: 4px;
+  padding: 0 4px;
+  border-radius: var(--r-s);
+  background: var(--fill);
+  color: var(--text-2);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.check-rank.is-urgent {
+  color: var(--danger);
 }
 
 .check-message,
@@ -4129,6 +4203,11 @@ button.check-result:hover {
   padding: 16px 24px 40px;
   background: var(--surface);
   animation: library-in var(--move);
+}
+
+/* Over the scene you came from it stops at the dock, which stays in view as a place to drop things. */
+.main.is-docked .library {
+  bottom: var(--dock-h);
 }
 
 @keyframes library-in {

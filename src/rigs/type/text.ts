@@ -1,8 +1,9 @@
-import type { ParamSchema, Rig } from '../../engine/types';
+import type { Params, ParamSchema, Rig } from '../../engine/types';
 import { choice, col, num, readParams } from '../parts/params';
 import { degToRad } from '../parts/math';
 import { typefaces } from './faces/index';
-import { blockTop, characterCount, layoutText, traceText, type TextAlign, type TextVAlign } from './layout';
+import { blockTop, characterCount, layoutText, traceText, type TextAlign, type TextLayout, type TextVAlign } from './layout';
+import type { Typeface } from './typeface';
 
 const isPainted = (c: string) => c !== 'none' && c !== 'transparent' && c !== '';
 
@@ -31,6 +32,63 @@ const params: ParamSchema = {
   reveal: num(1, 0, 1, 'How much of the text shows, 0 to 1, in reading order. Animate it to type the text on; the layout never moves.'),
 };
 
+/** What a text layer draws, before any context is touched: the layout, where it sits, and its paint. */
+export interface TextBlock {
+  /** The text as drawn, after case. */
+  content: string;
+  face: Typeface;
+  layout: TextLayout;
+  /** The anchor, rotation in radians, and uniform scale, applied in that order. */
+  x: number;
+  y: number;
+  rotation: number;
+  scale: number;
+  /** The block's top below the anchor, from valign. */
+  top: number;
+  /** Characters drawn, newlines not counted: Infinity for all of them. */
+  count: number;
+  /** The paint, or null for none. */
+  fill: string | null;
+  stroke: string | null;
+  strokeWidth: number;
+  opacity: number;
+}
+
+/** Lays out a text layer from its params. The rig draws from it, and the check tool measures the same thing. */
+export function textBlock(values: Params): TextBlock {
+  const p = readParams(params, values);
+  const face = typefaces.find((f) => f.id === p.string('font')) ?? typefaces[0];
+  const casing = p.string('case');
+  const raw = p.string('text');
+  const content = casing === 'upper' ? raw.toUpperCase() : casing === 'lower' ? raw.toLowerCase() : raw;
+  const layout = layoutText(face, content, {
+    size: p.number('size'),
+    lineHeight: p.number('lineHeight'),
+    tracking: p.number('tracking'),
+    width: p.number('width'),
+    align: p.string('align') as TextAlign,
+  });
+  const reveal = p.number('reveal');
+  const fill = p.string('fill');
+  const stroke = p.string('stroke');
+  const strokeWidth = p.number('strokeWidth');
+  return {
+    content,
+    face,
+    layout,
+    x: p.number('x'),
+    y: p.number('y'),
+    rotation: degToRad(p.number('rotation')),
+    scale: p.number('scale'),
+    top: blockTop(layout, p.string('valign') as TextVAlign),
+    count: reveal >= 1 ? Infinity : Math.round(reveal * characterCount(content)),
+    fill: isPainted(fill) ? fill : null,
+    stroke: strokeWidth > 0 && isPainted(stroke) ? stroke : null,
+    strokeWidth,
+    opacity: p.number('opacity'),
+  };
+}
+
 /**
  * Text drawn from a typeface module (ADR 0010): the same glyphs, kerning and
  * line breaks on every machine and in every export. No fonts are loaded and
@@ -43,41 +101,22 @@ export const text: Rig = {
     'Animate reveal to type it on.',
   params,
   draw(ctx, values) {
-    const p = readParams(params, values);
-    const opacity = p.number('opacity');
-    const reveal = p.number('reveal');
-    const face = typefaces.find((f) => f.id === p.string('font')) ?? typefaces[0];
-    const casing = p.string('case');
-    const raw = p.string('text');
-    const content = casing === 'upper' ? raw.toUpperCase() : casing === 'lower' ? raw.toLowerCase() : raw;
-    const layout = layoutText(face, content, {
-      size: p.number('size'),
-      lineHeight: p.number('lineHeight'),
-      tracking: p.number('tracking'),
-      width: p.number('width'),
-      align: p.string('align') as TextAlign,
-    });
-
+    const b = textBlock(values);
     ctx.save();
-    ctx.translate(p.number('x'), p.number('y'));
-    ctx.rotate(degToRad(p.number('rotation')));
-    const scale = p.number('scale');
-    ctx.scale(scale, scale);
-    ctx.globalAlpha *= opacity;
+    ctx.translate(b.x, b.y);
+    ctx.rotate(b.rotation);
+    ctx.scale(b.scale, b.scale);
+    ctx.globalAlpha *= b.opacity;
     ctx.beginPath();
-    const count = reveal >= 1 ? Infinity : Math.round(reveal * characterCount(content));
-    traceText(ctx, layout, 0, 0, blockTop(layout, p.string('valign') as TextVAlign), count);
-    const visible = opacity > 0 && count > 0;
-    const fill = p.string('fill');
-    if (visible && isPainted(fill)) {
-      ctx.fillStyle = fill;
+    traceText(ctx, b.layout, 0, 0, b.top, b.count);
+    const visible = b.opacity > 0 && b.count > 0;
+    if (visible && b.fill !== null) {
+      ctx.fillStyle = b.fill;
       ctx.fill();
     }
-    const stroke = p.string('stroke');
-    const strokeWidth = p.number('strokeWidth');
-    if (visible && strokeWidth > 0 && isPainted(stroke)) {
-      ctx.strokeStyle = stroke;
-      ctx.lineWidth = strokeWidth;
+    if (visible && b.stroke !== null) {
+      ctx.strokeStyle = b.stroke;
+      ctx.lineWidth = b.strokeWidth;
       ctx.lineJoin = 'round';
       ctx.stroke();
     }

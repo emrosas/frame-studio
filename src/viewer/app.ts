@@ -36,6 +36,7 @@ import type { VoiceLine } from './voice';
 import { cueTarget, isLayerTarget, MARKERS_TARGET, STRUCTURE_TARGET, type LayerChange } from '../studio/protocol';
 import { wordRef, wordTime } from '../engine';
 import { formatClock, visibleSpans, type ClipPlace } from './timeline';
+import { dropKind, type DropTrack, type LibraryItem } from './drop';
 import { ErrorLog, errorText } from './errors';
 import { focusKeepsKey, keyAction } from './keys';
 import { findEntry, openingEntry, type SceneEntry, type SceneLibrary } from './library';
@@ -382,21 +383,7 @@ export class App {
         attempt(async () => {
           const scene = this.validScene();
           if (!scene || !this.entry) throw new Error('No valid scene is showing.');
-          const voice = this.generated.get(file);
-          const key = this.entry.key;
-          const cue = await this.inLine(async () => {
-            this.history.begin();
-            try {
-              const placed = await this.studio.placeSound(key, file, this.clock.frame / scene.fps, voice);
-              this.history.record(key, { layerId: STRUCTURE_TARGET, ...placed.change });
-              return placed.cue;
-            } finally {
-              this.history.end();
-            }
-          });
-          this.setHome(false);
-          // The cue holds the script and language by now, so the job reads them from there.
-          if (voice && cue && !cue.words) void this.timeVoice(cue.id);
+          await this.placeSoundAt(file, this.clock.frame / scene.fps, () => this.setHome(false));
         }),
       speechStatus: () => this.studio.speechStatus(),
       installSpeech: () => this.studio.installSpeech(),
@@ -431,6 +418,8 @@ export class App {
         const scene = this.validScene();
         if (scene) void this.timelineEdit({ op: 'add-clip', source, at: this.clock.frame / scene.fps, length: 0, track: this.selectedTrack() });
       },
+      dropOnTimeline: (item, frame, track) => void this.dropItem(item, frame, track),
+      dropFiles: (files, frame, track) => void this.dropFiles(files, frame, track),
       splitAtPlayhead: (target) => this.splitAtPlayhead(target),
       duplicateSelected: (target) => this.duplicateSelected(target),
       deleteSelected: (target) => this.deleteSelected(target),
@@ -767,6 +756,86 @@ export class App {
     });
   }
 
+  /**
+   * Adds a cue playing `file` at `at` seconds of the scene on screen, as one undo step. `placed` runs once it's
+   * saved. A generated voice gets its words timed. Throws, in words for the person, when it can't be done.
+   */
+  private async placeSoundAt(file: string, at: number, placed: () => void = () => {}): Promise<{ id: string }> {
+    const key = this.entry?.key;
+    if (!key) throw new Error('No valid scene is showing.');
+    const voice = this.generated.get(file);
+    const cue = await this.inLine(async () => {
+      this.history.begin();
+      try {
+        const made = await this.studio.placeSound(key, file, at, voice);
+        this.history.record(key, { layerId: STRUCTURE_TARGET, ...made.change });
+        return made.cue;
+      } finally {
+        this.history.end();
+      }
+    });
+    placed();
+    // The cue holds the script and language by now, so the job reads them from there.
+    if (voice && !cue.words) void this.timeVoice(cue.id);
+    return cue;
+  }
+
+  /**
+   * A Library item dropped on the timeline at `frame`. In a composition a scene, composition or picture becomes a
+   * clip on the track it landed on; a sound file becomes a cue in either. Refusals say why in the selection bar.
+   */
+  private async dropItem(item: LibraryItem, frame: number, track: DropTrack | null): Promise<boolean> {
+    const scene = this.validScene();
+    const entry = this.entry;
+    if (!scene || !entry) {
+      this.say('No valid scene is showing.');
+      return false;
+    }
+    const kind = dropKind(item, entry.kind === 'composition' ? 'composition' : 'scene', entry.key);
+    if (kind.as === 'refused') {
+      this.say(kind.reason);
+      return false;
+    }
+    if (!this.ui.soundEdit) {
+      this.say('An agent is working on this scene, so it stays put until the agent finishes.');
+      return false;
+    }
+    const at = frame / scene.fps;
+    if (kind.as === 'clip') {
+      const source = item.kind === 'scene' ? { scene: item.key } : { file: item.file };
+      const into = track ?? { into: 'top' as const };
+      return this.timelineEdit({ op: 'add-clip', source, at, length: 0, track: into.into === 'track' ? into.track : null, into: into.into });
+    }
+    if (item.kind !== 'media') return false;
+    try {
+      const cue = await this.placeSoundAt(item.file, at);
+      this.pickMade = { kind: 'cue', id: cue.id };
+      this.selectMade();
+      return true;
+    } catch (err) {
+      this.say(errorText(err).message);
+      return false;
+    }
+  }
+
+  /** Files from the computer dropped on the timeline: into media/ first, then placed where they landed, one after another. */
+  private async dropFiles(files: File[], frame: number, track: DropTrack | null): Promise<void> {
+    const named = files.length === 1 ? files[0].name : `${files.length} files`;
+    this.ui.mediaNote = { text: `Importing ${named}…`, error: false };
+    const stored: { file: string; label: string }[] = [];
+    try {
+      for (const file of files) stored.push({ file: await this.studio.uploadMedia(file), label: file.name });
+    } catch (err) {
+      const problem = errorText(err).message;
+      this.ui.mediaNote = { text: problem, error: true };
+      this.say(problem);
+      return;
+    }
+    this.ui.mediaNote = { text: `Imported ${named}.`, error: false };
+    this.refreshMedia();
+    for (const { file, label } of stored) await this.dropItem({ kind: 'media', file, label, seconds: null }, frame, track);
+  }
+
   /** The selected clip's track, where a new clip goes first. */
   private selectedTrack(): string | null {
     return this.entry?.composition?.tracks.find((t) => t.clips.some((c) => c.id === this.layerId))?.id ?? null;
@@ -808,7 +877,7 @@ export class App {
   /** The app's Edit menu, clicked or by its key: a text field's own undo, else the hand edits'. */
   private menuHistory(step: 'undo' | 'redo'): void {
     // As for the key: the library and a dialog keep the timeline out of reach.
-    if (focusKeepsKey(document.activeElement, 'z') || this.ui.home || document.querySelector('dialog:modal')) document.execCommand(step);
+    if (focusKeepsKey(document.activeElement, 'z') || (this.ui.home && !this.ui.libraryOverScene) || document.querySelector('dialog:modal')) document.execCommand(step);
     else if (this.clock.timeline) this.stepHistory(step);
   }
 
@@ -1671,9 +1740,15 @@ export class App {
       this.endKeyDrag(false);
       return;
     }
-    // The timeline isn't showing under the library. Escape goes back to it.
+    // The timeline isn't showing under the library. Escape goes back to it. Over the scene you came from the
+    // dock shows, and Library items dropped there are hand edits, so Command-Z reaches them.
     if (this.ui.home) {
       if (e.key === 'Escape' && this.ui.homeReturn) this.setHome(false);
+      const step = this.ui.libraryOverScene ? keyAction(e, this.entry?.scene?.fps ?? 1) : null;
+      if ((step?.type === 'undo' || step?.type === 'redo') && !focusKeepsKey(e.target, e.key) && this.clock.timeline) {
+        e.preventDefault();
+        this.stepHistory(step.type);
+      }
       return;
     }
     const action = keyAction(e, this.entry?.scene?.fps ?? 1);

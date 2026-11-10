@@ -74,6 +74,24 @@ const calm = {
   layers: [{ id: 'bar', rig: 'rect', params: { y: 180, width: 300, height: 200, fill: '#2060a0' }, tracks: [{ param: 'x', keys: [{ t: 0, v: 160 }, { t: 2, v: 480 }] }] }],
 };
 
+/** Three lines on paper: one clear, one pale, one resting across the right edge. */
+const words = {
+  id: 'words',
+  fps: FPS,
+  duration: 3,
+  size: SIZE,
+  seed: 3,
+  background: { rig: 'paper', params: { tone: '#f4efe6' } },
+  layers: [
+    { id: 'clear', rig: 'text', params: { text: 'Clear title', size: 40, x: 320, y: 80, fill: '#1c1b19' } },
+    { id: 'pale', rig: 'text', params: { text: 'Pale note', size: 40, x: 320, y: 180, fill: '#e6dfd2' } },
+    { id: 'cut', rig: 'text', params: { text: 'Cut off', size: 40, x: 600, y: 290, align: 'left', fill: '#1c1b19' } },
+  ],
+};
+
+/** The words at half size on black: the cut line is still cut, by the clip's own edge, and the pale one stays pale. */
+const framed = { id: 'framed', fps: FPS, duration: 3, size: SIZE, background: '#000000', tracks: [{ id: 'V1', clips: [{ id: 'w', scene: 'words', params: { scale: 0.5 } }] }] };
+
 /** Two seconds of calm, then a second with nothing on the track. */
 const gap = { id: 'gap', fps: FPS, duration: 3, size: SIZE, background: '#000000', tracks: [{ id: 'V1', clips: [{ id: 'one', scene: 'calm' }] }] };
 
@@ -88,6 +106,8 @@ beforeAll(async () => {
   writeFileSync(join(folder, 'scenes/broken.json'), JSON.stringify(broken));
   writeFileSync(join(folder, 'scenes/calm.json'), JSON.stringify(calm));
   writeFileSync(join(folder, 'compositions/gap.json'), JSON.stringify(gap));
+  writeFileSync(join(folder, 'scenes/words.json'), JSON.stringify(words));
+  writeFileSync(join(folder, 'compositions/framed.json'), JSON.stringify(framed));
   studio = await startStudio({ folder, hmr: true });
   browser = await launchBrowser();
 });
@@ -169,6 +189,30 @@ describe('check', () => {
     expect(existsSync(join(folder, '.frame-studio/checks/gap.json'))).toBe(true);
   });
 
+  it('ranks every result and lists findings first, by rank', () => {
+    expect(report.checks.every((c) => /^P[0-3]$/.test(c.rank))).toBe(true);
+    expect(report.checks[0]).toMatchObject({ id: 'flashing', status: 'fail', rank: 'P0' });
+    const firstPass = report.checks.findIndex((c) => c.status === 'pass');
+    expect(report.checks.slice(firstPass).every((c) => c.status === 'pass')).toBe(true);
+  });
+
+  it('measures text: pale on paper, and resting across the edge', async () => {
+    const text = await check('words');
+    expect(text.ok).toBe(true);
+    const contrast = result(text, 'text-contrast')!;
+    expect(contrast).toMatchObject({ status: 'warn', rank: 'P1' });
+    expect(contrast.message).toMatch(/^"Pale note" \(pale\) is 1\.\d:1 against what's behind it at frame \d+, under 3:1\.$/);
+    expect(result(text, 'text-frame')).toMatchObject({ status: 'warn', rank: 'P1', frames: [[0, 72]], message: '"Cut off" (cut) runs past the right edge.' });
+    expect(result(text, 'text-safe')?.status).toBe('pass');
+    expect(result(text, 'reading-time')?.status).toBe('pass');
+  });
+
+  it('measures text inside a clip, at its placement and within its edges', async () => {
+    const edit = await check('framed');
+    expect(result(edit, 'text-frame')).toMatchObject({ status: 'warn', message: '"Cut off" (w/cut) runs past the right edge.' });
+    expect(result(edit, 'text-contrast')?.message).toMatch(/^"Pale note" \(w\/pale\) is 1\.\d:1 against what's behind it at frame \d+, under 3:1\.$/);
+  });
+
   it('reports progress and can be cancelled', async () => {
     const seen: { stage: string; done: number; total: number }[] = [];
     await studio.server.pool.call('calm', 'check', [{}], { onProgress: (p) => seen.push(p) });
@@ -186,7 +230,7 @@ describe('check', () => {
 });
 
 describe('Check video in the Export panel', () => {
-  it('runs a check, lists the results worst first, and seeks to one', async () => {
+  it('runs a check, lists the results by rank, and seeks to one', async () => {
     const page = await browser.newPage({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1 });
     await page.goto(studio.paired('?scene=broken&frame=0'));
     await page.waitForFunction(() => (window as unknown as { studio?: { frameCount: number } }).studio?.frameCount === 144);
@@ -195,7 +239,7 @@ describe('Check video in the Export panel', () => {
     await panel.getByRole('button', { name: 'Check video' }).click();
     await expect.poll(() => panel.getByRole('status').textContent(), { timeout: 60_000 }).toMatch(/^2 failures, \d warnings?\.$/);
     const items = panel.getByRole('list', { name: 'Check results' }).getByRole('listitem');
-    expect(await items.first().textContent()).toMatch(/^Fail/);
+    expect(await items.first().textContent()).toMatch(/^Fail\s*Flashing\s*P0/);
     expect(await items.last().textContent()).toMatch(/^Pass/);
     await panel.getByRole('button', { name: /^Fail\s*Sync markers/ }).click();
     await expect.poll(() => page.getByRole('status', { name: 'Frame number' }).textContent()).toBe('frame 72 of 144');

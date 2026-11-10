@@ -49,9 +49,17 @@ const MARKER_FRAMES = 2;
 
 export type CheckStatus = 'pass' | 'warn' | 'fail';
 
+/**
+ * How much a result matters when it doesn't pass. P0 breaks the piece, P1 makes an audience stop watching or
+ * miss something, P2 costs attention, P3 is polish. A pass keeps its rule's rank, so the list always sorts alike.
+ */
+export type CheckRank = 'P0' | 'P1' | 'P2' | 'P3';
+
 export interface CheckResult {
   id: string;
   status: CheckStatus;
+  /** Set by a rule whose rank depends on more than its status; otherwise the report fills it in from RANKS. */
+  rank?: CheckRank;
   message: string;
   /** Where it happens, as [from, to) frame ranges of the scene. */
   frames?: [number, number][];
@@ -59,13 +67,16 @@ export interface CheckResult {
   value?: number;
 }
 
+export type RankedResult = CheckResult & { rank: CheckRank };
+
 export interface CheckReport {
   /** False when any check failed. Warnings leave it true. */
   ok: boolean;
   scene: string;
   from: number;
   to: number;
-  checks: CheckResult[];
+  /** Findings by rank, failures before warnings at one rank, then passes. */
+  checks: RankedResult[];
 }
 
 const round = (value: number, digits = 2): number => Number(value.toFixed(digits));
@@ -548,7 +559,58 @@ function checkSound(input: CheckInput): CheckResult[] {
   ];
 }
 
-/** Every check, in the order a person reads them. `ok` is false when any failed. */
+// ---- ranks ----
+
+type RankRule = CheckRank | ((result: CheckResult) => CheckRank);
+
+/** Each rule's rank, and why. A function ranks by outcome. Rules not listed get DEFAULT_RANK. */
+export const RANKS: Readonly<Record<string, { rank: RankRule; why: string }>> = {
+  format: { rank: 'P0', why: 'The export fails, or its sound drifts off the frames.' },
+  duration: { rank: 'P3', why: 'A partial last frame plays whole; few would notice.' },
+  black: { rank: (r) => (r.status === 'fail' ? 'P0' : 'P2'), why: 'Every frame black shows nothing; a few black frames read as a glitch.' },
+  freeze: { rank: 'P2', why: 'A held picture looks stalled, and attention drifts.' },
+  opening: { rank: 'P1', why: 'A first second with nothing happening is when viewers swipe away.' },
+  'loop-seam': { rank: 'P2', why: 'The jump shows on every loop.' },
+  flashing: { rank: 'P0', why: 'Past WCAG 2.3.1, it can trigger seizures.' },
+  sparse: { rank: 'P2', why: 'A long near-empty stretch gives the eye nothing.' },
+  loudness: { rank: (r) => (r.status === 'fail' ? 'P0' : 'P2'), why: "Sound that won't render is missing; off-target loudness gets turned up or down." },
+  'true-peak': { rank: 'P3', why: 'An encoder may clip the loudest peaks a little.' },
+  dropouts: { rank: 'P2', why: 'A silence mid-film sounds like a fault.' },
+  markers: { rank: 'P1', why: 'A hit that lands off its sound is seen and heard.' },
+  'word-sync': { rank: (r) => (r.status === 'fail' ? 'P1' : 'P2'), why: 'A key off its word shows; a guessed word only might be off.' },
+  'word-orphans': { rank: 'P2', why: 'The anchor stays where the old take had its word.' },
+  'caption-cues': { rank: 'P1', why: 'Captions with no cue show nothing.' },
+  'caption-speed': { rank: 'P1', why: "Viewers can't finish reading the page." },
+  'caption-safe': { rank: 'P1', why: 'Captions with no words show nothing, and on a vertical stage the interface covers them.' },
+  'text-frame': { rank: 'P1', why: 'Letters past the frame edge are missing.' },
+  'text-safe': { rank: 'P1', why: 'On a vertical stage the platform interface covers it; elsewhere it only crowds the edge.' },
+  'reading-time': { rank: 'P1', why: 'The text is gone before it can be read.' },
+  'text-contrast': { rank: 'P1', why: 'Under 3:1 the words are hard to make out at all; under 4.5:1 small text tires the eye.' },
+};
+export const DEFAULT_RANK: CheckRank = 'P2';
+
+/** The rank a result gets: its own, else its rule's. */
+export function rankOf(result: CheckResult): CheckRank {
+  if (result.rank) return result.rank;
+  const rule = RANKS[result.id]?.rank ?? DEFAULT_RANK;
+  return typeof rule === 'function' ? rule(result) : rule;
+}
+
+const STATUS_ORDER: Record<CheckStatus, number> = { fail: 0, warn: 1, pass: 2 };
+
+/** Findings first, by rank, failures before warnings at one rank; then passes, by rank. Stable, so ties keep reading order. */
+export function compareChecks(a: RankedResult, b: RankedResult): number {
+  const passA = a.status === 'pass' ? 1 : 0;
+  const passB = b.status === 'pass' ? 1 : 0;
+  return passA - passB || a.rank.localeCompare(b.rank) || STATUS_ORDER[a.status] - STATUS_ORDER[b.status];
+}
+
+/** Results with their ranks, in report order. */
+export function rankChecks(results: readonly CheckResult[]): RankedResult[] {
+  return results.map((r) => ({ ...r, rank: rankOf(r) })).sort(compareChecks);
+}
+
+/** Every check, ranked and sorted by rank. `ok` is false when any failed. */
 export function buildReport(input: CheckInput): CheckReport {
   const { fps, from, to, frames } = input;
   const { stats, seam } = frames;
@@ -564,5 +626,5 @@ export function buildReport(input: CheckInput): CheckReport {
     ...checkSound(input),
     ...(input.extra ?? []),
   ];
-  return { ok: checks.every((c) => c.status !== 'fail'), scene: input.scene, from, to, checks };
+  return { ok: checks.every((c) => c.status !== 'fail'), scene: input.scene, from, to, checks: rankChecks(checks) };
 }

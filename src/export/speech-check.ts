@@ -232,6 +232,8 @@ export function checkCaptionSafe(scene: Scene, layers: readonly CaptionLayer[], 
   return {
     id: 'caption-safe',
     status: 'warn',
+    // A vertical stage's safe area is what the platform's interface leaves clear; any other's is a title-safe margin.
+    rank: height > width ? 'P1' : 'P3',
     message: `${out.map((o) => `"${o.text}" leaves the safe area`).join('. ')}.`,
     frames: out.map((o) => o.frames),
     value: out.length,

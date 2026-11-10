@@ -13,6 +13,8 @@ import { MediaStore } from './media';
 import { formatTimecode, frameCount, hitTest, picturesAt, render, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
 import { createSurfaces } from '../embed/surfaces';
 import { speechChecks } from '../export/speech-check';
+import { checkTextContrast, contrastFrames, isLarge, measureContrast, textLayoutChecks, type ContrastSample, type Rgba } from '../export/text-check';
+import { invert, markContains, textAppearances, withoutLayer } from '../export/text-marks';
 import { mediaUrl } from './media';
 import { SPEECH_RATE, speechWav } from './speech-wav';
 import { PictureStore } from '../export/pictures';
@@ -126,6 +128,23 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
   const ctx = context2d(canvas);
 
   let probe: OffscreenCanvasRenderingContext2D | null = null;
+  // A CSS colour as the canvas reads it, for the contrast check: drawn on one pixel and read back.
+  const colours = new Map<string, Rgba>();
+  let swatch: OffscreenCanvasRenderingContext2D | null = null;
+  const colourOf = (css: string): Rgba => {
+    const known = colours.get(css);
+    if (known) return known;
+    swatch ??= new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true, colorSpace: 'srgb' });
+    if (!swatch) throw new Error('This browser did not provide a 2D canvas context.');
+    swatch.clearRect(0, 0, 1, 1);
+    swatch.fillStyle = '#000000';
+    swatch.fillStyle = css;
+    swatch.fillRect(0, 0, 1, 1);
+    const [r, g, b, a] = swatch.getImageData(0, 0, 1, 1).data;
+    const out: Rgba = [r, g, b, a / 255];
+    colours.set(css, out);
+    return out;
+  };
   const need = (): { scene: Scene; registry: RigRegistry } => {
     if (!scene || !registry || errors.length > 0) throw new Error(`Cannot render.\n${errors.join('\n')}`);
     return { scene, registry };
@@ -406,6 +425,41 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
           rested = performance.now();
         }
       }
+      // Text: where it is comes from the scene; contrast draws each sampled frame again without the text.
+      const appearances = textAppearances(s, need().registry, world);
+      const samples: ContrastSample[] = [];
+      const planned = appearances.map((a) => ({ a, frames: contrastFrames(a, s.fps, r.from, r.to) }));
+      const sampleTotal = planned.reduce((n, p) => n + p.frames.length, 0);
+      let sampled = 0;
+      for (const { a, frames: picked } of planned) {
+        for (const frame of picked) {
+          progress({ stage: 'checking text', done: sampled++, total: sampleTotal });
+          const mark = a.frames.find((f) => f.frame === frame)!.mark;
+          const inverse = invert(mark.transform);
+          if (!inverse) continue;
+          const behind = withoutLayer(s, world, mark);
+          await prepare(frame);
+          render(target as unknown as Ctx2D, behind.scene, frame, need().registry, behind.world);
+          const ratio = measureContrast({
+            pixels: readPixels(small),
+            width,
+            height,
+            scale: [s.size[0] / width, s.size[1] / height],
+            inside: (x, y) => markContains(mark, inverse, x, y),
+            fills: mark.fills.map(colourOf),
+            stroke: mark.stroke === null ? null : colourOf(mark.stroke),
+            strokeWidth: mark.strokeWidth,
+            size: mark.size,
+            opacity: mark.opacity,
+          });
+          if (ratio !== null) samples.push({ path: a.path, text: a.text, frame, ratio, large: isLarge(mark.size, s.size) });
+          if (performance.now() - rested > 100) {
+            await new Promise((resolve) => setTimeout(resolve));
+            rested = performance.now();
+          }
+        }
+      }
+      const text = [...textLayoutChecks(appearances, s.size, s.fps, r.from, r.to), checkTextContrast(samples)];
       let audio: Float32Array[] | string | null = null;
       if (sound) {
         progress({ stage: 'measuring sound', done: 0, total: 1 });
@@ -416,7 +470,7 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
           audio = err instanceof Error ? err.message : String(err);
         }
       }
-      const extra = speechChecks(s, need().registry, world, r.from, r.to, entry?.kind === 'composition');
+      const extra = [...speechChecks(s, need().registry, world, r.from, r.to, entry?.kind === 'composition'), ...text];
       return buildReport({ scene: entry?.key ?? s.id, fps: s.fps, duration: s.duration, width: s.size[0], height: s.size[1], ...r, frames, loop: options.loop, markers: s.markers, audio, extra });
     },
     async contactSheet(sinkId, options = {}): Promise<ContactSheetResult> {

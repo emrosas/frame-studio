@@ -413,7 +413,7 @@ The `chip` generator plays a written line of notes (`C4 . - E4`), one voice per 
 
 ### A short
 
-The method that works for agents, as the research found it. Keep a `brief.md` next to `project.json` per film: one sentence on what the viewer learns; each fact, marked solid or hedged, with sources; the hook; beats with times; sync points. Forty seconds is about hook 0 to 2, setup 2 to 10, turn 10 to 25, payoff 25 to 35, close 35 to 40. Frame 0 is already moving, with no fade in. One idea a beat. Put the sync points in `markers`, run `check`, and fix what fails.
+The method that works for agents, as the research found it. Keep a `brief.md` next to `project.json` per film: one sentence on what the viewer learns; each fact, marked solid or hedged, with sources; the hook; beats with times; sync points. Forty seconds is about hook 0 to 2, setup 2 to 10, turn 10 to 25, payoff 25 to 35, close 35 to 40. Frame 0 is already moving, with no fade in. One idea a beat. Put the sync points in `markers`, run `check`, and fix what fails and every P0 or P1 warning, such as text cut by the frame or gone before it can be read.
 
 ## Sound
 
@@ -462,7 +462,7 @@ A cue can play a recorded sound file instead, such as a voiceover or music (ADR 
 
 A file cue takes no `params`. The studio decodes the file at 48 kHz and copies its samples into the scene's sound, so it plays the same in the viewer, the MP4 and every render. A placed shot brings its file cues with it, shifted and trimmed with the shot.
 
-In the viewer, the Media list in the sidebar shows the folder's sound files with their lengths. Import by its **+** or by dropping files anywhere in the window, and **+** on a file places it at the playhead, to the end of the file or the scene. Cues show under the timeline, files with their waveform. A missing file is an error in the viewer, and its cue plays silence; an MP4 export with a missing file fails rather than drop it. Agents use `list_media` and `import_media`, and place cues with `update_scene`.
+In the viewer, the Media list in the sidebar shows the folder's sound files with their lengths. Import by its **+** or by dropping files anywhere in the window, and Add at playhead on a file places it at the playhead, to the end of the file or the scene. A file dragged from the Media list onto the timeline lands where it's dropped instead, and so does a file dragged in from the computer. Cues show under the timeline, files with their waveform. A missing file is an error in the viewer, and its cue plays silence; an MP4 export with a missing file fails rather than drop it. Agents use `list_media` and `import_media`, and place cues with `update_scene`.
 
 The HTML export leaves sound files out, since they'd make it as big as its sound, and says which it left out. Tick **Include sound files** in the Export panel, or pass `--media` to `npm run export` or `media` to the MCP `export` tool, to inline them.
 
