@@ -413,7 +413,7 @@ The `chip` generator plays a written line of notes (`C4 . - E4`), one voice per 
 
 ### A short
 
-The method that works for agents, as the research found it. Keep a `brief.md` next to `project.json` per film: one sentence on what the viewer learns; each fact, marked solid or hedged, with sources; the hook; beats with times; sync points. Forty seconds is about hook 0 to 2, setup 2 to 10, turn 10 to 25, payoff 25 to 35, close 35 to 40. Frame 0 is already moving, with no fade in. One idea a beat. Put the sync points in `markers`, run `check`, and fix what fails.
+The method that works for agents, as the research found it. Keep a `brief.md` next to `project.json` per film: one sentence on what the viewer learns; each fact, marked solid or hedged, with sources; the hook; beats with times; sync points. Forty seconds is about hook 0 to 2, setup 2 to 10, turn 10 to 25, payoff 25 to 35, close 35 to 40. Frame 0 is already moving, with no fade in. One idea a beat. Put the sync points in `markers`, run `check`, and fix what fails and every P0 or P1 warning, such as text cut by the frame or gone before it can be read.
 
 ## Sound
 

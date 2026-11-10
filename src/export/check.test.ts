@@ -17,6 +17,10 @@ import {
   FrameMeter,
   findDropouts,
   integratedLoudness,
+  compareChecks,
+  rankChecks,
+  rankOf,
+  RANKS,
   truePeak,
   type CheckResult,
 } from './check';
@@ -355,10 +359,11 @@ describe('onsets and markers', () => {
 describe('buildReport', () => {
   const base = { scene: 's', fps: 24, duration: 1, width: 1920, height: 1080, from: 0, to: 24 };
 
-  it('is plain JSON, with every check in order', () => {
+  it('is plain JSON, with every check ranked, passes sorted by rank in reading order', () => {
     const report = buildReport({ ...base, frames: meter(moving(24)), audio: null });
     expect(report.ok).toBe(true);
-    expect(report.checks.map((c) => c.id)).toEqual(['format', 'duration', 'black', 'freeze', 'opening', 'loop-seam', 'flashing', 'sparse', 'loudness', 'true-peak', 'dropouts', 'markers']);
+    expect(report.checks.map((c) => c.id)).toEqual(['format', 'flashing', 'opening', 'markers', 'black', 'freeze', 'loop-seam', 'sparse', 'loudness', 'dropouts', 'duration', 'true-peak']);
+    expect(report.checks.map((c) => c.rank)).toEqual(['P0', 'P0', 'P1', 'P1', 'P2', 'P2', 'P2', 'P2', 'P2', 'P2', 'P3', 'P3']);
     expect(JSON.parse(JSON.stringify(report))).toEqual(report);
   });
 
@@ -388,5 +393,35 @@ describe('buildReport', () => {
     const report = buildReport({ ...base, frames: meter(moving(24)), audio: "media/a.wav isn't in media/." });
     expect(report.checks.find((c) => c.id === 'loudness')).toMatchObject({ status: 'fail', message: "media/a.wav isn't in media/." });
     expect(report.checks.some((c) => c.id === 'black')).toBe(true);
+  });
+});
+
+describe('ranks', () => {
+  const result = (id: string, status: CheckResult['status'], rank?: CheckResult['rank']): CheckResult => ({ id, status, message: '', ...(rank ? { rank } : {}) });
+
+  it('gives every rule a rank and a reason', () => {
+    for (const [id, { why }] of Object.entries(RANKS)) {
+      expect(why.length, id).toBeGreaterThan(10);
+      expect(['P0', 'P1', 'P2', 'P3'], id).toContain(rankOf(result(id, 'warn')));
+    }
+  });
+
+  it('ranks by outcome where the rule says so, and P2 for a rule it does not know', () => {
+    expect(rankOf(result('black', 'fail'))).toBe('P0');
+    expect(rankOf(result('black', 'warn'))).toBe('P2');
+    expect(rankOf(result('loudness', 'fail'))).toBe('P0');
+    expect(rankOf(result('loudness', 'warn'))).toBe('P2');
+    expect(rankOf(result('word-sync', 'fail'))).toBe('P1');
+    expect(rankOf(result('something-new', 'warn'))).toBe('P2');
+  });
+
+  it("keeps a rule's own rank", () => {
+    expect(rankOf(result('text-safe', 'warn', 'P3'))).toBe('P3');
+  });
+
+  it('puts findings first by rank, failures before warnings at one rank, then passes', () => {
+    const sorted = rankChecks([result('duration', 'warn'), result('freeze', 'pass'), result('text-contrast', 'warn', 'P2'), result('word-sync', 'warn'), result('markers', 'fail'), result('opening', 'warn'), result('format', 'pass')]);
+    expect(sorted.map((r) => r.id)).toEqual(['markers', 'opening', 'text-contrast', 'word-sync', 'duration', 'format', 'freeze']);
+    expect([...sorted].sort(compareChecks)).toEqual(sorted);
   });
 });

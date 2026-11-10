@@ -225,7 +225,7 @@ Before a folder's `rigs/` or `audio/` load the first time, main asks. Trust is s
 - `render_contact_sheet(sceneId, from, to, every)`: a grid of frames for reviewing motion
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
 - `apply_to_selection(selection, patch)`: writes a scoped override for the selection, or with `{ remove: true }` clears the overrides in it
-- `check(sceneId, from?, to?)`: measures a scene or composition before anyone watches it (format, black, freeze, flashing, loudness, sync; ADR 0014)
+- `check(sceneId, from?, to?)`: measures a scene or composition before anyone watches it (format, black, freeze, flashing, loudness, sync, and where text sits, how long it stays and its contrast; ADR 0014), each result ranked P0 to P3
 - `export(sceneId, target, from?, to?, silent?, media?)`: `mp4` | `gif` | `html`, returns an output path; `media` inlines sound files in HTML
 - `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request threads and current selection (ADR 0003, ADR 0006). `complete_request` ends a turn; the user replies or settles. Plus the `/frame-studio:next` prompt and the `selection://current` resource
 

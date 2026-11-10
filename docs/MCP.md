@@ -52,7 +52,7 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `align_voice(sceneId, cueId, script?)` | Times the words of a sound file cue and writes them into the cue as `words: [{ id, text, start, end, p? }]`, seconds into the file (ADR 0016). Give `script` when you know what's said: words and punctuation then come from it, timing from the sound, and the cue keeps it for next time. The language is the cue's `lang`, else `project.json`'s, else detected. Timing again after a re-record keeps the ids of the words the takes share. Returns `{ file, cue, words, language, script, orphans }`, where `orphans` lists anchors left without a word. The first run downloads a 190 MB model and needs `whisper-cli` (`npm run voice:setup`; the app ships it). |
 | `render_frame(sceneId, frame, maxWidth?)` | Writes the full-size PNG to `out/<scene>/` (`out/<project>/<scene>/` in an old film) and returns a preview up to `maxWidth` wide (1280 by default). |
 | `render_contact_sheet(sceneId, from?, to?, every?, columns?)` | A labelled grid of every Nth frame, returned as an image and written to `out/<scene>/`. |
-| `check(sceneId, from?, to?, loop?)` | Measures a scene or composition, for what an agent can't watch or hear. Renders every frame of `[from, to)` at reduced size in the render worker, reads the rendered audio, and returns `{ ok, scene, from, to, checks: [{ id, status, message, frames?, value? }], file }`. `status` is `pass`, `warn` or `fail`, `ok` is false when any check failed, and `frames` are `[from, to)` ranges. The report is saved to `.frame-studio/checks/<id>.json`, and the viewer's Check video button runs the same job. The checks are listed below. |
+| `check(sceneId, from?, to?, loop?)` | Measures a scene or composition, for what an agent can't watch or hear. Renders every frame of `[from, to)` at reduced size in the render worker, reads the rendered audio, and returns `{ ok, scene, from, to, checks: [{ id, status, rank, message, frames?, value? }], file }`. `status` is `pass`, `warn` or `fail`, `ok` is false when any check failed, `rank` is `P0` to `P3` (below), and `frames` are `[from, to)` ranges. Findings come first, by rank, then passes. The report is saved to `.frame-studio/checks/<id>.json`, and the viewer's Check video button runs the same job. The checks are listed below. |
 | `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. On a composition, it names the clip; hit-test the clip's scene to find what's inside. |
 | `apply_to_selection(selection, patch)` | A scoped edit. Over `[from, to)` of one layer, it swaps to a rig variant and/or holds params, written as overrides, or clears the overrides there. |
 | `export(sceneId, target, from?, to?, silent?, media?)` | `mp4`, `gif` or `html`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. HTML leaves sound files out, and lists them in `mediaLeftOut`, unless `media` is true. Returns the file path under `out/`. |
@@ -67,27 +67,40 @@ A selection is `{ sceneId, layerId?, partId?, from, to }`. `layerId` comes from 
 
 ## What check measures
 
-Frames are measured at 320 pixels on the long side. Sound checks read the same rendered buffer the exports encode.
+Frames are measured at 320 pixels on the long side. Sound checks read the same rendered buffer the exports encode. Text checks read where text is from the layout of `text` and `captions` layers, so they need no pixels, except contrast, which draws sampled frames again without the text. A studio rig that draws text with `drawText` itself isn't measured.
 
-| Check | Measures | Warns or fails |
-| --- | --- | --- |
-| `format` | Size and fps. Notes 1080×1920 as a vertical short. | Fails on odd dimensions, and on an fps that doesn't divide 48000 with audio. |
-| `duration` | Length in seconds. | Warns when it doesn't land on a whole frame. |
-| `black` | Frames at least 98% black. | Warns on any; fails when every frame is. |
-| `freeze` | Byte-identical frames. Held frames from `stepFps` only count in a run over 1.5 s. | Warns on a run over 1.5 s. |
-| `opening` | The first second. Skipped on a range that starts later. | Warns when nothing moves, or frame 0 shows nothing, as in a fade from blank. |
-| `loop-seam` | The distance from the last frame to the first, as `value` from 0 to 1. | Warns only with `loop: true`, when it is over 1% and over three ordinary frame steps. |
-| `flashing` | Full-screen flashes a second, as in WCAG 2.3.1: a flash is a swing of at least 10% in mean relative luminance and back, with the darker side under 80%. | Fails on more than 3 in any second, with the frames. |
-| `sparse` | Frames at least 97% one colour. | Warns on a run over 3 s. |
-| `loudness` | Integrated LUFS by BS.1770-4: K-weighting, with the absolute and relative gates. | Warns outside -18 to -12 LUFS. |
-| `true-peak` | dBTP, approximated by 4x oversampling. | Warns above -1 dBTP. |
-| `dropouts` | Silence under -60 dBFS between two sounds. | Warns on over 1 s. |
-| `markers` | Markers whose label ends in `!`, like `hit!`, against sounds that start in the audio buffer. Markers on a word go to `word-sync` instead. | Fails when no sound starts within 2 frames, and names the nearest. |
+Every result has a rank, which says how much it matters when it doesn't pass. A pass keeps its rule's rank, so the list sorts the same way every time.
 
-| `word-sync` | Keys and markers anchored to a word (ADR 0016), by the frame each shows on. | Fails when one lands over 2 frames from its word, as a `stepFps` layer can hold it. Warns when the word's timing was a guess (`p` under 0.5). |
-| `word-orphans` | Anchors whose word is gone, re-recorded away or trimmed off. | Warns on any, with the time each keeps. |
-| `caption-speed` | Characters a second for each page of `captions`, spaces included. | Warns over 20 in English and other languages, over 17 in Spanish. |
-| `caption-safe` | Each page's box against the safe area. | Warns when a page leaves it. Fails when captions read a cue with no words. |
+| Rank | Means |
+| --- | --- |
+| `P0` | The video is broken: the export fails or drifts, it can trigger seizures, or it shows nothing. |
+| `P1` | Viewers would stop watching or miss something. |
+| `P2` | It costs attention. |
+| `P3` | Polish. |
+
+| Check | Rank | Measures | Warns or fails |
+| --- | --- | --- | --- |
+| `format` | P0 | Size and fps. Notes 1080×1920 as a vertical short. | Fails on odd dimensions, and on an fps that doesn't divide 48000 with audio. |
+| `duration` | P3 | Length in seconds. | Warns when it doesn't land on a whole frame. |
+| `black` | P0 when every frame is, else P2 | Frames at least 98% black. | Warns on any; fails when every frame is. |
+| `freeze` | P2 | Byte-identical frames. Held frames from `stepFps` only count in a run over 1.5 s. | Warns on a run over 1.5 s. |
+| `opening` | P1 | The first second. Skipped on a range that starts later. | Warns when nothing moves, or frame 0 shows nothing, as in a fade from blank. |
+| `loop-seam` | P2 | The distance from the last frame to the first, as `value` from 0 to 1. | Warns only with `loop: true`, when it is over 1% and over three ordinary frame steps. |
+| `flashing` | P0 | Full-screen flashes a second, as in WCAG 2.3.1: a flash is a swing of at least 10% in mean relative luminance and back, with the darker side under 80%. | Fails on more than 3 in any second, with the frames. |
+| `sparse` | P2 | Frames at least 97% one colour. | Warns on a run over 3 s. |
+| `loudness` | P0 when the sound won't render, else P2 | Integrated LUFS by BS.1770-4: K-weighting, with the absolute and relative gates. | Warns outside -18 to -12 LUFS. |
+| `true-peak` | P3 | dBTP, approximated by 4x oversampling. | Warns above -1 dBTP. |
+| `dropouts` | P2 | Silence under -60 dBFS between two sounds. | Warns on over 1 s. |
+| `markers` | P1 | Markers whose label ends in `!`, like `hit!`, against sounds that start in the audio buffer. Markers on a word go to `word-sync` instead. | Fails when no sound starts within 2 frames, and names the nearest. |
+| `word-sync` | P1 on a fail, P2 on a guess | Keys and markers anchored to a word (ADR 0016), by the frame each shows on. | Fails when one lands over 2 frames from its word, as a `stepFps` layer can hold it. Warns when the word's timing was a guess (`p` under 0.5). |
+| `word-orphans` | P2 | Anchors whose word is gone, re-recorded away or trimmed off. | Warns on any, with the time each keeps. |
+| `caption-cues` | P1 | Captions naming a cue their scene lacks, and a composition cue with words no captions can reach. | Warns on either. |
+| `caption-speed` | P1 | Characters a second for each page of `captions`, spaces included. | Warns over 20 in English and other languages, over 17 in Spanish. |
+| `caption-safe` | P1, or P3 off a vertical stage | Each page's box against the safe area. | Warns when a page leaves it. Fails when captions read a cue with no words. |
+| `text-frame` | P1 | Glyph boxes of each text and captions layer, in output pixels, through clips, the camera and the pixel stage. Only frames where the text holds still for a quarter second either side count, so an entrance or exit through the edge passes. | Warns when text runs over 2 px past the frame edge, or past the edge of a moved clip it sits in. |
+| `text-safe` | P1 on a vertical stage, else P3 | The same boxes against the safe area in `src/engine/safe-area.ts`: on a vertical stage, what TikTok, Reels and Shorts cover; on any other, a 5% title-safe margin. Captions in the scene itself are `caption-safe`'s. | Warns when resting text crosses it, and names the zone. |
+| `reading-time` | P1 | How long each appearance of text is readable: all of it drawn (a reveal has finished) at opacity 0.5 or more. It needs 0.3 s a word, 200 words a minute, and at least 1 s. Captions are `caption-speed`'s. | Warns when it's readable for less. |
+| `text-contrast` | P1 under 3:1, else P2 | WCAG contrast of the fill, mixed at the layer's opacity, against the frame drawn without the text, inside its glyph boxes, at the 10th-percentile pixel. An outline at least 2 px and 1/20 of the em wide counts as what's behind the fill. Captions are measured in their colour and their highlight. Sampled every half second of readable text. | Warns under 4.5:1, or under 3:1 for large text: an em of at least 1/30 of the frame's short side, which is WCAG's 24 px on a 720 px tall player. |
 
 A composition is checked as it plays, against its own `markers`. Markers inside the scenes it places aren't read.
 

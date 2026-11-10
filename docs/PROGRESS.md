@@ -4,6 +4,12 @@ Last updated 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the sh
 
 ## Done
 
+### Check reads text, and ranks what it finds (`.scratch/check-text/`)
+
+- Every result has `rank`, P0 to P3, from one table in `src/export/check.ts` with a reason per rule. Reports and the Check panel list findings by rank, then passes. `status` and `ok` are unchanged.
+- Four text checks, from the layout of `text` and `captions` layers, inside clips too (`src/export/text-marks.ts`, `text-check.ts`): `text-frame` (resting past the frame or a moved clip's edge), `text-safe` (under the platform zones in `safe-area.ts`, or outside title-safe), `reading-time` (0.3 s a word, at least 1 s) and `text-contrast` (WCAG ratio against the frame drawn without the text; 4.5:1, or 3:1 for an em of 1/30 of the short side). The text rig and the check share `textBlock()`.
+- Over the repo, only `type-test` gets findings, and they're real: the paragraph and the typing line are up too briefly, and two small lines in the paper's darker corners are under 4.5:1. Studio rigs that call `drawText` themselves aren't measured.
+
 ### Threads read like T3 Code's chat
 
 - An agent's words are Markdown now: headings, lists (nested and task), quotes, tables, inline code, and code blocks with their language and Copy that scroll sideways instead of widening the panel. `marked` (dev dependency, viewer only) reads it; `src/viewer/markdown.ts` turns the tokens into a small tree that `Markdown.svelte` draws as Svelte text, so an agent's HTML shows as text, links go only to http, https and mailto, and images show as links.
