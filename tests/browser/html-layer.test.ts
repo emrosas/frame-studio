@@ -14,7 +14,7 @@ import type { Browser, Page } from 'playwright';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { launchBrowser } from './browser';
 import { electronPage } from './electron-page';
-import { startStudio, type TestStudio } from './studio-server';
+import { renderClient, startStudio, type TestStudio } from './studio-server';
 
 let folder: string;
 let source: string;
@@ -181,6 +181,22 @@ describe('an html layer in the tools', () => {
     // The one-file embed has no browser to lay a page out with.
     await expect(w.export('card', 'html')).rejects.toThrow(/can't carry html layers \(ADR 0021\): html\/deck\/posts\/1\.html/);
     expect(read('scenes/card.json').layers).toEqual([page1]);
+  });
+
+  it('rides along when its still is held in a video, and the video still refuses the one-file embed', async () => {
+    const w = await studio.server.workspace();
+    await w.createComposition({ id: 'reel', fps: 30, size: [640, 800], duration: 4 });
+    await w.updateScene('reel', { tracks: [{ id: 'V1', clips: [{ id: 'card', scene: 'card', start: 1, out: 2 }] }] });
+    const alone = await (await renderClient(studio, 'card')).call('pixelHash', 0);
+    const reel = await renderClient(studio, 'reel');
+    expect(await reel.call('pixelHash', 45)).toBe(alone);
+    expect(await reel.call('pixelHash', 89)).toBe(alone);
+    expect(await reel.call('pixelHash', 10)).not.toBe(alone);
+    const mp4 = await w.export('reel', 'mp4');
+    expect(mp4).toMatchObject({ file: 'out/reel/reel.mp4', frames: 120 });
+    await expect(w.export('reel', 'html')).rejects.toThrow(/can't carry html layers/);
+    rmSync(path('compositions/reel.json'));
+    studio.server.touch();
   });
 
   it('serves pages under a policy with no scripts and no other origin, and nothing outside html/', async () => {

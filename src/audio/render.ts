@@ -94,7 +94,8 @@ function fileOut(ctx: BaseAudioContext, scene: Pick<Scene, 'fps'>, cue: AudioCue
  */
 function shotOut(ctx: BaseAudioContext, scene: Scene, layer: Layer, shot: Scene, buffer: AudioBuffer): AudioNode | null {
   const span = sceneLayerSpan(layer, scene, shot);
-  if (span.to <= span.from) return null;
+  // A held still (ADR 0020) shows one frame for as long as its clip says, and that frame has no sound to stretch.
+  if (span.to <= span.from || span.hold) return null;
   const volume = (f: number) => {
     const p = scenePlacement(layer, scene, f);
     return p.mute ? 0 : p.volume;

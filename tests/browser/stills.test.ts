@@ -233,7 +233,9 @@ describe('the viewer on a still', () => {
     expect(await page.locator('.dock .token-when').count()).toBe(0);
     expect(await page.locator('.dock .still-badge').textContent()).toBe('Still');
     expect((await page.locator('.scene-meta').textContent())?.replace(/\s+/g, ' ').trim()).toBe('1080×1350 still');
-    expect((await page.locator('.dock').boundingBox())!.height).toBeLessThan(60);
+    // Under the selection bar the dock holds the still's carousel, or the offer to start one (ADR 0022).
+    expect(await page.locator('.dock .still-strip').getByText('This still is on its own.').count()).toBe(1);
+    expect((await page.locator('.dock').boundingBox())!.height).toBeLessThan(100);
     // The keys that move through time do nothing.
     for (const key of ['Space', 'ArrowRight', 'End', 'i', 'o', 'x']) await page.keyboard.press(key);
     expect(await page.evaluate(() => (window as unknown as StudioPage).studio.frame)).toBe(0);

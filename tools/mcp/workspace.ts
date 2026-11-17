@@ -26,6 +26,7 @@ import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, STILL_TIMING, toId,
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
 import { htmlSources, importHtml } from '../studio/html.ts';
+import { applyCarouselEdit, checkCarouselEdit, freshSlideId, slideFileName, type Carousel, type CarouselEdit } from '../../src/studio/carousels.ts';
 import { applyTimelineEdit, freshId, freshTrack, type RawClip, type RawCue as TimelineCue, type TimelineEdit, type TimelineFile, type TimelineResult } from '../../src/studio/timeline-edit.ts';
 import { kokoro } from '../voice/kokoro.ts';
 import { saveVoiceFile } from '../voice/save.ts';
@@ -278,8 +279,10 @@ export class Workspace {
    * one html layer that shows it. Pages from outside the folder are copied into html/<name>/ with what they
    * use, and what they load from the network is fetched into the folder once. Returns the scenes in order.
    */
-  async createHtmlStills(input: { files: string[]; name?: string; size?: [number, number]; ids?: string[] }): Promise<{
+  async createHtmlStills(input: { files: string[]; name?: string; size?: [number, number]; ids?: string[]; carousel?: boolean }): Promise<{
     scenes: { id: string; file: string; html: string }[];
+    /** The carousel the stills were grouped as, when there was more than one (ADR 0022). */
+    carousel?: string;
     html: string;
     copied: number;
     localized: { url: string; file: string }[];
@@ -314,11 +317,19 @@ export class Workspace {
       scenes.push({ id, file: this.show(path), html: page });
     }
     this.ctx.touch();
+    // Several pages made together are a post that is swiped through, unless told otherwise.
+    let carousel: string | undefined;
+    if (scenes.length > 1 && input.carousel !== false) {
+      const taken = new Set([...(await this.carousels()).map((c) => c.id), ...lib.entries.map((e) => e.key), ...ids]);
+      carousel = base;
+      for (let n = 2; taken.has(carousel); n++) carousel = `${base}-set${n === 2 ? '' : `-${n}`}`;
+      await this.editCarousels({ op: 'create', id: carousel, slides: scenes.map((s) => s.id) });
+    }
     const note =
       imported.failed.length > 0
         ? `${imported.failed.length} remote ${imported.failed.length === 1 ? 'file' : 'files'} couldn't be fetched, and a page loads nothing from the network, so ${imported.failed.length === 1 ? 'it' : 'they'} won't show. Put a copy under html/${imported.name}/ and point the page at it.`
         : undefined;
-    return { scenes, html: `html/${imported.name}`, copied: imported.copied, localized: imported.localized, failed: imported.failed, ...(note ? { note } : {}) };
+    return { scenes, ...(carousel ? { carousel } : {}), html: `html/${imported.name}`, copied: imported.copied, localized: imported.localized, failed: imported.failed, ...(note ? { note } : {}) };
   }
 
   /**
@@ -592,7 +603,8 @@ export class Workspace {
     return (clip) => {
       const start = clip.start ?? 0;
       const placed = typeof clip.scene === 'string' ? modules.library.findEntry(lib, clip.scene)?.scene : undefined;
-      const out = placed ? Math.min(clip.out ?? placed.duration, placed.duration) : clip.out;
+      // A still is held for as long as its clip says (ADR 0020).
+      const out = placed && !modules.engine.isStill(placed) ? Math.min(clip.out ?? placed.duration, placed.duration) : clip.out;
       return out === undefined ? null : start + out - (clip.in ?? 0);
     };
   }
@@ -609,19 +621,25 @@ export class Workspace {
     if (entry.scene) keepAnchorTimes(raw, entry.scene, modules.engine.wordTime);
     const before = this.structure(raw);
     const clipEnd = this.clipEnds(modules, lib);
-    const add = edit.op === 'add-clip' ? { ...edit, length: await this.sourceLength(modules, lib, edit.source) } : edit;
+    const add = edit.op === 'add-clip' ? { ...edit, length: await this.sourceLength(modules, lib, edit.source), hold: this.holds(modules, lib, edit.source) } : edit;
     const result = applyTimelineEdit(raw as unknown as TimelineFile, add, clipEnd);
     await this.checkEdit(modules, entry, raw, 'That edit');
     await this.writeScene(path, raw, modules);
     return { before, after: this.structure(raw), ...result };
   }
 
-  /** How long a new clip of `source` runs, in seconds. An image shows for 3 s. */
+  /** Whether a clip of `source` is a still, which is held and so needs its `out` written (ADR 0020). */
+  private holds(modules: LoadedModules, lib: SceneLibrary, source: { scene: string } | { file: string }): boolean {
+    const scene = 'scene' in source ? modules.library.findEntry(lib, source.scene)?.scene : undefined;
+    return scene !== undefined && scene !== null && modules.engine.isStill(scene);
+  }
+
+  /** How long a new clip of `source` runs, in seconds. An image or a still shows for 3 s. */
   private async sourceLength(modules: LoadedModules, lib: SceneLibrary, source: { scene: string } | { file: string }): Promise<number> {
     if ('scene' in source) {
       const scene = modules.library.findEntry(lib, source.scene)?.scene;
       if (!scene) throw new Error(`There's no valid scene "${source.scene}" to place.`);
-      return scene.duration;
+      return modules.engine.isStill(scene) ? 3 : scene.duration;
     }
     const info = (await mediaInfo(this.folder)).find((m) => m.file === source.file);
     if (!info) throw new Error(`No file "${source.file}" in media/.`);
@@ -821,6 +839,51 @@ export class Workspace {
     return { file: 'project.json', project: next };
   }
 
+  // ---- carousels (ADR 0022) ----
+
+  /** The folder's carousels, as project.json has them. */
+  async carousels(): Promise<Carousel[]> {
+    const { project } = await this.getFolderProject();
+    const list = (project as { carousels?: unknown }).carousels;
+    return Array.isArray(list) ? (list as Carousel[]) : [];
+  }
+
+  /**
+   * An edit to the carousels, from the viewer or a tool. A slide must be a still in the folder. Returns the
+   * list after it.
+   */
+  async editCarousels(edit: CarouselEdit): Promise<{ carousels: Carousel[] }> {
+    const problem = checkCarouselEdit(edit);
+    if (problem) throw new Error(problem);
+    const { modules, lib } = await this.library();
+    const adding = edit.op === 'create' ? edit.slides : edit.op === 'add' ? [edit.scene] : [];
+    for (const id of adding) {
+      const entry = lib.entries.find((e) => e.key === id && e.project === null && e.kind === 'scene');
+      if (!entry?.scene) throw new Error(`There's no scene "${id}" to put in a carousel.`);
+      if (!modules.engine.isStill(entry.scene)) throw new Error(`"${id}" isn't a still: it has ${modules.engine.frameCount(entry.scene)} frames. A carousel holds stills.`);
+    }
+    if (edit.op === 'create' && lib.entries.some((e) => e.key === edit.id) && !edit.slides.includes(edit.id)) {
+      // Its export folder is out/<id>/, which a scene of that name already uses.
+      throw new Error(`"${edit.id}" is a scene's name. Pick another for the carousel.`);
+    }
+    const carousels = applyCarouselEdit(await this.carousels(), edit);
+    await this.updateFolderProject({ carousels: carousels.length > 0 ? carousels : null });
+    this.ctx.touch();
+    return { carousels };
+  }
+
+  /** A new, empty still at the end of a carousel, the size of its last slide, named "<carousel>-<n>". Returns its id. */
+  async addCarouselSlide(carouselId: string): Promise<{ id: string; carousels: Carousel[] }> {
+    const carousel = (await this.carousels()).find((c) => c.id === carouselId);
+    if (!carousel) throw new Error(`There's no carousel "${carouselId}".`);
+    const { lib } = await this.library();
+    const last = lib.entries.find((e) => e.key === carousel.slides[carousel.slides.length - 1])?.scene;
+    const id = freshSlideId(carouselId, new Set(lib.entries.map((e) => e.key)));
+    await this.createScene({ id, still: true, ...(last ? { size: [last.size[0], last.size[1]] as [number, number] } : {}) });
+    this.ctx.touch();
+    return { id, ...(await this.editCarousels({ op: 'add', carousel: carouselId, scene: id })) };
+  }
+
   /** Every rig: the global library, then each project's own, marked with its project (ADR 0007). */
   async listRigs(): Promise<RigInfo[]> {
     const modules = await this.modules();
@@ -978,12 +1041,12 @@ export class Workspace {
    * One frame as an image at the scene's size (ADR 0020). A still's file is named after the scene; a frame
    * of a longer scene carries its number.
    */
-  async exportImage(key: string, format: ImageFormat, options: { frame?: FrameInput; quality?: number } = {}): Promise<{ file: string } & ImageResult> {
+  async exportImage(key: string, format: ImageFormat, options: { frame?: FrameInput; quality?: number; to?: string } = {}): Promise<{ file: string } & ImageResult> {
     if (format !== 'jpg' && options.quality !== undefined) throw new Error('quality applies to jpg; a png is lossless');
     const { scene, files } = await this.validScene(key);
     const studio = await this.page(key, files);
     const n = options.frame === undefined ? 0 : await this.resolveFrame(studio, options.frame);
-    const path = join(this.folder.out, studio.scene.out, imageName(scene.id, format, n, studio.scene.frameCount));
+    const path = options.to ?? join(this.folder.out, studio.scene.out, imageName(scene.id, format, n, studio.scene.frameCount));
     const result = await writeViaSink(studio, path, (sink) => studio.call('writeImage', n, sink, { format, ...(options.quality !== undefined ? { quality: options.quality } : {}) }));
     return { file: this.show(path), ...result };
   }
@@ -992,10 +1055,21 @@ export class Workspace {
    * Several stills in one call: the scenes named, or every still in the folder. One that fails says why
    * and the rest still export.
    */
-  async exportStills(options: { sceneIds?: string[]; format?: ImageFormat; quality?: number } = {}): Promise<{ format: ImageFormat; exported: ({ scene: string; file: string } & ImageResult)[]; failed: { scene: string; error: string }[] }> {
+  async exportStills(
+    options: { sceneIds?: string[]; carousel?: string; format?: ImageFormat; quality?: number; onProgress?: (done: number, total: number) => void; signal?: AbortSignal } = {},
+  ): Promise<{ format: ImageFormat; folder?: string; exported: ({ scene: string; file: string } & ImageResult)[]; failed: { scene: string; error: string }[] }> {
     const format = options.format ?? 'png';
     if (format !== 'jpg' && options.quality !== undefined) throw new Error('quality applies to jpg; a png is lossless');
     let keys = options.sceneIds;
+    // A carousel's slides go to one folder, numbered as they are swiped (ADR 0022).
+    let folder: string | undefined;
+    if (options.carousel !== undefined) {
+      if (keys) throw new Error('give sceneIds or carousel, not both');
+      const carousel = (await this.carousels()).find((c) => c.id === options.carousel);
+      if (!carousel) throw new Error(`There's no carousel "${options.carousel}". Carousels: ${(await this.carousels()).map((c) => c.id).join(', ') || 'none yet'}`);
+      keys = carousel.slides;
+      folder = join(this.folder.out, carousel.id);
+    }
     if (!keys) {
       const { modules, lib } = await this.library();
       keys = lib.entries.filter((e) => e.scene && e.errors.length === 0 && modules.engine.isStill(e.scene)).map((e) => e.key);
@@ -1004,14 +1078,17 @@ export class Workspace {
     if (keys.length === 0) throw new Error('sceneIds is empty; leave it out to export every still');
     const exported: ({ scene: string; file: string } & ImageResult)[] = [];
     const failed: { scene: string; error: string }[] = [];
-    for (const key of keys) {
+    for (const [i, key] of keys.entries()) {
+      if (options.signal?.aborted) throw new Error('Cancelled.');
       try {
-        exported.push({ scene: key, ...(await this.exportImage(key, format, { quality: options.quality })) });
+        const to = folder ? join(folder, slideFileName(i, key, format)) : undefined;
+        exported.push({ scene: key, ...(await this.exportImage(key, format, { quality: options.quality, ...(to ? { to } : {}) })) });
       } catch (err) {
         failed.push({ scene: key, error: err instanceof Error ? err.message : String(err) });
       }
+      options.onProgress?.(i + 1, keys.length);
     }
-    return { format, exported, failed };
+    return { format, ...(folder ? { folder: this.show(folder) } : {}), exported, failed };
   }
 
   async export(

@@ -35,7 +35,7 @@ export type TimelineEdit =
    * `into`, from a drop: 'track' keeps to `track`, or a new track straight above it when it has no room; 'top'
    * and 'bottom' make a new track at either end of the stack. Without it, a full `track` falls back to the lowest with room.
    */
-  | { op: 'add-clip'; source: { scene: string } | { file: string }; at: number; length: number; track: string | null; into?: 'track' | 'top' | 'bottom' }
+  | { op: 'add-clip'; source: { scene: string } | { file: string }; at: number; length: number; track: string | null; into?: 'track' | 'top' | 'bottom'; hold?: boolean }
   | { op: 'split-clip'; clip: string; at: number }
   | { op: 'duplicate-clip'; clip: string }
   | { op: 'delete-clip'; clip: string }
@@ -256,7 +256,7 @@ function addClip(file: TimelineFile, edit: Extract<TimelineEdit, { op: 'add-clip
     : (roomy ?? tracks.find((t) => hasRoom(file, t, edit.at, end, clipEnd)) ?? fresh(tracks.length));
   const stem = 'scene' in edit.source ? edit.source.scene : edit.source.file.slice(edit.source.file.lastIndexOf('/') + 1).replace(/\.[^.]+$/, '');
   const id = freshId(stem.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '').toLowerCase() || 'clip', clipIds(file));
-  const clip: RawClip = { id, ...edit.source, ...(edit.at > 0 ? { start: edit.at } : {}), ...('file' in edit.source ? { out: edit.length } : {}) };
+  const clip: RawClip = { id, ...edit.source, ...(edit.at > 0 ? { start: edit.at } : {}), ...('file' in edit.source || edit.hold ? { out: edit.length } : {}) };
   track.clips.push(clip);
   // A video grows to hold what's put on it.
   if (end > file.duration) file.duration = end;

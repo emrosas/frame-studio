@@ -18,7 +18,17 @@
   const desktopApp = desktop() !== null;
 
   const videos = $derived(ui.scenes.filter((s) => s.film === null && s.kind === 'composition'));
-  const scenes = $derived(ui.scenes.filter((s) => s.film === null && s.kind === 'scene'));
+  // Stills have their own sections (ADR 0022): carousels as rows of slides, then the ones on their own.
+  const grouped = $derived(new Set(ui.carousels.flatMap((c) => c.slides)));
+  const scenes = $derived(ui.scenes.filter((s) => s.film === null && s.kind === 'scene' && !s.still));
+  const stills = $derived(ui.scenes.filter((s) => s.film === null && s.still && !grouped.has(s.key)));
+  const sizeOf = (key: string) => ui.scenes.find((s) => s.key === key)?.format?.size ?? [4, 5];
+  let stillNote = $state<{ text: string; error: boolean } | null>(null);
+  async function exportStills(carousel: string | null): Promise<void> {
+    stillNote = { text: carousel ? `Exporting ${carousel}…` : 'Exporting every still…', error: false };
+    const problem = await actions.exportStills(carousel);
+    stillNote = problem ? { text: problem, error: true } : { text: carousel ? `Exporting ${carousel} to out/${carousel}/. The Export panel shows when it's done.` : "Exporting every still to out/. The Export panel shows when it's done.", error: false };
+  }
   const films = $derived.by(() => {
     const groups: { id: string; name: string; first: string; count: number }[] = [];
     for (const option of ui.scenes) {
@@ -50,6 +60,7 @@
   function details(option: SceneOption): string {
     const f = option.format;
     if (!f) return 'Has errors';
+    if (option.still) return `${shape(f.size)} still`;
     return [shape(f.size), length(f.seconds), ...(f.pixel ? ['Pixel'] : [])].join(' · ');
   }
 
@@ -131,7 +142,7 @@
   <header class="lib-head">
     <div>
       <h1>{projectName}</h1>
-      <p>{counted(videos.length, 'video')}, {counted(scenes.length, 'scene')}</p>
+      <p>{counted(videos.length, 'video')}, {counted(scenes.length, 'scene')}{ui.scenes.some((s) => s.still) ? `, ${counted(ui.scenes.filter((s) => s.film === null && s.still).length, 'still')}` : ''}</p>
     </div>
     {#if ui.header && ui.homeReturn}
       <button type="button" class="btn is-ghost" aria-label="Back to {ui.header.name}" title="Back to {ui.header.key} (Esc)" onclick={() => actions.showHome(false)}>
@@ -168,6 +179,41 @@
         </ul>
       {/if}
     </section>
+
+    {#if ui.carousels.length > 0 || stills.length > 0}
+      <section class="lib-section" aria-label="Stills">
+        <h2>
+          Stills
+          <button type="button" class="btn is-small" title="Export every still as PNG, each to its own folder under out/. A carousel's Export numbers its slides in one folder." onclick={() => exportStills(null)}>Export all</button>
+        </h2>
+        {#if stillNote}<p class="lib-hint panel-note" class:is-error={stillNote.error} role="status">{stillNote.text}</p>{/if}
+        {#each ui.carousels as carousel (carousel.id)}
+          <div class="lib-carousel" data-carousel={carousel.id}>
+            <div class="lib-carousel-head">
+              <strong>{carousel.id}</strong>
+              <span>{counted(carousel.slides.length, 'slide')}</span>
+              <button type="button" class="btn is-small" title="Export these slides as PNG to out/{carousel.id}/, numbered in order" onclick={() => exportStills(carousel.id)}>Export</button>
+            </div>
+            <ol class="lib-slides">
+              {#each carousel.slides as key, i (key)}
+                {@const size = sizeOf(key)}
+                <li>
+                  <button type="button" class="lib-slide" data-key={key} aria-label="Slide {i + 1}, {key}" title="{i + 1}. {key}" style="aspect-ratio: {size[0]} / {size[1]}" onclick={() => actions.selectScene(key)}>
+                    <Thumb file={ui.thumbs[key]} />
+                    <span class="strip-number">{i + 1}</span>
+                  </button>
+                </li>
+              {/each}
+            </ol>
+          </div>
+        {/each}
+        {#if stills.length > 0}
+          <ul class="lib-grid">
+            {#each stills as option (option.key)}{@render card(option)}{/each}
+          </ul>
+        {/if}
+      </section>
+    {/if}
 
     <section class="lib-section" aria-label="Scenes">
       <h2>Scenes</h2>

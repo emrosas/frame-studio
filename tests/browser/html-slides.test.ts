@@ -8,7 +8,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createCanvas, loadImage } from '@napi-rs/canvas';
 import type { Browser, Page } from 'playwright';
@@ -16,7 +16,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { launchBrowser } from './browser';
 import { startStudio, type TestStudio } from './studio-server';
 
-const POST = process.env.FRAME_STUDIO_SLIDES ?? '/Users/emireles/git/r_admin-dashboard/tools/social/posts/business-owner-loading';
+const POST = process.env.FRAME_STUDIO_SLIDES ?? join(homedir(), 'git/r_admin-dashboard/tools/social/posts/business-owner-loading');
 const there = existsSync(join(POST, '6.html')) && existsSync(join(POST, 'out/6.png'));
 const SLIDES = [1, 2, 3, 4, 5, 6];
 const ID = (n: number) => `business-owner-loading-${n}`;
@@ -79,6 +79,9 @@ describe.skipIf(!there)('the carousel as html stills', () => {
     const made = await w.createHtmlStills({ files: [POST] });
     expect(made.failed).toEqual([]);
     expect(made.scenes.map((s) => s.id)).toEqual(SLIDES.map(ID));
+    // Six pages made together are one post, in order.
+    expect(made.carousel).toBe('business-owner-loading');
+    expect(await w.carousels()).toEqual([{ id: 'business-owner-loading', slides: SLIDES.map(ID) }]);
     expect(made.scenes.map((s) => s.html)).toEqual(SLIDES.map((n) => `html/business-owner-loading/posts/business-owner-loading/${n}.html`));
     // The kit keeps its place two folders up, so the pages' own paths still work.
     for (const file of ['kit/base.css', 'kit/carousel.css', 'kit/fraunces-soft.woff2', 'kit/logo-light.svg', 'posts/business-owner-loading/cover.jpg']) {
@@ -87,7 +90,7 @@ describe.skipIf(!there)('the carousel as html stills', () => {
     // Google Fonts' stylesheets and files, and the photographs, are files now.
     expect(made.localized.some((l) => l.url.includes('fonts.googleapis.com') && l.file.endsWith('.css'))).toBe(true);
     expect(made.localized.some((l) => l.file.endsWith('.woff2'))).toBe(true);
-    expect(made.localized.some((l) => l.url.includes('envatousercontent.com'))).toBe(true);
+    expect(made.localized.some((l) => !l.url.includes('fonts.g') && /\.(jpg|png|webp)$/.test(l.file))).toBe(true);
     for (const n of SLIDES) {
       const page = readFileSync(join(folder, made.scenes[n - 1].html), 'utf8');
       expect(page, `slide ${n}`).not.toMatch(/https?:\/\//);

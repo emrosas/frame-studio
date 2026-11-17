@@ -308,6 +308,24 @@ Built (ADR 0021), on the `html-layer` branch. The owner reversed ADR 0014's refu
 6. An HTML export of a still with an html layer is refused with the reason, and a browser without the API says why the page can't be drawn.
 7. Every earlier test passes.
 
+## M18: Carousels, and stills in videos
+
+Built (ADR 0022), on the owner's request after trying stills.
+
+- Carousels: stills grouped in order in `project.json`, edited from a strip of slides in the still's dock, laid out as rows in the Library, and exported in order to one folder.
+- Export stills from the viewer: this still, its carousel, or every still.
+- A still held as a clip in a video, for as long as the clip says, at the video's fps.
+
+**Acceptance criteria**
+
+1. `edit_carousel` and the strip create a carousel, add a slide, reorder by drag, take a slide out, and ungroup, and each lands in `project.json`. A scene that moves is refused as a slide.
+2. Under a still the dock shows its carousel's slides in order with the one on screen marked. A click opens a slide, and Left and Right step through them.
+3. Exporting a carousel, from the Export panel, the Library or `export_stills`, writes `out/<carousel>/01-<scene>.png` onward in swipe order. Export all writes every still.
+4. The Library shows each carousel as a row of slides, stills on their own beside them, and scenes that move apart.
+5. A still placed in a 30 fps composition with `out: 4` renders its own pixels on every frame of those 4 seconds, and nothing outside them. Without `out` it is refused with the reason. A still with an html layer does the same and exports to MP4.
+6. `create_html_stills` on a folder of pages makes one carousel of them.
+7. Every earlier test passes.
+
 ## Later
 
 - Retiming shots (speed, freeze, reverse), selecting inside a shot from its parent, and a library of transitions (ADR 0007, out of scope for M9).

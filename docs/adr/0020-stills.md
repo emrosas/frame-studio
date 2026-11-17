@@ -1,6 +1,6 @@
 # 0020: A still is a scene with one frame
 
-Status: accepted, 2026-11-17. Fills in M16. Adds one case to ADR 0015's rule for a canvas drag.
+Status: accepted, 2026-11-17. Fills in M16. Adds one case to ADR 0015's rule for a canvas drag. ADR 0022 changes two things here: stills are grouped as carousels in `project.json`, and a still can be held as a clip in a video.
 
 ## Context
 

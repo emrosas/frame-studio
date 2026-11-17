@@ -8,8 +8,9 @@
   a Library item can be dragged onto the timeline.
   The App finds .stage and .stage-frame after this mounts, so they are never
   inside an {#if}. Which side columns show and the dock's height are ui.layout,
-  kept with the viewer's prefs. On a still (ADR 0020) the dock is the selection
-  bar alone: no transport, no timeline and no height to drag.
+  kept with the viewer's prefs. On a still (ADR 0020) the dock has no transport,
+  no timeline and no height to drag: under the selection bar it shows the
+  still's carousel as a strip of slides (ADR 0022).
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -25,6 +26,7 @@
   import VoiceSheet from './VoiceSheet.svelte';
   import SelectionBar from './SelectionBar.svelte';
   import Sidebar from './Sidebar.svelte';
+  import StillStrip from './StillStrip.svelte';
   import StackMenu from './StackMenu.svelte';
   import Timeline from './Timeline.svelte';
   import Toast from './Toast.svelte';
@@ -151,7 +153,7 @@
         {/if}
         <SelectionBar {ui} {actions} />
       </div>
-      {#if !ui.still}<Timeline {ui} {actions} />{/if}
+      {#if ui.still}<StillStrip {ui} {actions} />{:else}<Timeline {ui} {actions} />{/if}
     </footer>
     {#if ui.home && !ui.switching}<Library {ui} {actions} />{/if}
   </section>

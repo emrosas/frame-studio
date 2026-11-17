@@ -164,9 +164,10 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
         name: z.string().optional().describe("The folder under html/ and the scenes' prefix. Taken from the pages' folder when left out"),
         size: size.optional().describe('[width, height] of each still and its page. [1080, 1350] when left out'),
         ids: z.array(newId).optional().describe('A scene id for each page, in order, in place of <name>-<n>'),
+        carousel: z.boolean().optional().describe('Several pages are grouped as a carousel named <name> unless this is false'),
       },
     },
-    tool('create_html_stills', async (w, input: { files: string[]; name?: string; size?: [number, number]; ids?: string[] }) => text(await w.createHtmlStills(input))),
+    tool('create_html_stills', async (w, input: { files: string[]; name?: string; size?: [number, number]; ids?: string[]; carousel?: boolean }) => text(await w.createHtmlStills(input))),
   );
 
   server.registerTool(
@@ -439,11 +440,23 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
         "Exports several stills in one call, each as an image at its scene's exact size in out/<scene>/: the scenes in sceneIds, or every still in the folder when it's left out. A still is a scene with one frame. Returns the file for each, and the reason for any that failed; the rest still export. For a carousel, name its slides in order.",
       inputSchema: {
         sceneIds: z.array(z.string()).min(1).max(100).optional().describe('Scene ids, in the order to export. Every still when left out'),
+        carousel: z.string().optional().describe("A carousel's id: its slides go to out/<carousel>/, numbered 01-, 02- in order. In place of sceneIds"),
         format: z.enum(['png', 'jpg']).optional().describe('png when left out'),
         quality: z.number().int().min(1).max(100).optional().describe('For jpg: 1 to 100, 90 when left out'),
       },
     },
-    tool('export_stills', async (w, input: { sceneIds?: string[]; format?: 'png' | 'jpg'; quality?: number }) => text(await w.exportStills(input))),
+    tool('export_stills', async (w, input: { sceneIds?: string[]; carousel?: string; format?: 'png' | 'jpg'; quality?: number }) => text(await w.exportStills(input))),
+  );
+
+  server.registerTool(
+    'edit_carousel',
+    {
+      title: 'Edit a carousel',
+      description:
+        'Groups stills into a carousel, a post that is swiped through, or changes one (ADR 0022). Carousels live in project.json as carousels: [{ id, slides: [scene ids in order] }]; get_project shows them. edit is one of: { "op": "create", "id", "slides": [...] }, { "op": "add", "carousel", "scene", "at"? }, { "op": "remove", "carousel", "scene" } (the scene stays), { "op": "move", "carousel", "scene", "to": position }, { "op": "delete", "carousel" } (the stills stay). A slide must be a still, and a still is in one carousel at most. Returns the carousels after the edit. export_stills with carousel exports one in order.',
+      inputSchema: { edit: z.record(z.string(), z.unknown()).describe('The edit, as above') },
+    },
+    tool('edit_carousel', async (w, { edit }: { edit: Record<string, unknown> }) => text(await w.editCarousels(edit as never))),
   );
 
   if (!options.requests) return;

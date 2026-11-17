@@ -5,7 +5,7 @@
 // retiming.
 
 import { activeOverride } from './overrides';
-import { frameCount, quantizeTime, timeToFrame } from './time';
+import { frameCount, isStill, quantizeTime, timeToFrame } from './time';
 import { evaluateTracks } from './tracks';
 import type { Layer, ParamSchema, Params, Scene } from './types';
 
@@ -31,16 +31,25 @@ export interface SceneLayerSpan {
   to: number;
   /** The shot's frame at `from`. */
   in: number;
+  /** The shot is a still (ADR 0020): every frame of the span shows its one frame. */
+  hold?: boolean;
 }
 
 /**
  * Where a scene layer's shot shows in its parent. `start` is in the parent's
  * seconds, and the trim [in, out) in the shot's own; all snap to frames. A
  * missing `out` is the shot's end. The span also stops at the parent's end.
+ *
+ * A still has one frame and no length of its own (ADR 0020), so it is held like an image: it shows for
+ * `out - in` seconds, at any fps, and without an `out` to the parent's end.
  */
 export function sceneLayerSpan(layer: Layer, parent: Scene, shot: Scene): SceneLayerSpan {
   const from = timeToFrame(layer.start ?? 0, parent.fps);
   const inFrame = timeToFrame(layer.in ?? 0, parent.fps);
+  if (isStill(shot)) {
+    const held = layer.out === undefined ? frameCount(parent) : Math.max(0, timeToFrame(layer.out, parent.fps) - inFrame);
+    return { from, to: Math.min(frameCount(parent), from + held), in: inFrame, hold: true };
+  }
   // An out at the shot's end keeps a partial last frame, as leaving out does.
   const outFrame = layer.out === undefined || layer.out >= shot.duration ? frameCount(shot) : Math.min(frameCount(shot), timeToFrame(layer.out, parent.fps));
   return { from, to: Math.min(frameCount(parent), from + Math.max(0, outFrame - inFrame)), in: inFrame };
@@ -48,7 +57,8 @@ export function sceneLayerSpan(layer: Layer, parent: Scene, shot: Scene): SceneL
 
 /** The shot's frame on parent frame `frame`, or null when the shot isn't showing. */
 export function shotFrame(span: SceneLayerSpan, frame: number): number | null {
-  return frame >= span.from && frame < span.to ? frame - span.from + span.in : null;
+  if (frame < span.from || frame >= span.to) return null;
+  return span.hold ? 0 : frame - span.from + span.in;
 }
 
 export interface SceneLayerPlacement {

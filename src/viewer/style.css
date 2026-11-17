@@ -1299,6 +1299,164 @@ kbd {
   min-height: 0;
 }
 
+/* The strip under a still: its carousel's slides in order (ADR 0022). */
+.still-strip {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 6px 10px 10px;
+  font-size: 12px;
+  letter-spacing: var(--track-12);
+}
+
+.strip-name {
+  flex: 0 0 auto;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+
+.strip-slides {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 4px 2px;
+  overflow-x: auto;
+  list-style: none;
+}
+
+.strip-slides li {
+  flex: 0 0 auto;
+  border-left: 2px solid transparent;
+  padding-left: 2px;
+}
+
+.strip-slides li.is-over {
+  border-left-color: var(--accent);
+}
+
+.strip-slide {
+  position: relative;
+  display: block;
+  height: 72px;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  border-radius: 6px;
+  background: var(--stage);
+  box-shadow: 0 0 0 0.5px var(--hairline);
+  cursor: pointer;
+}
+
+.strip-slide:hover {
+  box-shadow: 0 0 0 2px var(--fill-strong);
+}
+
+.strip-slide.is-on {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.strip-slide img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.strip-number {
+  position: absolute;
+  left: 4px;
+  bottom: 4px;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+}
+
+.strip-count,
+.strip-hint,
+.strip-join {
+  flex: 0 0 auto;
+  color: var(--text-2);
+}
+
+.strip-note {
+  color: var(--danger, #c0392b);
+}
+
+/* A carousel in the library: its slides side by side, in order. */
+.lib-carousel {
+  margin-bottom: 20px;
+}
+
+.lib-carousel-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.lib-carousel-head strong {
+  font-weight: 600;
+}
+
+.lib-carousel-head span {
+  color: var(--text-2);
+}
+
+.lib-slides {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  padding: 4px 2px 8px;
+  overflow-x: auto;
+  list-style: none;
+}
+
+.lib-slide {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  height: 220px;
+  padding: 0;
+  overflow: hidden;
+  border: none;
+  border-radius: var(--r-m);
+  background: var(--stage);
+  cursor: pointer;
+}
+
+.lib-slide:hover {
+  box-shadow: 0 0 0 2px var(--fill-strong);
+}
+
+.lib-slide:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.lib-slide img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.lib-poster.is-still {
+  aspect-ratio: auto;
+  height: 220px;
+}
+
 .still-badge {
   flex: 0 0 auto;
   padding: 2px 8px;

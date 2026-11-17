@@ -31,6 +31,10 @@
 
   let picked = $state<ExportFormat | null>(null);
   let quality = $state(90);
+  // On a still, what an image export covers (ADR 0022): this still, its carousel in order, or every still.
+  let scope = $state<'still' | 'carousel' | 'all'>('still');
+  const stillCount = $derived(ui.scenes.filter((s) => s.film === null && s.still).length);
+  const scopeNow = $derived(scope === 'carousel' && !ui.carousel ? 'still' : scope);
   let useRange = $state(false);
   let sound = $state(true);
   // HTML leaves sound files out unless asked (ADR 0012): they make the file as big as the sound.
@@ -60,7 +64,13 @@
 
   async function start(): Promise<void> {
     const q = Math.min(100, Math.max(1, Math.round(quality) || 90));
-    error = await actions.startExport(target, { range: useRange && rangeAllowed, sound: sound && soundAllowed, media: media && mediaAllowed, ...(target === 'jpg' ? { quality: q } : {}) });
+    error = await actions.startExport(target, {
+      range: useRange && rangeAllowed,
+      sound: sound && soundAllowed,
+      media: media && mediaAllowed,
+      ...(target === 'jpg' ? { quality: q } : {}),
+      ...(image && ui.still && scopeNow !== 'still' ? { stills: scopeNow } : {}),
+    });
   }
 </script>
 
@@ -81,10 +91,25 @@
         <label><input type="radio" name="export-target" {value} checked={target === value} onchange={() => (picked = value)} disabled={job.running !== null} />{label}</label>
       {/each}
     </div>
-    {#if image}
+    {#if image && ui.still && (ui.carousel || stillCount > 1)}
+      <div class="export-scope" role="radiogroup" aria-label="What to export">
+        <label class="check-row"><input type="radio" name="export-scope" value="still" checked={scopeNow === 'still'} onchange={() => (scope = 'still')} disabled={job.running !== null} />This still</label>
+        {#if ui.carousel}
+          <label class="check-row" title="To out/{ui.carousel.id}/, numbered in order">
+            <input type="radio" name="export-scope" value="carousel" checked={scopeNow === 'carousel'} onchange={() => (scope = 'carousel')} disabled={job.running !== null} />Carousel {ui.carousel.id}, {ui.carousel.slides.length} slides
+          </label>
+        {/if}
+        {#if stillCount > 1}
+          <label class="check-row" title="Each to its own folder under out/"><input type="radio" name="export-scope" value="all" checked={scopeNow === 'all'} onchange={() => (scope = 'all')} disabled={job.running !== null} />All {stillCount} stills</label>
+        {/if}
+      </div>
+    {/if}
+    {#if image && !(ui.still && scopeNow !== 'still')}
       <p class="panel-note export-image-note">
         {ui.still ? 'The still' : `Frame ${ui.timeline?.frame ?? 0}, the one on screen`}, at {ui.header?.size ? `${ui.header.size[0]}×${ui.header.size[1]}` : 'its own size'}.
       </p>
+    {/if}
+    {#if image}
       {#if target === 'jpg'}
         <label class="check-row export-quality">
           Quality

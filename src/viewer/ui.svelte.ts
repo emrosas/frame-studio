@@ -10,6 +10,7 @@ import type { DropTrack, LibraryItem } from './drop';
 import { readPref } from './prefs';
 import type { FrameRange } from './selection';
 import type { Transition } from '../studio/timeline-edit';
+import type { CarouselEdit } from '../studio/carousels';
 import type { ClipPlace, CuePlace, VisibleSpan } from './timeline';
 import type { RequestAction } from './studio-client';
 import type { GeneratedVoice } from './speech';
@@ -33,6 +34,14 @@ export interface SceneOption {
   usedIn: readonly string[];
   /** Its format, for the library's cards; null for an invalid file. */
   format: { size: readonly [number, number]; fps: number; seconds: number; pixel: boolean } | null;
+  /** A scene with one frame (ADR 0020). */
+  still: boolean;
+}
+
+/** A carousel (ADR 0022): stills in the order they are swiped. Slides that are gone from the folder are left out. */
+export interface CarouselView {
+  id: string;
+  slides: readonly string[];
 }
 
 /** A project, for New scene in it: the fps and size its scenes share, or null while its project.json has errors. */
@@ -348,7 +357,15 @@ export interface ViewerActions {
   /** Shows or hides the Export panel. */
   toggleExport(open?: boolean): void;
   /** Exports the scene on screen, or only the selected range. */
-  startExport(target: ExportFormat, options: { range: boolean; sound: boolean; media?: boolean; quality?: number }): Promise<string | null>;
+  startExport(target: ExportFormat, options: { range: boolean; sound: boolean; media?: boolean; quality?: number; stills?: 'carousel' | 'all' }): Promise<string | null>;
+  /** Starts a PNG export of a carousel's slides in order, or of every still with null. Opens the Export panel to show it. */
+  exportStills(carousel: string | null): Promise<string | null>;
+  /** Changes the carousels (ADR 0022). Returns an error message, or null. */
+  editCarousel(edit: CarouselEdit): Promise<string | null>;
+  /** Groups the still on screen as the first slide of a new carousel named after it. */
+  startCarousel(): Promise<string | null>;
+  /** Adds a new, empty still at the end of a carousel and opens it. */
+  addSlide(carousel: string): Promise<string | null>;
   cancelExport(): void;
   /** Shows the last export's file in Finder (the app only). */
   revealExport(): void;
@@ -492,6 +509,10 @@ export class ViewerUi {
   timeline = $state<TimelineReadout | null>(null);
   /** The scene on screen is a still, one frame (ADR 0020): the transport, the timeline and the range step aside. */
   still = $state(false);
+  /** Every carousel in the project (ADR 0022). */
+  carousels = $state.raw<CarouselView[]>([]);
+  /** The carousel the still on screen is a slide of, and which slide. */
+  carousel = $state.raw<{ id: string; slides: readonly string[]; index: number } | null>(null);
   /** The scene's frame rate. */
   fps = $state<number | null>(null);
   sound = $state<SoundState | null>(null);

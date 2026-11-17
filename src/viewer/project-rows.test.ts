@@ -14,6 +14,7 @@ const option = (key: string, kind: SceneOption['kind'], film: string | null = nu
   kind,
   usedIn: [],
   format: null,
+  still: false,
 });
 const item = (key: string, kind: ProjectItem['kind']): ProjectItem => ({ key, label: key, file: `${key}.json`, kind, poster: `${key}-000000000000.png`, invalid: false });
 const entry = (path: string, more: Partial<ProjectEntry> = {}): ProjectEntry => ({

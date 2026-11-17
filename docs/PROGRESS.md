@@ -1,8 +1,30 @@
 # Progress
 
-Last updated 2026-11-17. M16, stills, is on the `m16-stills` branch: 1899 unit tests pass, 276 browser tests pass with 19 skipped for want of a packaged build and the voice samples, and typecheck is clean. M17, HTML layers on stills, is on `html-layer` on top of it: 1917 unit tests pass, 303 browser tests pass with 9 skipped for want of the voice samples, typecheck is clean, and `npm run desktop:build` built and checked the app in `build/desktop/dist/mac-arm64/`, at version 0.5.0 still, with the packaged-app tests run against it. `/Applications` is untouched. Before that, 2026-11-10 (export speed on the `export-speed` branch) and 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
+Last updated 2026-11-17. Three branches, each on the one before: `m16-stills` (M16, stills), `html-layer` (M17, HTML layers on stills) and `stills-in-use` (M18, carousels and stills in videos). On the last, 1928 unit tests pass, 314 browser tests pass with 9 skipped for want of the voice samples, typecheck is clean, and `npm run desktop:build` built and checked the app at version 0.5.0, with the packaged-app tests run against it. Before that, 2026-11-10 (export speed on the `export-speed` branch) and 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
 
 ## Done
+
+### M18: Carousels, and stills in videos (ADR 0022)
+
+Asked for by the owner after trying stills and html layers.
+
+- Carousels are `carousels: [{ id, slides }]` in `project.json`, slides being scene ids in swipe order. `src/studio/carousels.ts` holds the edits (create, add, remove, move, delete); the engine validates the list with the project file.
+- Under a still the dock shows its carousel as a strip of slide posters (`StillStrip.svelte`). A click opens a slide, Left and Right step through them, a drag reorders, the plus adds an empty slide the size of the last, Remove slide takes the one on screen out, and a still on its own can start a carousel or join one.
+- The Library has a Stills section: each carousel as a row of its slides in order with an Export button, then stills on their own, with Export all. Scenes that move keep the Scenes section.
+- The Export panel on a still offers this still, its carousel, or every still. A carousel exports to `out/<carousel>/01-<scene>.png` onward.
+- `edit_carousel` is the tool for the same edits, `export_stills` takes `carousel`, and `create_html_stills` groups several pages as a carousel.
+- A still can be a clip in a composition, held like an image for `out - in` seconds at the composition's fps (`sceneLayerSpan` marks the span `hold`). `out` is required. Dropped on the timeline it starts 3 seconds long. A still with an html layer is held the same way, so its page reaches MP4.
+- A scene's poster is made again when a file under `html/` changes.
+
+### How each M18 acceptance criterion was verified
+
+1. `src/studio/carousels.test.ts` for the edits, and `tests/browser/carousels.test.ts` for the tool and the strip writing `project.json`, with a 24-frame scene refused.
+2. The browser test reads the strip's slides and `aria-current`, clicks slide 3, and presses the arrows.
+3. The same file exports from the workspace, the Export panel and the Library and lists `out/post/`.
+4. It reads the Library's carousel row, the loose still's card and the Scenes section.
+5. `src/engine/held-still.test.ts` for spans and validation; the browser test compares `pixelHash` of the composition's frames 30, 31, 90 and 149 with the still's, and 29 and 150 against it. `html-layer.test.ts` does it with a page and exports the MP4, 120 frames.
+6. `html-slides.test.ts` reads the carousel made from the six slides.
+7. Counts are under "Last updated" above.
 
 ### M17: HTML layers on stills (ADR 0021), on the `html-layer` branch
 
@@ -1036,14 +1058,15 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 - Safe-zone guides are approximations, not measured from each app. A 1080x1350 still counts as vertical, so `text-safe` judges it against the zones TikTok, Reels and Shorts cover, which an Instagram feed post doesn't have.
 - HTML layers depend on a Chromium feature behind a flag, `CanvasDrawElement`, which is being renamed upstream (ADR 0021). Run `tests/browser/html-slides.test.ts` and `html-layer.test.ts` on every Electron upgrade. Electron 45.3.3 was tried by hand and gave the same bytes as 44.4.5.
 - Three things the HTML-in-Canvas API does without an error, which `src/export/html-pages.ts` guards: a draw before the first paint is blank, a draw from an off-screen or transparent canvas is blank, and removing the canvas in the turn it was drawn from crashes the renderer.
-- `html-slides.test.ts` needs the owner's slides at `/Users/emireles/git/r_admin-dashboard/tools/social` (or `FRAME_STUDIO_SLIDES`) and the network for their fonts and photographs. It skips without the folder.
+- `html-slides.test.ts` needs the owner's slides at `~/git/r_admin-dashboard/tools/social` (or `FRAME_STUDIO_SLIDES`) and the network for their fonts and photographs. It skips without the folder.
 - Playwright's emulated device scale isn't a real display's: there, an html layer's text differs between 1x and 2x. Real Electron windows at both scales give the same bytes, which is what the test checks.
 - An html layer's text isn't read by `check`, and its page can't be selected by element in a browser that isn't the app.
 - A slide's `partId` is a selector made when it was clicked. If the page changes so it finds nothing, the selection's outline goes and an offset under that selector does nothing.
 - `create_html_stills` rewrites remote URLs with patterns, not a parser: `srcset` and URLs built by CSS variables are left as written, and then don't load.
 - The viewer has no button for making stills from pages; it is an agent's tool for now.
-- A still at 1 fps can't be a clip in a composition at another fps, and a one-frame clip would show for one frame anyway. Holding a still in a video isn't built.
-- The viewer has no button for exporting every still at once; `export_stills` and `npm run export -- --stills` do it.
+- A carousel edit writes `project.json`, which the undo stack doesn't cover. Drag the slide back.
+- Reordering a carousel doesn't rename its scenes; the exported file names carry the order.
+- A carousel is edited as a strip of slides in order. There's no free-form board.
 - `tests/browser/timeline-editor.test.ts`, "runs the clip before on under a crossfade", raced the file it had just written and failed 3 runs in 5 once Playwright's Chromium ran with the HTML-in-Canvas flag. It now waits for the viewer to hold that file, and passed 6 in 6.
 - `npm ci` in a fresh checkout skipped Electron's install script here, so `node node_modules/electron/install.js` had to run once before the browser tests.
 - A voice row's words are read-only on a composition, as its keys are, though the voice itself moves and trims. Timing is scenes only in the viewer; `align_voice` takes either.

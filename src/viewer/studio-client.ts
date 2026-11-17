@@ -4,6 +4,7 @@
 // comes from a studio server, and pairs with it before it boots.
 
 import type { CheckReport } from '../export/check';
+import type { CarouselEdit } from '../studio/carousels';
 import { studioEvents } from './studio-events';
 import type { RenderItem } from './ui.svelte';
 import {
@@ -50,6 +51,8 @@ export interface ExportInput {
   frame?: number;
   /** For JPG: 1 to 100. */
   quality?: number;
+  /** For PNG and JPG: every still, or a carousel's slides in order, in place of the scene on screen (ADR 0022). */
+  stills?: 'all' | { carousel: string };
   /** For HTML: inline the sound files its cues play (ADR 0012). */
   media?: boolean;
 }
@@ -141,6 +144,16 @@ export class StudioClient {
   /** Converts film `id` in projects/ into a project folder beside this one (ADR 0013); returns its path. */
   async convertFilm(id: string): Promise<string> {
     return (await call<{ path: string }>(`/projects/${encodeURIComponent(id)}/convert`, jsonBody({}))).path;
+  }
+
+  /** Edits the carousels in project.json (ADR 0022). */
+  async editCarousels(edit: CarouselEdit): Promise<void> {
+    await call('/carousels', jsonBody(edit));
+  }
+
+  /** A new, empty still at the end of a carousel; returns its id. */
+  async addCarouselSlide(carousel: string): Promise<string> {
+    return (await call<{ id: string }>('/carousels/slide', jsonBody({ carousel }))).id;
   }
 
   /** Creates a video: a composition (ADR 0013), by default with a first scene on its track. Returns the composition's id. */
