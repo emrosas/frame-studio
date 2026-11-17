@@ -166,6 +166,13 @@ export interface SceneShape {
   fps: number;
   frameCount: number;
   layers: ReadonlyMap<string, readonly string[]>;
+  /** Layers whose parts aren't a list: an html layer's part is any element of its page, named by a selector (ADR 0021). */
+  open?: ReadonlySet<string>;
+}
+
+/** Whether `partId` can name a part of `layerId`. An html layer takes any selector; whether it finds an element is the page's to say. */
+export function hasPart(shape: SceneShape, layerId: string, partId: string): boolean {
+  return shape.open?.has(layerId) === true || shape.layers.get(layerId)?.includes(partId) === true;
 }
 
 /**
@@ -174,7 +181,9 @@ export interface SceneShape {
  */
 export function sceneShape(scene: Scene, registry: RigRegistry, frameCount: number, world: World = {}): SceneShape {
   const layers = new Map<string, readonly string[]>();
+  const open = new Set<string>();
   for (const layer of sceneLayers(scene)) {
+    if (layer.html !== undefined) open.add(layer.id);
     // A scene layer has no parts of its own; open the shot to pick inside it.
     const own = layer.rig ?? (layer.cast !== undefined ? world.cast?.[layer.cast]?.rig : undefined);
     const rigIds = [...(own ? [own] : []), ...(layer.overrides ?? []).flatMap((o) => (o.rig ? [o.rig] : []))];
@@ -182,7 +191,7 @@ export function sceneShape(scene: Scene, registry: RigRegistry, frameCount: numb
     for (const id of rigIds) for (const part of registry.get(id)?.parts ?? []) parts.add(part);
     layers.set(layer.id, [...parts]);
   }
-  return { fps: scene.fps, frameCount, layers };
+  return { fps: scene.fps, frameCount, layers, open };
 }
 
 export interface ResolvedSelection {
@@ -208,7 +217,7 @@ export function resolveSelectionParams(params: SelectionParams, shape: SceneShap
   }
   if (params.part !== null) {
     if (layerId === null) ignored.push(`part=${params.part}: no valid layer`);
-    else if (shape.layers.get(layerId)?.includes(params.part)) partId = params.part;
+    else if (hasPart(shape, layerId, params.part)) partId = params.part;
     else ignored.push(`part=${params.part}: layer "${layerId}" has no such part`);
   }
   let range: FrameRange | null = null;

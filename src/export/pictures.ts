@@ -4,8 +4,9 @@
 // at or before t, whether reached by playing or by seeking, so the two match.
 
 import type { VideoSample, VideoSampleSink } from 'mediabunny';
-import { isImageFile, type PictureRequest } from '../engine';
+import { htmlPageOf, isImageFile, type HtmlRequest, type PictureRequest } from '../engine';
 import type { Picture, Pictures } from '../engine';
+import { HtmlPages, type HtmlElement } from './html-pages';
 
 interface Reader {
   input: { dispose(): void };
@@ -33,33 +34,50 @@ export class PictureStore implements Pictures {
   private generation = 0;
   private queue: Promise<void> = Promise.resolve();
 
+  /** The pages of html layers (ADR 0021), drawn here like a file is decoded. */
+  private readonly html: HtmlPages;
+
   constructor(url: (file: string) => string) {
     this.url = url;
+    this.html = new HtmlPages(url);
   }
 
-  /** The frame for (file, t), or the file's latest while it decodes, so playback holds instead of flashing. */
+  /**
+   * The frame for (file, t), or the file's latest while it decodes, so playback holds instead of flashing.
+   * An html layer's page holds its last drawing the same way while an element moves.
+   */
   at(file: string, t: number): Picture | null {
-    return this.frames.get(`${file}|${t}`) ?? this.latest.get(file) ?? null;
+    return this.frames.get(`${file}|${t}`) ?? this.latest.get(file) ?? this.latest.get(htmlPageOf(file)) ?? null;
   }
 
   /** Decodes what `requests` need, in order. Rejects if a file can't be read. */
   prepare(requests: readonly PictureRequest[]): Promise<void> {
     const run = this.queue.then(async () => {
-      for (const { file, t } of requests) await this.decode(file, t);
+      for (const { file, t, html } of requests) await this.decode(file, t, html);
     });
     this.queue = run.catch(() => {});
     return run;
   }
 
-  private async decode(file: string, t: number): Promise<void> {
+  /** The element of an html layer's page at a point, in the page's pixels. Null until the page has been drawn. */
+  elementAt(request: HtmlRequest, x: number, y: number): HtmlElement | null {
+    return this.html.elementAt(request, x, y);
+  }
+
+  /** The element a selector names in an html layer's page. */
+  element(request: HtmlRequest, selector: string): HtmlElement | null {
+    return this.html.element(request, selector);
+  }
+
+  private async decode(file: string, t: number, html?: HtmlRequest): Promise<void> {
     const key = `${file}|${t}`;
     if (this.frames.has(key)) return;
     const generation = this.generation;
-    const picture = isImageFile(file) ? await this.image(file) : await this.videoFrame(file, t);
+    const picture = html ? await this.html.draw(html) : isImageFile(file) ? await this.image(file) : await this.videoFrame(file, t);
     // A dispose while this decoded means the file may have changed, so its frame is not kept.
     if (generation !== this.generation) return;
     this.frames.set(key, picture);
-    this.latest.set(file, picture);
+    this.latest.set(html ? htmlPageOf(file) : file, picture);
     if (this.frames.size <= KEEP) return;
     const oldest = this.frames.keys().next().value as string;
     const gone = this.frames.get(oldest);
@@ -77,6 +95,7 @@ export class PictureStore implements Pictures {
     this.frames.clear();
     this.latest.clear();
     this.spare.length = 0;
+    this.html.dispose();
     this.queue = this.queue.then(async () => {
       for (const held of readers) {
         const r = await held.catch(() => null);

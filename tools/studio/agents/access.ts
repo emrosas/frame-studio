@@ -36,7 +36,8 @@ export interface AccessContext {
   busyRigs: readonly string[];
 }
 
-const WRITABLE = ['scenes', 'compositions', 'rigs', 'audio', 'src/rigs', 'src/audio'];
+// html/ holds the pages of html layers (ADR 0021): markup and styles that never run, so an agent edits them like scenes.
+const WRITABLE = ['scenes', 'compositions', 'rigs', 'audio', 'html', 'src/rigs', 'src/audio'];
 /**
  * The folder's project.json (ADR 0013), and an M9 project's rigs and files: a project scene's file or
  * project.json, judged as scene or project edits first.
@@ -107,7 +108,7 @@ export function judge(action: Action, ctx: AccessContext): Verdict {
     if (busy.length > 0) {
       return { allow: false, ask: true, summary: `Edit ${names}`, detail: 'Another request is working on a scene that may draw with this rig.' };
     }
-    return { allow: false, ask: true, summary: `Edit ${names}`, detail: 'Outside scenes/, compositions/, rigs/, audio/ and project.json.' };
+    return { allow: false, ask: true, summary: `Edit ${names}`, detail: 'Outside scenes/, compositions/, rigs/, audio/, html/ and project.json.' };
   }
   if (ctx.access === 'full') return { allow: true };
   switch (action.kind) {

@@ -29,7 +29,7 @@ export function dragScale(scene: Scene, layer: Layer, frame: number, cssWidth: n
     fit: cssWidth / scene.size[0],
     pixel: scene.pixel?.scale ?? 1,
     // A clip of a scene or a picture isn't drawn through the camera.
-    zoom: layer.scene !== undefined || layer.file !== undefined ? 1 : (cameraView(scene, layer, frame)?.zoom ?? 1),
+    zoom: layer.scene !== undefined || layer.file !== undefined || layer.html !== undefined ? 1 : (cameraView(scene, layer, frame)?.zoom ?? 1),
     whole: scene.pixel !== undefined,
   };
 }
@@ -53,8 +53,10 @@ export function landValue(value: number, scale: DragScale): number {
 }
 
 /** The x and y that put a layer on the stage's centre lines: a rig's x and y are its place on the stage, a clip's an offset from where it sits. */
-export function stageCentre(scene: Scene, layer: Layer, frame: number): Position {
-  if (layer.scene !== undefined || layer.file !== undefined) return { x: 0, y: 0 };
+export function stageCentre(scene: Scene, layer: Layer, frame: number, element?: string): Position {
+  // An element of a page moves from where its page has it, and nothing says where its centre is.
+  if (layer.html !== undefined && element !== undefined) return { x: Number.NaN, y: Number.NaN };
+  if (layer.scene !== undefined || layer.file !== undefined || layer.html !== undefined) return { x: 0, y: 0 };
   const [width, height] = stageSize(scene);
   const view = cameraView(scene, layer, frame);
   return { x: width / 2 + (view?.x ?? 0), y: height / 2 + (view?.y ?? 0) };
@@ -70,9 +72,19 @@ export interface Movable extends Position {
   bounds: { x: ParamSpec; y: ParamSpec };
 }
 
-/** The layer's x and y on this frame, or null when its rig has no numeric x and y. */
-export function movable(layer: Layer, scene: Scene, frame: number, registry: RigRegistry, world: World): Movable | null {
-  if (layer.scene !== undefined || layer.file !== undefined) {
+/** An element's offset has no limits of its own. */
+const FREE: ParamSpec = { type: 'number', default: 0 };
+
+/**
+ * The layer's x and y on this frame, or null when its rig has no numeric x and y. With `element`, a selector
+ * in an html layer's page (ADR 0021), it is that element's offset instead.
+ */
+export function movable(layer: Layer, scene: Scene, frame: number, registry: RigRegistry, world: World, element?: string): Movable | null {
+  if (layer.html !== undefined && element !== undefined) {
+    const [x, y] = layer.offsets?.[element] ?? [0, 0];
+    return { x, y, bounds: { x: FREE, y: FREE } };
+  }
+  if (layer.scene !== undefined || layer.file !== undefined || layer.html !== undefined) {
     const { x, y } = scenePlacement(layer, scene, frame);
     return { x, y, bounds: { x: SCENE_LAYER_PARAMS.x, y: SCENE_LAYER_PARAMS.y } };
   }
@@ -96,6 +108,8 @@ export interface DragMoment {
   range: FrameRange | null;
   /** A one-frame scene (ADR 0020): nothing is keyed and no range is set, so a move lands on the param. */
   still?: boolean;
+  /** The element of an html layer's page being moved, by its selector (ADR 0021). The move lands in the layer's offsets. */
+  element?: string;
 }
 
 export type PositionWrite = { ok: true; layer: Layer } | { ok: false; error: string };
@@ -114,6 +128,19 @@ function withKey(tracks: readonly Track[], param: string, t: number, v: number, 
   });
 }
 
+/**
+ * An html layer with one element's offset set (ADR 0021). The page's file is the agent's and its author's,
+ * so a hand's move is kept beside it, on the layer, where the checked edit and undo already reach. An
+ * element back where its page has it loses its entry, and the layer its `offsets` once none is left.
+ */
+function withOffset(layer: Layer, selector: string, to: Position): Layer {
+  const { offsets, ...rest } = layer;
+  const next: Record<string, [number, number]> = { ...offsets };
+  if (to.x === 0 && to.y === 0) delete next[selector];
+  else next[selector] = [to.x, to.y];
+  return Object.keys(next).length > 0 ? { ...rest, offsets: next } : rest;
+}
+
 /** The layer without a param's track, and without `tracks` once none is left. */
 function withoutTrack(layer: Layer, param: string): Layer {
   if (!layer.tracks?.some((t) => t.param === param)) return layer;
@@ -130,6 +157,7 @@ function withoutTrack(layer: Layer, param: string): Layer {
  */
 export function writePosition(layer: Layer, to: Position, from: Position, moment: DragMoment): PositionWrite {
   const { frame, fps, still } = moment;
+  if (layer.html !== undefined && moment.element !== undefined) return { ok: true, layer: withOffset(layer, moment.element, to) };
   const range = still ? null : moment.range;
   if (range && frame >= range.from && frame < range.to) {
     const overrides = layer.overrides ?? [];

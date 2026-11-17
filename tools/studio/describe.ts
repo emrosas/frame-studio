@@ -14,6 +14,8 @@ export interface SceneInfo {
   timecode?: (frame: number) => string;
   /** A one-frame scene (ADR 0020). */
   still?: boolean;
+  /** The page each html layer shows, by layer id (ADR 0021). */
+  pages?: Record<string, string>;
 }
 
 export interface DescribeOptions {
@@ -83,6 +85,12 @@ export function describeThread(request: StudioRequest, info: SceneInfo, options:
     '',
     'How to do it: look with render_frame, render_contact_sheet and hit_test. Change it with apply_to_selection (pass this selection), update_scene, or a new rig variant under src/rigs applied through an override. Render again to check. Before calling a film done, run check and fix what fails.',
   );
+  const page = s.layerId !== undefined ? info.pages?.[s.layerId] : undefined;
+  if (page) {
+    lines.push(
+      `Layer ${s.layerId} is an HTML layer that shows ${page}. ${s.partId ? `The user selected one element of it: the one this CSS selector finds in that page, ${s.partId}` : 'The user selected the whole page'}. Change it by editing that file and the stylesheets beside it under html/. The page is drawn with no scripts and no network, so anything it uses must be a file under html/. If the layer has "offsets", those are elements the user dragged by hand, selector to [x, y] in the page's pixels: when you restyle or move such an element, fold its offset into the page's CSS and remove the entry with update_scene.`,
+    );
+  }
   if (info.still) {
     lines.push(
       'This scene is a still: one frame, exported as an image. Set params with update_scene; keys, overrides and contact sheets add nothing here. Export it with export, target png or jpg.',

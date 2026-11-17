@@ -3,6 +3,7 @@
 // sound files: it reads what a frame needs from picturesAt, gets those ready,
 // then render() takes them from world.pictures, synchronously.
 
+import { htmlKey, htmlRequest, type HtmlRequest } from './html';
 import { MAX_SCENE_DEPTH, sceneLayerSpan, shotFrame } from './scene-layer';
 import { frameCount, timeToFrame } from './time';
 import type { Layer, Scene, World } from './types';
@@ -23,15 +24,21 @@ export function pictureTime(layer: Layer, scene: Pick<Scene, 'fps' | 'duration'>
 }
 
 export interface PictureRequest {
+  /** The file, or for an html layer the name its drawn page goes under (htmlKey). */
   file: string;
   t: number;
+  /** An html layer's page (ADR 0021), which the host draws instead of decoding a file. */
+  html?: HtmlRequest;
 }
 
 /** Every picture this frame shows, its placed compositions' included. */
 export function picturesAt(scene: Scene, frame: number, world: World = {}, depth = 0): PictureRequest[] {
   const out: PictureRequest[] = [];
   for (const layer of scene.layers) {
-    if (layer.file !== undefined) {
+    const html = htmlRequest(layer, scene);
+    if (html) {
+      out.push({ file: htmlKey(html), t: 0, html });
+    } else if (layer.file !== undefined) {
       const t = pictureTime(layer, scene, frame);
       if (t !== null) out.push({ file: layer.file, t });
     } else if (layer.scene !== undefined && depth < MAX_SCENE_DEPTH) {

@@ -154,6 +154,22 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
   );
 
   server.registerTool(
+    'create_html_stills',
+    {
+      title: 'Create stills from HTML pages',
+      description:
+        'Makes a still from each HTML page (ADR 0021): a one-frame scene with one layer, { "id": "page", "html": "html/<name>/…/1.html" }, that shows the page at the scene\'s size. Give files as .html paths, or a folder to take every page directly in it in counting order, which makes a carousel in one call. Pages outside the studio folder are copied into html/<name>/ with the stylesheets, fonts and images they use, keeping their relative paths; whatever they load from the network (web fonts, remote images) is fetched once into html/<name>/_remote/ and the copies are pointed at it, because a page renders with no network and no scripts. Scenes are named <name>-1, <name>-2 and so on, or as ids says. Returns the scenes in order, what was fetched, and what could not be. Afterwards edit the files under html/ to change a slide, render_frame to look, and export or export_stills for the images. hit_test on an html layer names the element under a pixel as partId, a CSS selector.',
+      inputSchema: {
+        files: z.array(z.string()).min(1).max(100).describe('Absolute paths to .html files, or to folders of them. Paths inside the studio folder may be relative to it'),
+        name: z.string().optional().describe("The folder under html/ and the scenes' prefix. Taken from the pages' folder when left out"),
+        size: size.optional().describe('[width, height] of each still and its page. [1080, 1350] when left out'),
+        ids: z.array(newId).optional().describe('A scene id for each page, in order, in place of <name>-<n>'),
+      },
+    },
+    tool('create_html_stills', async (w, input: { files: string[]; name?: string; size?: [number, number]; ids?: string[] }) => text(await w.createHtmlStills(input))),
+  );
+
+  server.registerTool(
     'create_composition',
     {
       title: 'Create a composition',

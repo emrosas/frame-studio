@@ -35,6 +35,10 @@ export interface LayerSpec {
   fit?: 'cover' | 'contain';
   /** How much the scene's camera moves this layer: 0 stays put (a HUD), 1 is the world, in between is far away. Default 1, and 0 for the background. */
   depth?: number;
+  /** An HTML page in the studio folder's html/, shown on a still at the stage's size (ADR 0021). Params are x, y, scale, rotation and opacity. */
+  html?: string;
+  /** Elements of the page moved by hand: a selector to [x, y] in the page's CSS pixels (ADR 0021). */
+  offsets?: Record<string, [number, number]>;
 }
 export interface Layer extends LayerSpec { id: string }
 /** A named character of a project (ADR 0007): a rig and the params that make it that character. */

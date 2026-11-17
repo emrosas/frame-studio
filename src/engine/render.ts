@@ -1,5 +1,6 @@
 import { PASS_THROUGH } from './kit';
 import { speechKit } from './speech';
+import { htmlKey, htmlRequest } from './html';
 import { pictureTime } from './picture';
 import { quantize, stageSize } from './pixel';
 import { defaultParams } from './registry';
@@ -102,7 +103,7 @@ function drawStageLayer(ctx: Ctx2D, scene: Scene, layer: Layer, frame: number, r
     drawSceneLayer(ctx, scene, layer, frame, registry, world);
     return;
   }
-  if (layer.file !== undefined) {
+  if (layer.file !== undefined || layer.html !== undefined) {
     drawPictureLayer(ctx, scene, layer, frame, registry, world);
     return;
   }
@@ -261,13 +262,17 @@ function drawSceneLayer(ctx: Ctx2D, scene: Scene, layer: Layer, frame: number, r
   });
 }
 
-/** A picture clip (ADR 0014): placed like a scene layer, fit to the stage about its centre. */
+/**
+ * A picture clip (ADR 0014): placed like a scene layer, fit to the stage about its centre. An html layer
+ * (ADR 0021) is the same thing with a page the host drew at the stage's size, so it fits one to one.
+ */
 function drawPictureLayer(ctx: Ctx2D, scene: Scene, layer: Layer, frame: number, registry: RigRegistry, world: World): void {
-  const t = pictureTime(layer, scene, frame);
+  const html = htmlRequest(layer, scene);
+  const t = html ? 0 : pictureTime(layer, scene, frame);
   if (t === null) return;
   const place = scenePlacement(layer, scene, frame);
   if (place.opacity <= 0) return;
-  const picture = world.pictures?.at(layer.file ?? '', t);
+  const picture = world.pictures?.at(html ? htmlKey(html) : (layer.file ?? ''), t);
   if (!picture) return;
   const [width, height] = scene.size;
   const fit = (layer.fit === 'contain' ? Math.min : Math.max)(width / picture.width, height / picture.height);

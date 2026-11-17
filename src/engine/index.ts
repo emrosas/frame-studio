@@ -15,6 +15,7 @@ export { clampFrame, PlaybackClock, playbackFrame, playbackPosition, wrapFrame, 
 export { sceneLayers, resolveLayer, type ResolvedLayer } from './resolve';
 export { render, drawLayer, assertFrame, resetContextState, cameraView, type CameraView } from './render';
 export { quantize, stageSize } from './pixel';
+export { htmlKey, htmlPageKey, htmlPageOf, htmlRequest, htmlUsed, isHtmlPath, type HtmlOffsets, type HtmlRequest } from './html';
 export { isImageFile, isPictureFile, isVideoFile, picturesAt, picturesUsed, pictureTime, type PictureRequest } from './picture';
 export { PASS_THROUGH, onlyParts } from './kit';
 export { anchorWords, cueWords, parseWordRef, sceneWords, unanchoredWords, wordRef, wordTime, type OrphanAnchor } from './speech';

@@ -400,6 +400,15 @@ export class AgentRunner {
           if (why) throw new Error(`Not allowed: ${why}`);
           return;
         }
+        // Making stills from pages reads the pages from wherever they are, and what they load from the network (ADR 0021).
+        if (name === 'create_html_stills' && Array.isArray(args.files)) {
+          for (const file of args.files) {
+            if (typeof file !== 'string') continue;
+            const why = await this.refusal(thread, settings, running, { kind: 'read', path: file });
+            if (why) throw new Error(`Not allowed: ${why}`);
+          }
+          return;
+        }
         const projectId = PROJECT_WRITERS[name]?.(args);
         if (typeof projectId === 'string') {
           const why = await this.refusal(thread, settings, running, { kind: 'project', projectId, tool: name });

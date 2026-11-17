@@ -52,6 +52,7 @@ import { buildEmbed } from '../bundle/embed.ts';
 import { kokoro } from '../voice/kokoro.ts';
 import { saveVoiceFile } from '../voice/save.ts';
 import { listMedia, mediaInfo, saveMedia, serveMedia } from './media.ts';
+import { listHtml, serveHtml } from './html.ts';
 import { listRenders, serveRender } from './renders.ts';
 import { Thumbs } from './thumbs.ts';
 import { createSerial } from '../mcp/tools.ts';
@@ -269,7 +270,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   };
   const relevant = (base: string, file: string): 'files' | 'code' | null => {
     const rel = relative(base, file).split(sep).join('/');
-    if (/^(scenes|compositions)\/[^/]+\.json$/.test(rel) || rel === 'project.json' || /^projects\/[^/]+\/[^/]+\.json$/.test(rel) || /^media\//.test(rel)) return 'files';
+    if (/^(scenes|compositions)\/[^/]+\.json$/.test(rel) || rel === 'project.json' || /^projects\/[^/]+\/[^/]+\.json$/.test(rel) || /^media\//.test(rel) || /^html\//.test(rel)) return 'files';
     if (isImportable(rel) && (/^(rigs|audio)\//.test(rel) || /^projects\/[^/]+\/rigs\//.test(rel))) return 'code';
     return null;
   };
@@ -496,11 +497,13 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       return;
     }
     if (req.method === 'GET' && path === '/files') {
-      return send(res, 200, { generation, folder: folder.root, files: await readSceneFiles(folder), media: await listMedia(folder), withheldCode: await withheldCode(folder) });
+      return send(res, 200, { generation, folder: folder.root, files: await readSceneFiles(folder), media: await listMedia(folder), html: await listHtml(folder), withheldCode: await withheldCode(folder) });
     }
     // Sound files (ADR 0012): the list with lengths, a file's bytes, and uploads streamed to media/.
     if (req.method === 'GET' && path === '/media') return send(res, 200, { media: await mediaInfo(folder) });
     if (req.method === 'GET' && path.startsWith('/media/')) return serveMedia(folder, decodeURIComponent(path.slice(1)), res);
+    // An html layer's page and what it uses (ADR 0021), under a policy that runs no scripts and loads nothing from elsewhere.
+    if (req.method === 'GET' && path.startsWith('/html/')) return serveHtml(folder, decodeURIComponent(path.slice(1)), res);
     if (req.method === 'POST' && path === '/media') {
       // A sound type or raw bytes, neither of which a form on another site can send without a preflight it fails.
       const type = String(req.headers['content-type'] ?? '');

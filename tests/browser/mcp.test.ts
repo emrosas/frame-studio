@@ -97,6 +97,7 @@ describe('an agent session', () => {
         'check',
         'complete_request',
         'create_composition',
+        'create_html_stills',
         'align_voice',
         'create_scene',
         'export',

@@ -739,6 +739,29 @@ On a still the viewer drops the transport, the timeline and the range. You click
 
 Name a carousel's slides in order, such as `launch-1` to `launch-6`. Keys, overrides and `stepFps` do nothing on one frame, so set params directly.
 
+### HTML layers
+
+A still can show an HTML page instead of rigs (ADR 0021). The page sits in the project's `html/` folder with whatever it uses:
+
+```
+html/launch/kit/base.css
+html/launch/kit/fraunces.woff2
+html/launch/posts/1.html
+scenes/launch-1.json
+```
+
+```json
+{ "id": "launch-1", "fps": 1, "duration": 1, "size": [1080, 1350], "seed": 7, "layers": [{ "id": "page", "html": "html/launch/posts/1.html" }] }
+```
+
+The page is laid out at the scene's size, so give its `html` and `body` that width and height. It is drawn by the app's own Chromium through the HTML-in-Canvas API, with no scripts and no network: a font or image must be a file under `html/`, and a page that names a remote one shows an empty box. `create_html_stills` copies pages in from anywhere on the computer and fetches what they load from the network into `html/<name>/_remote/`, rewriting those URLs and nothing else.
+
+In the viewer, a click on the page selects the element under it, and the same click again selects the whole page. The selection reads `page › div.btn`: the part is a CSS selector. A request sent with it tells the agent which element of which file you mean. Dragging an element moves it and writes `"offsets": { "div.btn": [40, -12] }` on the layer, in the page's pixels. The page's file is never changed by a drag, and Command-Z takes the move back.
+
+The layer takes `params` for `x`, `y`, `scale`, `rotation` and `opacity`, and nothing that needs time: no tracks, overrides or `stepFps`. It is refused on a scene with more than one frame, in a composition, on a pixel stage and as a background. PNG and JPG exports carry it. The HTML embed refuses it, and so does a browser other than the app, with the reason.
+
+Pixels repeat run to run and across restarts, and are the same on a 1x and a 2x display. They hold per Electron build, like every render.
+
 ### The HTML embed
 
 `npm run export -- --scene bear-test --target html` writes `out/bear-test/bear-test.html`, a single file that draws the scene live. It holds the engine, a small player, only the rigs the scene uses and the scene itself. It makes no network requests, so it works opened from disk, dropped into a website or loaded in an iframe. The scene is validated when you export, so the file doesn't carry the validator, and rig and param descriptions are stripped since the player never reads them. `bear-test` comes to about 54 KB and `shapes-test` to 19 KB. The engine and player are about 8.5 KB of that. This export needs no browser and takes under a second.

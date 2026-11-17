@@ -259,6 +259,14 @@ describe('clips', () => {
   it('runs the clip before on under a crossfade', async () => {
     writeFileSync(join(folder, 'compositions/cut.json'), JSON.stringify({ ...COMPOSITION, tracks: [{ id: 'V1', clips: [{ id: 'one', scene: 'a', out: 1 }, { id: 'two', scene: 'b', start: 1 }] }] }));
     await expect.poll(() => band('one').boundingBox().then((b) => b?.width ?? 0)).toBeLessThan(200);
+    // The band can be that narrow before this file arrives, and a transition worked out from the file before it
+    // finds no clip to run on. So wait for the viewer to hold these two clips as written.
+    await page.waitForFunction(() => {
+      const layers = (window as unknown as { studio: { scene: { layers: { id: string; start?: number; out?: number; mask?: unknown; tracks?: unknown }[] } | null } }).studio.scene?.layers ?? [];
+      const one = layers.find((l) => l.id === 'one');
+      const two = layers.find((l) => l.id === 'two');
+      return one?.out === 1 && two?.start === 1 && two.mask === undefined && two.tracks === undefined;
+    });
     await band('two').click({ button: 'right', position: { x: 12, y: 6 } });
     await page.getByRole('menuitem', { name: 'Crossfade in' }).click();
     await waitFile(() => clip('one').out, 1.5);

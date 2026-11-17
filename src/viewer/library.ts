@@ -97,6 +97,8 @@ export interface SceneLibrary {
   folder?: { file: string; project: FolderProject | null; errors: readonly string[] } | null;
   /** The studio folder's sound files (ADR 0012), when the library came from a studio server. */
   media?: readonly { file: string; bytes: number; modified: number }[];
+  /** Every file under the studio folder's html/ (ADR 0021), so a page that changed is drawn again. */
+  html?: readonly { file: string; size: number; mtime: number }[];
   /** Source files of the folder's own that stayed unloaded, since it was opened without trust (ADR 0017). */
   withheldCode?: number;
 }

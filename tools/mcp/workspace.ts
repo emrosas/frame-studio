@@ -9,7 +9,7 @@
 import { randomInt } from 'node:crypto';
 import { mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative } from 'node:path';
+import { basename, dirname, join, relative } from 'node:path';
 import type { Layer, Params, Rig, RigRegistry, Scene, SpokenWord } from '../../src/engine/types.ts';
 import type { SceneEntry, SceneLibrary } from '../../src/viewer/library.ts';
 import type { CheckReport } from '../../src/export/check.ts';
@@ -22,9 +22,10 @@ import { withheldNote, type CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
 import { hear, nextWords, type VoiceProgress } from '../voice/align.ts';
-import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, STILL_TIMING, editFields, isLayerTarget, MARKERS_TARGET, projectOf, STRUCTURE_FIELDS, STRUCTURE_TARGET, type LayerChange, type NewComposition, type NewScene, type PlacedVoice, type StudioRequest } from '../../src/studio/protocol.ts';
+import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, STILL_TIMING, toId, editFields, isLayerTarget, MARKERS_TARGET, projectOf, STRUCTURE_FIELDS, STRUCTURE_TARGET, type LayerChange, type NewComposition, type NewScene, type PlacedVoice, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
+import { htmlSources, importHtml } from '../studio/html.ts';
 import { applyTimelineEdit, freshId, freshTrack, type RawClip, type RawCue as TimelineCue, type TimelineEdit, type TimelineFile, type TimelineResult } from '../../src/studio/timeline-edit.ts';
 import { kokoro } from '../voice/kokoro.ts';
 import { saveVoiceFile } from '../voice/save.ts';
@@ -117,6 +118,8 @@ export interface GeneratorInfo {
 export type ExportTarget = 'mp4' | 'gif' | 'html';
 
 const pad = (n: number) => String(n).padStart(5, '0');
+/** The size a still made from a page gets when none is given: an Instagram feed post. */
+const HTML_STILL_SIZE: [number, number] = [1080, 1350];
 
 export class Workspace {
   private studio: Studio | null = null;
@@ -208,6 +211,7 @@ export class Workspace {
    */
   private async checkEdit(modules: LoadedModules, entry: SceneEntry, scene: unknown, action: string): Promise<void> {
     await this.checkMedia(scene, action);
+    await this.checkPages(scene, action);
     if (entry.project !== null) {
       const broken = await this.projectBreaks(modules, (await this.library()).lib, entry.project, entry.path, scene);
       if (broken.length > 0) throw new Error(`${action} would break scenes in the project, so nothing was saved:\n${broken.join('\n')}`);
@@ -251,6 +255,70 @@ export class Workspace {
     if (missing.length > 0) {
       throw new Error(`${action} plays ${missing.join(', ')}, which ${missing.length === 1 ? "isn't" : "aren't"} in media/, so nothing was saved. list_media shows the files; import_media copies one in.`);
     }
+  }
+
+  /** Refuses a scene whose html layers name pages that aren't in html/ (ADR 0021). */
+  private async checkPages(scene: unknown, action: string): Promise<void> {
+    const layers = (scene as { layers?: unknown } | null)?.layers;
+    if (!Array.isArray(layers)) return;
+    const pages = layers.flatMap((l) => (typeof (l as { html?: unknown })?.html === 'string' ? [(l as { html: string }).html] : []));
+    const missing: string[] = [];
+    for (const page of new Set(pages)) {
+      // The validator refuses a path that leaves html/, so only a path it accepts is looked up.
+      if (!/^html\//.test(page) || page.split('/').some((part) => part === '..' || part === '.' || part === '')) continue;
+      if (!(await stat(join(this.folder.root, page)).catch(() => null))?.isFile()) missing.push(page);
+    }
+    if (missing.length > 0) {
+      throw new Error(`${action} shows ${missing.join(', ')}, which ${missing.length === 1 ? "isn't" : "aren't"} in the studio folder, so nothing was saved. create_html_stills copies pages in.`);
+    }
+  }
+
+  /**
+   * Stills from HTML pages (ADR 0021): each page, or every page in a folder, becomes a one-frame scene with
+   * one html layer that shows it. Pages from outside the folder are copied into html/<name>/ with what they
+   * use, and what they load from the network is fetched into the folder once. Returns the scenes in order.
+   */
+  async createHtmlStills(input: { files: string[]; name?: string; size?: [number, number]; ids?: string[] }): Promise<{
+    scenes: { id: string; file: string; html: string }[];
+    html: string;
+    copied: number;
+    localized: { url: string; file: string }[];
+    failed: { url: string; error: string }[];
+    note?: string;
+  }> {
+    const sources = await htmlSources(input.files, this.folder.root);
+    if (input.ids !== undefined && input.ids.length !== sources.length) throw new Error(`ids names ${input.ids.length} scenes for ${sources.length} pages; give one id a page, or leave ids out`);
+    const { modules, lib } = await this.library();
+    const size = input.size ?? HTML_STILL_SIZE;
+    const base = toId(input.name ?? basename(dirname(sources[0]))) || 'page';
+    const ids = input.ids ?? (sources.length === 1 ? [base] : sources.map((_, i) => `${base}-${i + 1}`));
+    for (const id of ids) {
+      const problem = checkNewScene({ id, still: true, size });
+      if (problem) throw new Error(problem);
+      if (lib.entries.some((e) => e.key === id) || (await stat(join(this.folder.scenes, `${id}.json`)).catch(() => null))) {
+        throw new Error(`There is already a scene "${id}". Pass name for another prefix, or ids to name each scene.`);
+      }
+    }
+    if (new Set(ids).size !== ids.length) throw new Error('ids names the same scene twice');
+    const imported = await importHtml(this.folder, sources, { name: input.name });
+    const scenes: { id: string; file: string; html: string }[] = [];
+    await mkdir(this.folder.scenes, { recursive: true });
+    for (const [i, page] of imported.pages.entries()) {
+      const id = ids[i];
+      // No background: the page paints the whole stage, and a page that doesn't shows through as transparent.
+      const scene = { id, ...STILL_TIMING, size: [size[0], size[1]], seed: randomInt(1, 100_000), layers: [{ id: 'page', html: page }] };
+      const broken = (await this.folderBreaks(modules, lib, `/scenes/${id}.json`, scene)).map((e) => e.replace(/^scenes\/[^:]+: /, ''));
+      if (broken.length > 0) throw new Error(`The still for ${page} would be invalid, so it wasn't saved:\n${broken.join('\n')}`);
+      const path = join(this.folder.scenes, `${id}.json`);
+      await this.writeScene(path, scene, modules);
+      scenes.push({ id, file: this.show(path), html: page });
+    }
+    this.ctx.touch();
+    const note =
+      imported.failed.length > 0
+        ? `${imported.failed.length} remote ${imported.failed.length === 1 ? 'file' : 'files'} couldn't be fetched, and a page loads nothing from the network, so ${imported.failed.length === 1 ? 'it' : 'they'} won't show. Put a copy under html/${imported.name}/ and point the page at it.`
+        : undefined;
+    return { scenes, html: `html/${imported.name}`, copied: imported.copied, localized: imported.localized, failed: imported.failed, ...(note ? { note } : {}) };
   }
 
   /**
@@ -394,6 +462,7 @@ export class Workspace {
               ...(l.cast !== undefined ? { cast: l.cast } : {}),
               ...(l.scene !== undefined ? { scene: e.project !== null ? `${e.project}/${l.scene}` : l.scene } : {}),
               ...(l.file !== undefined ? { file: l.file } : {}),
+              ...(l.html !== undefined ? { html: l.html } : {}),
             })),
           }
         : {}),
@@ -858,7 +927,7 @@ export class Workspace {
       const names = Object.keys(patch.params ?? {});
       const registry = entry.registry ?? modules.createRegistry();
       const paramsOf = (l: Layer) =>
-        l.scene !== undefined || l.file !== undefined ? modules.engine.SCENE_LAYER_PARAMS : (registry.get(l.rig ?? entry.world.cast?.[l.cast ?? '']?.rig ?? '')?.params ?? {});
+        l.scene !== undefined || l.file !== undefined || l.html !== undefined ? modules.engine.SCENE_LAYER_PARAMS : (registry.get(l.rig ?? entry.world.cast?.[l.cast ?? '']?.rig ?? '')?.params ?? {});
       // A video clip with its own sound takes volume as keys, so an override of its sound would be refused.
       const sounding = (l: Layer) => (scene.audio ?? []).some((c) => c.id === `${l.id}:sound`);
       const aboutSound = names.includes('mute') || names.includes('volume');
@@ -995,7 +1064,12 @@ export class Workspace {
     try {
       const { modules, entry } = await this.entry(sceneId);
       const scene = entry.scene;
-      return { file: entry.file, ...(scene ? { timecode: (f: number) => modules.engine.formatTimecode(f, scene.fps), still: modules.engine.isStill(scene) } : {}) };
+      const pages = Object.fromEntries((scene?.layers ?? []).flatMap((l) => (l.html !== undefined ? [[l.id, l.html]] : [])));
+      return {
+        file: entry.file,
+        ...(scene ? { timecode: (f: number) => modules.engine.formatTimecode(f, scene.fps), still: modules.engine.isStill(scene) } : {}),
+        ...(Object.keys(pages).length > 0 ? { pages } : {}),
+      };
     } catch {
       // The scene may have been renamed; the id still says which one.
       return {};
