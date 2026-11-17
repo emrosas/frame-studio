@@ -237,3 +237,36 @@ describe('writePosition on a still (ADR 0020)', () => {
     expect(result.ok && result.layer.params).toEqual({ x: 100, y: 200 });
   });
 });
+
+describe('moving an element of an html layer (ADR 0021)', () => {
+  const page: Layer = { id: 'page', html: 'html/launch/1.html' };
+  const still = scene({ fps: 1, duration: 1, size: [1080, 1350], layers: [page] });
+  const registry = createRegistry([]);
+  const at = (element: string) => moment({ frame: 0, fps: 1, still: true, element });
+
+  it('starts from where the page has it, or from the offset it already has', () => {
+    expect(movable(page, still, 0, registry, {}, 'div.btn')).toMatchObject({ x: 0, y: 0 });
+    expect(movable({ ...page, offsets: { 'div.btn': [12, -8] } }, still, 0, registry, {}, 'div.btn')).toMatchObject({ x: 12, y: -8 });
+    // Without an element the drag is the whole page's placement.
+    expect(movable({ ...page, params: { x: 30 } }, still, 0, registry, {})).toMatchObject({ x: 30, y: 0 });
+  });
+
+  it('writes the offset on the layer, beside the others, and never the params', () => {
+    const moved = writePosition({ ...page, offsets: { '#title': [1, 2] } }, { x: 40, y: 60 }, { x: 0, y: 0 }, at('div.btn'));
+    expect(moved).toEqual({ ok: true, layer: { ...page, offsets: { '#title': [1, 2], 'div.btn': [40, 60] } } });
+    expect(moved.ok && moved.layer.params).toBeUndefined();
+  });
+
+  it('drops an element back where the page has it, and the field with the last one', () => {
+    const back = writePosition({ ...page, offsets: { 'div.btn': [40, 60] } }, { x: 0, y: 0 }, { x: 40, y: 60 }, at('div.btn'));
+    expect(back).toEqual({ ok: true, layer: page });
+    expect(back.ok && 'offsets' in back.layer).toBe(false);
+  });
+
+  it('never snaps an element to the stage centre, and moves it in whole page pixels through the layer scale', () => {
+    expect(stageCentre(still, page, 0, 'div.btn').x).toBeNaN();
+    expect(snapCentre(3, stageCentre(still, page, 0, 'div.btn').x, dragScale(still, page, 0, 1080)).snapped).toBe(false);
+    expect(stageCentre(still, page, 0)).toEqual({ x: 0, y: 0 });
+    expect(dragScale(still, page, 0, 540).zoom).toBe(1);
+  });
+});

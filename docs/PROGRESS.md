@@ -1,8 +1,32 @@
 # Progress
 
-Last updated 2026-11-17 (M16, stills, on the `m16-stills` branch: 1899 unit tests pass, 276 browser tests pass with 19 skipped for want of a packaged build and the voice samples, and typecheck is clean). Before that, 2026-11-10 (export speed on the `export-speed` branch) and 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
+Last updated 2026-11-17. M16, stills, is on the `m16-stills` branch: 1899 unit tests pass, 276 browser tests pass with 19 skipped for want of a packaged build and the voice samples, and typecheck is clean. M17, HTML layers on stills, is on `html-layer` on top of it: 1917 unit tests pass, 303 browser tests pass with 9 skipped for want of the voice samples, typecheck is clean, and `npm run desktop:build` built and checked the app in `build/desktop/dist/mac-arm64/`, at version 0.5.0 still, with the packaged-app tests run against it. `/Applications` is untouched. Before that, 2026-11-10 (export speed on the `export-speed` branch) and 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
 
 ## Done
+
+### M17: HTML layers on stills (ADR 0021), on the `html-layer` branch
+
+The owner reversed ADR 0014's refusal of HTML authoring for stills, to finish social posts that already exist as HTML. The spike's measurements are in the ADR.
+
+- A layer `{ "id": "page", "html": "html/launch/1.html" }` shows a page from the project's `html/` folder at the stage's size. The validator allows it on a still only: not in a composition, on a pixel stage, as a background, or with tracks, overrides or a rig.
+- `src/export/html-pages.ts` loads the page in a sandboxed iframe inside `<canvas layoutsubtree>` and draws it with `drawElementImage`. `PictureStore` hands the image to `render()` through `world.pictures`, so the engine draws it as it draws a picture clip. `src/engine/html.ts` is the engine's whole share: path checks and key strings.
+- The app sets `--enable-blink-features=CanvasDrawElement` (`desktop/switches.ts`). Electron stays at 44.4.5.
+- Pages are served from `/__studio/html/` under a policy with no scripts and no other origin (`tools/studio/html.ts`), and the viewer draws a page again when a file under `html/` changes.
+- `create_html_stills` makes a still from each page or a carousel from a folder, copies what the pages use into `html/<name>/` at the same relative paths, and fetches what they load from the network into `html/<name>/_remote/`.
+- A click on an html layer selects the element under it. `partId` is a CSS selector such as `div.btn`, the overlay outlines the element's box, hover shows the element under the pointer, and `hit_test` returns the same selector. A request's description names the page and the element.
+- A drag on an element writes `offsets` on the layer, selector to `[x, y]`, applied as a CSS `translate`. The page file is never written by a drag.
+- PNG and JPG carry the layer. An HTML export refuses it, and a browser without the API says why in the error panel.
+- Studio agents may write under `html/`, and `create_html_stills` asks before reading pages outside the folder.
+
+### How each M17 acceptance criterion was verified
+
+1. `tests/browser/html-slides.test.ts` imports `posts/business-owner-loading` with one call: six scenes, the kit two folders up as before, 0 failed fetches, and no `http` left in any page or in `base.css`.
+2. The same test exports all six at 1080x1350 and compares each with `out/<n>.png`. Measured on 2026-11-17, as share of pixels over 32 levels, then mean: slide 1, 0.000% and 0.180; slide 2, 0.000% and 0.000; slide 3, 0.002% and 0.617; slide 4, 0.001% and 0.159; slide 5, 0.000% and 0.000; slide 6, 0.000% and 0.753. The bar is 0.5% and 1.5.
+3. It exports twice, restarts the studio server so a new Electron worker starts, and compares hashes. `html-layer.test.ts` opens Electron at device scale 1 and 2 and gets the worker's bytes at both.
+4. It clicks (238, 750) on slide 6 in the viewer and reads the queued request: `partId: "div.btn"`, with the page's path in the description.
+5. `html-layer.test.ts` drags the button 200 px each way, reads `offsets` from the scene file and the moved pixels from the viewer and the worker's PNG, and undoes it.
+6. The same file: `export` with `html` is refused naming ADR 0021, and a Chromium started without the flag shows "This browser can't draw HTML layers".
+7. Counts are under "Last updated" above.
 
 ### M16: Stills (ADR 0020)
 
@@ -988,7 +1012,7 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 1. **Take feedback from real use first.** The user is making videos in the installed app. What they run into outranks everything below.
 2. **One real ElevenLabs Generate, by the user, with their own key.** Voices, model and price have only run against a fake host, and the Spanish voice list is the likeliest thing to need fixing.
 3. **Publish 0.5.0 when the user asks.** `package.json` says 0.5.0 and the build is installed on this computer. The updater and other computers only see a GitHub release, and tagging and publishing need the user's word (`docs/RELEASING.md`).
-4. An HTML layer for stills, on the `html-layer` branch (ADR 0021).
+4. Merge `m16-stills`, then `html-layer`, when the owner has tried the build in `build/desktop/dist/`.
 5. Typefaces of a project's own, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer).
 6. Other candidates, from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 
@@ -1010,8 +1034,17 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 - A mask rig that uses its rng draws differently on the second half of a split clip, since the seed comes from the layer's id. The preset rigs don't use it.
 - A turn you sent that was still waiting when the server stopped needs Start afterwards. The new server can't tell it from a planted one.
 - Safe-zone guides are approximations, not measured from each app. A 1080x1350 still counts as vertical, so `text-safe` judges it against the zones TikTok, Reels and Shorts cover, which an Instagram feed post doesn't have.
+- HTML layers depend on a Chromium feature behind a flag, `CanvasDrawElement`, which is being renamed upstream (ADR 0021). Run `tests/browser/html-slides.test.ts` and `html-layer.test.ts` on every Electron upgrade. Electron 45.3.3 was tried by hand and gave the same bytes as 44.4.5.
+- Three things the HTML-in-Canvas API does without an error, which `src/export/html-pages.ts` guards: a draw before the first paint is blank, a draw from an off-screen or transparent canvas is blank, and removing the canvas in the turn it was drawn from crashes the renderer.
+- `html-slides.test.ts` needs the owner's slides at `/Users/emireles/git/r_admin-dashboard/tools/social` (or `FRAME_STUDIO_SLIDES`) and the network for their fonts and photographs. It skips without the folder.
+- Playwright's emulated device scale isn't a real display's: there, an html layer's text differs between 1x and 2x. Real Electron windows at both scales give the same bytes, which is what the test checks.
+- An html layer's text isn't read by `check`, and its page can't be selected by element in a browser that isn't the app.
+- A slide's `partId` is a selector made when it was clicked. If the page changes so it finds nothing, the selection's outline goes and an offset under that selector does nothing.
+- `create_html_stills` rewrites remote URLs with patterns, not a parser: `srcset` and URLs built by CSS variables are left as written, and then don't load.
+- The viewer has no button for making stills from pages; it is an agent's tool for now.
 - A still at 1 fps can't be a clip in a composition at another fps, and a one-frame clip would show for one frame anyway. Holding a still in a video isn't built.
 - The viewer has no button for exporting every still at once; `export_stills` and `npm run export -- --stills` do it.
+- `tests/browser/timeline-editor.test.ts`, "runs the clip before on under a crossfade", raced the file it had just written and failed 3 runs in 5 once Playwright's Chromium ran with the HTML-in-Canvas flag. It now waits for the viewer to hold that file, and passed 6 in 6.
 - `npm ci` in a fresh checkout skipped Electron's install script here, so `node node_modules/electron/install.js` had to run once before the browser tests.
 - A voice row's words are read-only on a composition, as its keys are, though the voice itself moves and trims. Timing is scenes only in the viewer; `align_voice` takes either.
 - `voice.test.ts` needs the pinned whisper-cli, the model and sample voices outside the repo, and skips without them.

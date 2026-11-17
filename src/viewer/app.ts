@@ -34,7 +34,9 @@ import { anchorKeys, deleteKeys, keyLanes, keyMarks, keysAt, moveTarget, type Ke
 import type { GeneratedVoice } from './speech';
 import type { VoiceLine } from './voice';
 import { cueTarget, isLayerTarget, MARKERS_TARGET, STRUCTURE_TARGET, type LayerChange } from '../studio/protocol';
-import { isStill, wordRef, wordTime } from '../engine';
+import { htmlRequest, isStill, scenePlacement, wordRef, wordTime, type HtmlRequest } from '../engine';
+import { pagePoint, sceneBox, type HtmlElement } from '../export/html-pages';
+import type { OverlayBox } from './overlay';
 import { formatClock, visibleSpans, type ClipPlace } from './timeline';
 import { dropKind, type DropTrack, type LibraryItem } from './drop';
 import { ErrorLog, errorText } from './errors';
@@ -52,6 +54,7 @@ import {
   nextCandidate,
   rangeError,
   resolveSelectionParams,
+  hasPart,
   sceneShape,
   spanLabel,
   spanTitle,
@@ -277,6 +280,8 @@ export class App {
   private stageElement!: HTMLElement;
   private clickMemo: ClickMemo | null = null;
   private hoverLayer: string | null = null;
+  /** The element of an html layer's page under the pointer (ADR 0021), boxed in scene pixels. */
+  private hoverElement: (OverlayBox & { label: string }) | null = null;
   private hoverDirty = false;
   /** Escape hides the hover until the pointer moves. */
   private hoverHidden = false;
@@ -1216,7 +1221,8 @@ export class App {
 
   /** Reads the sound files' lengths again when media/ changed (ADR 0012). */
   private refreshMedia(): void {
-    const listing = JSON.stringify(this.library.media ?? []);
+    // Pages too (ADR 0021): an edited page, stylesheet or image is drawn again.
+    const listing = JSON.stringify([this.library.media ?? [], this.library.html ?? []]);
     if (listing === this.mediaListed) return;
     this.mediaListed = listing;
     // A replaced file must decode again.
@@ -1447,7 +1453,7 @@ export class App {
       notes.push(`Layer "${this.layerId}" is no longer in the scene, so it was deselected.`);
       this.layerId = null;
       this.partId = null;
-    } else if (this.layerId !== null && this.partId !== null && !shape.layers.get(this.layerId)?.includes(this.partId)) {
+    } else if (this.layerId !== null && this.partId !== null && !hasPart(shape, this.layerId, this.partId)) {
       notes.push(`Layer "${this.layerId}" no longer has part "${this.partId}", so the part was deselected.`);
       this.partId = null;
     }
@@ -1863,6 +1869,34 @@ export class App {
     return { frame: this.clock.frame, fps: scene.fps, range: this.range, still: this.still };
   }
 
+  // ---- elements of an html layer's page (ADR 0021) ----
+
+  /** The page an html layer shows, as its host draws it; null for any other layer. */
+  private pageOf(layer: Layer | null): HtmlRequest | null {
+    const scene = this.shownScene();
+    return layer && scene ? htmlRequest(layer, scene) : null;
+  }
+
+  /** The element of an html layer's page at a scene pixel, or null on another kind of layer, or over the bare page. */
+  private elementUnder(layerId: string | null, p: Point | null): HtmlElement | null {
+    const scene = this.shownScene();
+    const layer = layerId !== null ? this.shownLayer(layerId) : null;
+    const page = this.pageOf(layer);
+    if (!scene || !layer || !page || !p) return null;
+    const at = pagePoint(scenePlacement(layer, scene, this.clock.frame), scene.size, p.x, p.y);
+    return at ? this.pictures.elementAt(page, at.x, at.y) : null;
+  }
+
+  /** The box of the selected element of an html layer's page, in scene pixels; null when the part isn't one, or its page isn't drawn yet. */
+  private elementBox(layerId: string | null, partId: string | null): OverlayBox | null {
+    const scene = this.shownScene();
+    const layer = layerId !== null ? this.shownLayer(layerId) : null;
+    const page = this.pageOf(layer);
+    if (!scene || !layer || !page || partId === null) return null;
+    const element = this.pictures.element(page, partId);
+    return element ? sceneBox(scenePlacement(layer, scene, this.clock.frame), scene.size, element) : null;
+  }
+
   /**
    * Past the drag threshold a press takes hold of a layer: the selected one if it's under the press, as click
    * cycling can leave it, else the top one. It selects it, and moves it if it can. The selected part stays.
@@ -1883,9 +1917,17 @@ export class App {
     this.pauseInternal();
     this.pressDragged = true;
     this.hoverLayer = null;
-    if (layerId !== this.layerId) {
+    this.hoverElement = null;
+    // On an html layer the press takes an element of its page (ADR 0021): the selected one if the press is on it, else the one under it.
+    let element: string | undefined;
+    if (this.shownLayer(layerId)?.html !== undefined) {
+      const held = layerId === this.layerId ? this.elementBox(layerId, this.partId) : null;
+      const onHeld = held !== null && p.x >= held.x && p.x <= held.x + held.width && p.y >= held.y && p.y <= held.y + held.height;
+      element = onHeld && this.partId !== null ? this.partId : this.elementUnder(layerId, p)?.selector;
+    }
+    if (layerId !== this.layerId || (element !== undefined && element !== this.partId)) {
       this.clickMemo = null;
-      this.userSetLayer(layerId, null);
+      this.userSetLayer(layerId, element ?? null);
       this.selectionPoint = { x: Math.round(p.x), y: Math.round(p.y) };
     }
     const layer = this.shownLayer(layerId);
@@ -1895,13 +1937,13 @@ export class App {
       this.say(LOCKED);
       return;
     }
-    const from = this.whereIs(layer, scene);
+    const from = this.whereIs(layer, scene, element);
     if (!from) {
       if (!this.toldFixed.has(layerId)) this.say('Position is set by this rig');
       this.toldFixed.add(layerId);
       return;
     }
-    const moment = this.dragMoment(scene);
+    const moment: DragMoment = { ...this.dragMoment(scene), ...(element !== undefined ? { element } : {}) };
     const write = writePosition(layer, from, from, moment);
     if (!write.ok) {
       this.say(write.error);
@@ -1916,9 +1958,10 @@ export class App {
       base: layer,
       next: layer,
       from,
-      scale: dragScale(scene, layer, frame, this.view.currentFit.cssWidth),
+      // An element moves in its page's pixels, whole ones, through the layer's own scale.
+      scale: element !== undefined ? { ...dragScale(scene, layer, frame, this.view.currentFit.cssWidth), zoom: scenePlacement(layer, scene, frame).scale, whole: true } : dragScale(scene, layer, frame, this.view.currentFit.cssWidth),
       moment,
-      centre: stageCentre(scene, layer, frame),
+      centre: stageCentre(scene, layer, frame, element),
       guides: null,
     };
     this.view.canvas.classList.add('is-dragging');
@@ -1926,11 +1969,11 @@ export class App {
   }
 
   /** The layer's position on the frame on screen, or null when it has none to change. */
-  private whereIs(layer: Layer, scene: Scene): Movable | null {
+  private whereIs(layer: Layer, scene: Scene, element?: string): Movable | null {
     const registry = this.entry?.registry;
     if (!registry) return null;
     try {
-      return movable(layer, scene, this.clock.frame, registry, this.world());
+      return movable(layer, scene, this.clock.frame, registry, this.world(), element);
     } catch {
       return null;
     }
@@ -1990,7 +2033,7 @@ export class App {
       if (e.altKey) {
         const result = p ? this.hit(p.x, p.y, { parts: true }) : null;
         this.clickMemo = null;
-        this.userSetLayer(result?.layerId ?? null, result?.partId ?? null);
+        this.userSetLayer(result?.layerId ?? null, result?.partId ?? this.elementUnder(result?.layerId ?? null, p)?.selector ?? null);
       } else if (p && this.clickMemo && isRepeatClick(this.clickMemo, spot, this.layerId)) {
         const result = this.hit(p.x, p.y, { all: true });
         const next = nextCandidate(
@@ -2002,7 +2045,8 @@ export class App {
       } else {
         const id = p ? this.hit(p.x, p.y).layerId : null;
         this.clickMemo = id !== null ? { ...spot, layerId: id } : null;
-        this.userSetLayer(id, null);
+        // On an html layer a click picks the element under it (ADR 0021); the same click again picks the whole page.
+        this.userSetLayer(id, this.elementUnder(id, p)?.selector ?? null);
       }
     } catch (err) {
       this.clickMemo = null;
@@ -2082,6 +2126,7 @@ export class App {
     this.pointer = null;
     this.hoverHidden = false;
     this.hoverLayer = null;
+    this.hoverElement = null;
     this.hoverDirty = false;
     this.schedule();
   };
@@ -2097,6 +2142,7 @@ export class App {
   private probeHover(): void {
     this.hoverDirty = false;
     let next: string | null = null;
+    let element: (OverlayBox & { label: string }) | null = null;
     const frame = this.clock.frame;
     let over = false;
     if (this.pointer && !this.hoverHidden && this.hoverFailedFrame !== frame && !this.clock.playing && !this.scrubbing && !this.canvasDrag) {
@@ -2105,6 +2151,10 @@ export class App {
         try {
           next = this.hit(p.x, p.y).layerId;
           over = this.overMovableLayer(p, next);
+          const under = this.elementUnder(next, p);
+          const scene = this.shownScene();
+          const layer = next !== null ? this.shownLayer(next) : null;
+          if (under && scene && layer) element = { ...sceneBox(scenePlacement(layer, scene, frame), scene.size, under), label: under.label };
           if (this.hoverFailedFrame !== null) {
             // A rig that throws on one frame (say inside one override range) should not end hover everywhere.
             if (this.notice?.startsWith(HOVER_OFF)) this.notice = null;
@@ -2120,6 +2170,7 @@ export class App {
       }
     }
     this.hoverLayer = next;
+    this.hoverElement = element;
     this.overMovable = over;
     this.ui.hoverLayer = this.rowHover ?? next;
   }
@@ -2646,6 +2697,8 @@ export class App {
       selected: scene && this.layerId !== null && !this.clock.playing ? { layerId: this.layerId, partId: this.partId } : null,
       hover: scene && !this.clock.playing ? (this.rowHover ?? this.hoverLayer) : null,
       guides: this.canvasDrag?.guides ?? null,
+      selectedBox: scene && !this.clock.playing ? this.elementBox(this.layerId, this.partId) : null,
+      hoverBox: scene && !this.clock.playing && this.rowHover === null && this.hoverLayer !== null ? this.hoverElement : null,
     });
     this.view.canvas.classList.toggle('is-over-layer', scene !== null && this.hoverLayer !== null);
     this.view.canvas.classList.toggle('is-movable', scene !== null && this.overMovable && !this.canvasDrag);
@@ -2673,7 +2726,7 @@ export class App {
         await this.pictures.prepare(wanted);
         this.errors.set('pictures', null);
       } catch (err) {
-        this.errors.set('pictures', { title: 'A picture clip could not be read', lines: [err instanceof Error ? err.message : String(err)] });
+        this.errors.set('pictures', { title: wanted.some((w) => w.html) ? 'A page could not be drawn' : 'A picture clip could not be read', lines: [err instanceof Error ? err.message : String(err)] });
       }
       this.invalidate();
     }
@@ -3018,7 +3071,7 @@ export class App {
           if (!parts) {
             throw new Error(`Unknown layer "${layerId}" in scene "${app.entry?.key ?? scene.id}". Layers: ${[...shape.layers.keys()].join(', ')}`);
           }
-          if (part !== null && !parts.includes(part)) {
+          if (part !== null && !hasPart(shape, layerId, part)) {
             throw new Error(
               parts.length > 0
                 ? `Layer "${layerId}" has no part "${part}". Its parts: ${parts.join(', ')}`

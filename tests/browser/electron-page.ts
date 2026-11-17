@@ -13,10 +13,11 @@ export interface ElectronPage {
   close(): Promise<void>;
 }
 
-export async function electronPage(): Promise<ElectronPage> {
+/** With `scale`, the window draws as on a display of that device scale factor, whatever this machine's is. */
+export async function electronPage(options: { scale?: number } = {}): Promise<ElectronPage> {
   const app = await _electron.launch({
     executablePath: electronBinary(),
-    args: [join(REPO, 'tests/browser/electron-window.ts')],
+    args: [join(REPO, 'tests/browser/electron-window.ts'), ...(options.scale !== undefined ? [`--force-device-scale-factor=${options.scale}`] : [])],
     env: childEnv() as Record<string, string>,
   });
   const page = await app.firstWindow();

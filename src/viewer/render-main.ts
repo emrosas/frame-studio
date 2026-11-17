@@ -10,7 +10,8 @@
 
 import { hasAudio, mediaUsed, renderSceneAudio, SAMPLE_RATE, samplesPerFrame } from '../audio';
 import { MediaStore } from './media';
-import { formatTimecode, frameCount, hitTest, picturesAt, render, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
+import { formatTimecode, frameCount, hitTest, htmlRequest, picturesAt, render, scenePlacement, type Ctx2D, type RigRegistry, type Scene, type World } from '../engine';
+import { pagePoint } from '../export/html-pages';
 import { createSurfaces } from '../embed/surfaces';
 import { speechChecks } from '../export/speech-check';
 import { checkTextContrast, contrastFrames, isLarge, measureContrast, textLayoutChecks, type ContrastSample, type Rgba } from '../export/text-check';
@@ -322,7 +323,15 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       probe ??= new OffscreenCanvas(1, 1).getContext('2d', { willReadFrequently: true });
       if (!probe) throw new Error('This browser did not provide an offscreen 2D context for hit testing.');
       const result = hitTest(probe as unknown as Ctx2D, ready.scene, frame, x, y, ready.registry, { parts: options.parts, world });
-      return { layerId: result.layerId, ...(result.partId !== undefined ? { partId: result.partId } : {}), candidates: result.candidates };
+      // On an html layer the part is the element of its page under the pixel, by its selector (ADR 0021).
+      const layer = options.parts && result.layerId !== null ? ready.scene.layers.find((l) => l.id === result.layerId) : undefined;
+      const page = layer ? htmlRequest(layer, ready.scene) : null;
+      let partId = result.partId;
+      if (layer && page) {
+        const at = pagePoint(scenePlacement(layer, ready.scene, frame), ready.scene.size, x, y);
+        partId = at ? pictures.elementAt(page, at.x, at.y)?.selector : undefined;
+      }
+      return { layerId: result.layerId, ...(partId !== undefined ? { partId } : {}), candidates: result.candidates };
     },
     async exportVideo(target: ExportTarget, sinkId, options = {}): Promise<RenderExportResult> {
       const { scene: s } = need();

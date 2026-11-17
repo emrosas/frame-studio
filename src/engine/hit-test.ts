@@ -150,7 +150,8 @@ function resetProbe(probe: Ctx2D): void {
  */
 function partAt(probe: Ctx2D, pixel: ProbePixel, scene: Scene, layer: Layer, frame: number, registry: RigRegistry, world: World): string | undefined {
   // A scene layer's shot is picked inside by opening the shot; a masked layer draws on a surface, where parts can't be read.
-  if (layer.scene !== undefined || layer.file !== undefined || layer.mask) return undefined;
+  // An html layer's parts are the elements of its page, which only the host that laid it out can name (ADR 0021).
+  if (layer.scene !== undefined || layer.file !== undefined || layer.html !== undefined || layer.mask) return undefined;
   const { rig } = resolveLayer(layer, scene, frame, registry, world);
   if (!rig.parts || rig.parts.length === 0) return undefined;
 

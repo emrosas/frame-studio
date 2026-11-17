@@ -1,12 +1,13 @@
 import { isCssColor } from './color';
 import { EASING_NAMES } from './easing';
+import { isHtmlPath } from './html';
 import { isPictureFile } from './picture';
 import { isHexColour } from './pixel';
 import { baseRigId, variantsOf } from './registry';
 import { SCENE_LAYER_PARAMS } from './scene-layer';
 import { CUE_PARAMS } from './cue';
 import { parseWordRef } from './speech';
-import { frameCount, quantizeTime } from './time';
+import { frameCount, isStill, quantizeTime } from './time';
 import { BACKGROUND_ID, type Cast, type ParamSchema, type ParamSpec, type Rig, type RigRegistry, type Scene } from './types';
 
 export type ValidationResult = { ok: true; scene: Scene } | { ok: false; errors: string[] };
@@ -103,6 +104,7 @@ export function validateScene(
     generatorNames: generators ? [...generators.keys()].join(', ') || 'none' : '',
     project,
     sceneId: isNonEmptyString(s.id) ? s.id : undefined,
+    pixel: s.pixel !== undefined,
   };
 
   checkPixel(env, s);
@@ -164,6 +166,8 @@ interface Env {
   generatorNames: string;
   project: ProjectContext | undefined;
   sceneId: string | undefined;
+  /** The scene has a pixel stage. */
+  pixel: boolean;
 }
 
 type Obj = Record<string, unknown>;
@@ -216,7 +220,7 @@ const CAMERA_OWNER: SchemaOwner = {
   id: 'camera',
   params: { x: { type: 'number', default: 0 }, y: { type: 'number', default: 0 }, zoom: { type: 'number', default: 1, min: 0.01 } },
 };
-const LAYER_FIELDS = ['id', 'rig', 'cast', 'scene', 'start', 'in', 'out', 'params', 'tracks', 'stepFps', 'overrides', 'mask', 'depth', 'file', 'fit'];
+const LAYER_FIELDS = ['id', 'rig', 'cast', 'scene', 'start', 'in', 'out', 'params', 'tracks', 'stepFps', 'overrides', 'mask', 'depth', 'file', 'fit', 'html', 'offsets'];
 const MASK_FIELDS = ['rig', 'params', 'tracks'];
 /** The background is a layer without an id; background.id gets its own message. */
 const BACKGROUND_FIELDS = LAYER_FIELDS.filter((f) => f !== 'id');
@@ -351,6 +355,11 @@ function checkLayerSpec(env: Env, layer: Obj, path: string): void {
       err(`${path}.depth`, `must be 0 or more: 0 stays put, 1 moves with the camera, between is further away; got ${show(layer.depth)}`);
     }
   }
+  if (layer.html !== undefined) {
+    checkHtmlLayer(env, layer, path);
+    return;
+  }
+  if (layer.offsets !== undefined) err(`${path}.offsets`, 'only an html layer takes offsets; remove it');
   if (layer.file !== undefined && layer.rig === undefined && layer.cast === undefined && layer.scene === undefined) {
     checkPictureLayer(env, layer, path);
     return;
@@ -401,6 +410,48 @@ function checkLayerSpec(env: Env, layer: Obj, path: string): void {
   checkTracks(env, layer.tracks, `${path}.tracks`, rig);
   checkOverrides(env, layer, path, rig);
   checkMask(env, layer.mask, `${path}.mask`);
+}
+
+/**
+ * An html layer (ADR 0021): a page from html/ on a still, at the stage's size. It is placed like a picture,
+ * holds still, and takes the elements a hand moved as offsets.
+ */
+function checkHtmlLayer(env: Env, layer: Obj, path: string): void {
+  const { err, project } = env;
+  for (const kind of ['rig', 'cast', 'scene', 'file'] as const) {
+    if (layer[kind] !== undefined) err(`${path}.${kind}`, 'an html layer names only its page; remove it');
+  }
+  if (path === 'background') err(`${path}.html`, 'the background draws a rig or a cast member; show a page with a layer');
+  if (project?.kind === 'composition') err(`${path}.html`, 'a composition places scenes and pictures; put the page on a still and place that');
+  else if (env.fps !== undefined && env.duration !== undefined && !isStill({ fps: env.fps, duration: env.duration })) {
+    err(`${path}.html`, 'an html layer belongs on a still, a scene with one frame, like "fps": 1, "duration": 1 (ADR 0021)');
+  }
+  if (env.pixel) err(`${path}.html`, 'a pixel stage draws rigs on its small grid; an html layer needs a plain stage');
+  if (!isHtmlPath(layer.html)) {
+    err(`${path}.html`, `must be an .html file in the studio folder's html/, like "html/launch/1.html", got ${show(layer.html)}`);
+  }
+  for (const key of ['start', 'in', 'out', 'fit', 'stepFps', 'tracks', 'overrides', 'mask', 'depth'] as const) {
+    if (layer[key] !== undefined) err(`${path}.${key}`, `an html layer holds still and fills the stage, so it takes no ${key}; remove it`);
+  }
+  checkParams(env, layer.params, `${path}.params`, SCENE_OWNER, 'scene layer');
+  for (const name of ['volume', 'mute']) {
+    if (isObject(layer.params) && layer.params[name] !== undefined) err(`${path}.params.${name}`, 'a page makes no sound; remove it');
+  }
+  const offsets = layer.offsets;
+  if (offsets === undefined) return;
+  if (!isObject(offsets)) {
+    err(`${path}.offsets`, `must be an object of selector to [x, y], like { "#cta": [12, -8] }, got ${show(offsets)}`);
+    return;
+  }
+  const entries = Object.entries(offsets);
+  if (entries.length > 200) err(`${path}.offsets`, `holds ${entries.length} moved elements; at most 200`);
+  for (const [selector, move] of entries) {
+    const where = `${path}.offsets[${JSON.stringify(selector)}]`;
+    if (selector.trim() === '' || selector.length > 400) err(where, 'the selector must be 1 to 400 characters');
+    if (!(Array.isArray(move) && move.length === 2 && move.every((n) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) <= 100000))) {
+      err(where, `must be [x, y] in the page's pixels, got ${show(move)}`);
+    }
+  }
 }
 
 /** A picture clip (ADR 0014): compositions only, from media/, with a trim that says how long it shows. */

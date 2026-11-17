@@ -31,6 +31,22 @@ export interface OverlayInput {
   hover: string | null;
   /** The stage's centre lines a drag has snapped to. */
   guides?: { x: boolean; y: boolean } | null;
+  /**
+   * The selected part's box, when the part is an element of an html layer's page (ADR 0021). The engine can't
+   * draw one element alone, so the outline comes from where the page laid it out.
+   */
+  selectedBox?: OverlayBox | null;
+  /** The element under the pointer, the same way, with what to call it. */
+  hoverBox?: (OverlayBox & { label: string }) | null;
+}
+
+/** A rounded box in scene pixels. */
+export interface OverlayBox {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  radius: number;
 }
 
 interface Mask {
@@ -98,9 +114,13 @@ export class SelectionOverlay {
     const ready = scene !== null && registry !== null && fit.backingWidth > 0;
     const layers = ready ? new Map(sceneLayers(scene).map((l) => [l.id, l])) : new Map<string, Layer>();
     const sel = input.selected && layers.get(input.selected.layerId);
-    const hov = input.hover !== null && input.hover !== input.selected?.layerId ? layers.get(input.hover) : undefined;
-    const selKey = ready && sel ? maskKey(scene, sel, frame, input.selected?.partId ?? null, version) : null;
-    const hovKey = ready && hov ? maskKey(scene, hov, frame, null, version) : null;
+    const selBox = input.selectedBox ?? null;
+    const hovBox = input.hoverBox ?? null;
+    // An element of a page highlights under the pointer even when its layer is the selected one, unless it is the selected element.
+    const sameBox = selBox !== null && hovBox !== null && JSON.stringify([selBox.x, selBox.y, selBox.width, selBox.height]) === JSON.stringify([hovBox.x, hovBox.y, hovBox.width, hovBox.height]);
+    const hov = input.hover !== null && (hovBox ? !sameBox : input.hover !== input.selected?.layerId) ? layers.get(input.hover) : undefined;
+    const selKey = ready && sel ? `${maskKey(scene, sel, frame, input.selected?.partId ?? null, version)}${selBox ? JSON.stringify(selBox) : ''}` : null;
+    const hovKey = ready && hov ? `${maskKey(scene, hov, frame, null, version)}${hovBox ? JSON.stringify(hovBox) : ''}` : null;
     const guides = input.guides ?? null;
     const key = JSON.stringify([selKey, hovKey, fit.backingWidth, fit.backingHeight, fit.cssWidth, fit.cssHeight, guides]);
     if (key === this.lastKey) return;
@@ -117,15 +137,15 @@ export class SelectionOverlay {
     this.fadeIn(JSON.stringify([input.selected?.layerId ?? null, input.selected?.partId ?? null, input.hover]));
 
     if (hov && hovKey) {
-      const mask = this.mask(scene, hov, frame, null, registry, hovKey, fit);
+      const mask = this.mask(scene, hov, frame, null, registry, hovKey, fit, hovBox);
       if (mask) {
         this.highlight(mask, fit, HOVER);
         // Nothing drawn on this frame: the row stays lit, and no tag lands on the selection's.
-        if (mask.box) this.placeTag(this.hoverTag, hov.id, mask, fit);
+        if (mask.box) this.placeTag(this.hoverTag, hovBox ? hovBox.label : hov.id, mask, fit);
       }
     }
     if (sel && selKey && input.selected) {
-      const mask = this.mask(scene, sel, frame, input.selected.partId, registry, selKey, fit);
+      const mask = this.mask(scene, sel, frame, input.selected.partId, registry, selKey, fit, selBox);
       if (mask) {
         this.highlight(mask, fit, SELECTED);
         this.placeTag(this.selectedTag, layerLabel(sel.id, input.selected.partId), mask, fit);
@@ -167,7 +187,7 @@ export class SelectionOverlay {
   }
 
   /** The layer's mask on this frame, from the cache or drawn now. Null when the layer fails to draw. */
-  private mask(scene: Scene, layer: Layer, frame: number, partId: string | null, registry: RigRegistry, layerKey: string, fit: Fit): Mask | null {
+  private mask(scene: Scene, layer: Layer, frame: number, partId: string | null, registry: RigRegistry, layerKey: string, fit: Fit, box: OverlayBox | null = null): Mask | null {
     const size = maskSize(scene.size[0], scene.size[1], fit.backingWidth);
     const key = `${layerKey}@${size.width}x${size.height}`;
     const hit = this.masks.findIndex((m) => m.key === key);
@@ -188,18 +208,23 @@ export class SelectionOverlay {
     ctx.clearRect(0, 0, w, h);
     ctx.setTransform(scale, 0, 0, scale, 0, 0);
     try {
-      drawLayer(ctx, scene, layer, frame, registry, partId ? onlyParts([partId]) : PASS_THROUGH, this.world);
+      if (box) {
+        ctx.fillStyle = '#000';
+        ctx.beginPath();
+        ctx.roundRect(box.x, box.y, box.width, box.height, box.radius);
+        ctx.fill();
+      } else drawLayer(ctx, scene, layer, frame, registry, partId ? onlyParts([partId]) : PASS_THROUGH, this.world);
     } catch {
       // The render error is already on the error panel; show no highlight.
       this.spare.push(canvas);
       return null;
     }
     const image = ctx.getImageData(0, 0, w, h);
-    const box = thresholdMask(image.data, w, h);
+    const bounds = thresholdMask(image.data, w, h);
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, w, h);
-    if (box) ctx.putImageData(image, 0, 0, box.x0, box.y0, box.x1 - box.x0, box.y1 - box.y0);
-    const mask: Mask = { key, canvas, scale, box, ms: performance.now() - start };
+    if (bounds) ctx.putImageData(image, 0, 0, bounds.x0, bounds.y0, bounds.x1 - bounds.x0, bounds.y1 - bounds.y0);
+    const mask: Mask = { key, canvas, scale, box: bounds, ms: performance.now() - start };
     this.timings.push(mask.ms);
     this.masks.push(mask);
     while (this.masks.length > CACHE_SIZE) this.spare.push(this.masks.shift()!.canvas);

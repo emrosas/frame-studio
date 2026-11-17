@@ -312,7 +312,7 @@ function walkScene(scene: Scene, frame: number, m: Affine, opacity: number, pref
       walkScene(shot, at, placed, opacity * place.opacity, `${path}/`, depth + 1, walk, intersect(area, boundsOf([stage], placed)), [...clips, { inverse, width: sw, height: sh }]);
       continue;
     }
-    if (layer.file !== undefined) continue;
+    if (layer.file !== undefined || layer.html !== undefined) continue;
     let resolved;
     try {
       resolved = resolveLayer(layer, scene, frame, walk.registry, walk.world);

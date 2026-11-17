@@ -289,6 +289,25 @@ Built (ADR 0020). A still is a scene with one frame.
 6. `export_stills` exports several stills in one call.
 7. Every earlier test passes.
 
+## M17: HTML layers on stills
+
+Built (ADR 0021), on the `html-layer` branch. The owner reversed ADR 0014's refusal of HTML authoring for this one layer type, to finish real social posts here.
+
+- An `html` layer on a still shows a page from the project's `html/` folder, with its stylesheets, fonts and images beside it. The host lays the page out and draws it with Chromium's HTML-in-Canvas API; `render()` stays synchronous and takes the image as it takes a decoded picture.
+- The viewer and PNG and JPG export carry it, from the tools and the CLI too. The one-file HTML embed refuses it with the reason.
+- A click selects the element under it, the selection's `partId` is a CSS selector, the overlay outlines the element, and a request names it for the agent. A drag moves the element and writes an offset on the layer.
+- `create_html_stills` makes a still from each page, or a carousel from a folder of them.
+
+**Acceptance criteria**
+
+1. The six slides in `r_admin-dashboard/tools/social/posts/business-owner-loading` open as stills after one `create_html_stills` call, changed only in the paths of what they loaded from the network.
+2. Each exports at exactly 1080x1350 and matches the Playwright render in that folder: at most 0.5% of its pixels more than 32 levels away, and a mean difference under 1.5 levels of 255.
+3. The pixels are the same on a second export, and from a render worker started afresh, as an app restart starts one. They are the same at device scale 1 and 2.
+4. A click on the "Get a demo" button of slide 6 selects it, and the request sent from the viewer carries `partId: "div.btn"` and tells the agent which page and element the owner meant.
+5. A drag on an element moves it, writes `offsets` on the layer, and Command-Z takes it back.
+6. An HTML export of a still with an html layer is refused with the reason, and a browser without the API says why the page can't be drawn.
+7. Every earlier test passes.
+
 ## Later
 
 - Retiming shots (speed, freeze, reverse), selecting inside a shot from its parent, and a library of transitions (ADR 0007, out of scope for M9).

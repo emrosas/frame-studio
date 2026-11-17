@@ -105,7 +105,7 @@ interface CaptionLayer {
 function captionLayers(scene: Scene, registry: RigRegistry, world: World): CaptionLayer[] {
   const [width, height] = stageSize(scene);
   return sceneLayers(scene).flatMap((layer: Layer) => {
-    if (layer.scene !== undefined || layer.file !== undefined) return [];
+    if (layer.scene !== undefined || layer.file !== undefined || layer.html !== undefined) return [];
     let params;
     try {
       const resolved = resolveLayer(layer, scene, 0, registry, world);
@@ -143,7 +143,7 @@ function missingCues(scene: Scene, registry: RigRegistry, world: World): { id: s
     for (const layer of sceneLayers(s)) {
       const shot = layer.scene !== undefined ? world.scenes?.get(layer.scene) : undefined;
       if (shot) visit(shot);
-      if (layer.scene !== undefined || layer.file !== undefined) continue;
+      if (layer.scene !== undefined || layer.file !== undefined || layer.html !== undefined) continue;
       try {
         const resolved = resolveLayer(layer, s, 0, registry, world);
         const cue = String(resolved.params.cue);

@@ -630,7 +630,7 @@ export interface ClipEdit {
 }
 
 /** The fields of a layer or clip a hand edit may change (ADR 0015). */
-export const LAYER_EDIT_FIELDS = ['params', 'tracks', 'overrides', 'mask', 'start', 'in', 'out'];
+export const LAYER_EDIT_FIELDS = ['params', 'tracks', 'overrides', 'mask', 'start', 'in', 'out', 'offsets'];
 
 /**
  * What else takes a hand edit, by the id it goes under in place of a layer's (ADR 0016): a cue's words as

@@ -309,6 +309,10 @@ export async function buildEmbed(sceneKey: string, options: EmbedBuildOptions): 
   const world: World = { scenes: placed, cast: entry.world.cast };
   const pictures = engine.picturesUsed(entry.scene, entry.world);
   if (pictures.length > 0) throw new Error(`An HTML export can't carry picture clips yet (ADR 0014): ${pictures.join(', ')}. Export this as MP4.`);
+  const pages = engine.htmlUsed(entry.scene, entry.world);
+  if (pages.length > 0) {
+    throw new Error(`An HTML export can't carry html layers (ADR 0021): ${pages.join(', ')}. The embed draws with no browser features beyond a canvas, and a page needs Chromium to lay it out. Export this as PNG or JPG.`);
+  }
   const ids = engine.rigIdsUsed(scene, world);
   const rigFiles = new Map(modules.rigDefinitions);
   if (project) for (const [id, file] of modules.projectRigDefinitions[project.id] ?? []) rigFiles.set(id, file);
