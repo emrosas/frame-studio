@@ -274,8 +274,20 @@ Refused: multi-select and marquee. A selection is one target (ADR 0003), and eve
 
 ## M16: Stills
 
+Built (ADR 0020). A still is a scene with one frame.
+
 - PNG and JPG export of a frame, from the viewer and the tools.
 - A still option in New scene, social size presets, and a timeline that steps aside for a one-frame scene.
+
+**Acceptance criteria**
+
+1. `export` with `png` or `jpg` writes a chosen frame at the scene's exact pixel size, from the MCP tool, the Export panel and the CLI. The PNG's pixels are the ones `render_frame` writes, and `jpg` takes a quality that changes the file's size.
+2. New scene offers Still, with 1080x1350, 1080x1080, 1080x1920, 1200x628 and a custom size. The scene it makes has one frame. The formats it offered before still make the scenes they made.
+3. On a one-frame scene the viewer shows no transport, timeline or range fields, and the keys that move through time do nothing. A click selects a layer, a request sent with it carries the range `[0, 1)`, and a drag moves the layer.
+4. A drag on a still writes the plain param, and removes the axis's track if it has one. It never writes a key.
+5. `create_scene` makes a still with `still: true`. `check` on a still passes the checks that need time as skipped, and still measures format, black frames and text.
+6. `export_stills` exports several stills in one call.
+7. Every earlier test passes.
 
 ## Later
 

@@ -39,7 +39,7 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `list_scenes()` | Every scene and composition, then the old films' scenes: id, `kind` (`scene` or `composition`), project, file, fps, duration, frame count, size, layers (with the rig, cast member or placed scene each draws; a composition's clips are its layers) and any validation errors. |
 | `get_scene(id)` | The scene or composition JSON exactly as it is in its file. |
 | `update_scene(id, patch)` | Applies an RFC 7386 JSON merge patch to a scene or a composition. Objects merge, `null` deletes a key, and arrays are replaced whole, so changing one clip means sending the whole `tracks` array. The result is validated first, and nothing is saved when it is invalid. It also refuses an edit that would break a composition placing this one, such as shortening a scene below a clip's trim or changing its fps. |
-| `create_scene(id, fps?, size?, duration)` | A new, empty scene in `scenes/<id>.json`: a paper background and no layers, to fill with `update_scene`. Without `fps` and `size` it takes `project.json`'s, or 24 fps at 1920×1080. The id is lowercase letters, digits and single hyphens, and an id a scene or composition has is refused. |
+| `create_scene(id, fps?, size?, duration?, still?)` | A new, empty scene in `scenes/<id>.json`: a paper background and no layers, to fill with `update_scene`. Without `fps` and `size` it takes `project.json`'s, or 24 fps at 1920×1080. With `still: true` it makes a still (ADR 0020), a scene with one frame, and takes no `fps` or `duration`; give it a `size` such as `[1080, 1350]`. The id is lowercase letters, digits and single hyphens, and an id a scene or composition has is refused. |
 | `create_composition(id, fps?, size?, duration)` | A new composition in `compositions/<id>.json`, with one empty track, `V1`, and a black background. Format as for `create_scene`. Add clips with `update_scene` on its `tracks`. |
 | `list_rigs()` | Each rig's param schema, the parts it declares, its variants and, for a variant, its base. A project's own rig carries `project`, and only that project's scenes can use it. |
 | `get_project(id?)` | With no id, the folder's `project.json` (ADR 0013): its name, the format new scenes and compositions start with, and its cast, or `{}` when it has none. With an id, an old film's `project.json`. |
@@ -55,7 +55,8 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 | `check(sceneId, from?, to?, loop?)` | Measures a scene or composition, for what an agent can't watch or hear. Renders every frame of `[from, to)` at reduced size in the render worker, reads the rendered audio, and returns `{ ok, scene, from, to, checks: [{ id, status, rank, message, frames?, value? }], file }`. `status` is `pass`, `warn` or `fail`, `ok` is false when any check failed, `rank` is `P0` to `P3` (below), and `frames` are `[from, to)` ranges. Findings come first, by rank, then passes. The report is saved to `.frame-studio/checks/<id>.json`, and the viewer's Check video button runs the same job. The checks are listed below. |
 | `hit_test(sceneId, frame, x, y)` | The layer and part at a scene pixel, and every layer with paint there. On a composition, it names the clip; hit-test the clip's scene to find what's inside. |
 | `apply_to_selection(selection, patch)` | A scoped edit. Over `[from, to)` of one layer, it swaps to a rig variant and/or holds params, written as overrides, or clears the overrides there. |
-| `export(sceneId, target, from?, to?, silent?, media?)` | `mp4`, `gif` or `html`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. HTML leaves sound files out, and lists them in `mediaLeftOut`, unless `media` is true. Returns the file path under `out/`. An MP4 of 10 s or more is split across render workers (ADR 0019); the result says how many in `workers`. |
+| `export(sceneId, target, from?, to?, silent?, media?, frame?, quality?)` | `mp4`, `gif`, `html`, `png` or `jpg`. MP4 and HTML carry the scene's audio unless `silent` is true; GIF never does. HTML leaves sound files out, and lists them in `mediaLeftOut`, unless `media` is true. Returns the file path under `out/`. An MP4 of 10 s or more is split across render workers (ADR 0019); the result says how many in `workers`. `png` and `jpg` are one frame at the scene's exact pixel size (ADR 0020): `frame` picks it and defaults to 0, and `quality` sets a JPG's from 1 to 100, 90 when left out. They return `{ file, format, frame, width, height, bytes }`. A still's file is `out/<scene>/<scene>.png`; a frame of a longer scene carries its number. A JPG has no alpha, so the frame goes over white. |
+| `export_stills(sceneIds?, format?, quality?)` | Several stills in one call, for a carousel: the scenes named, in that order, or every still in the folder. Each goes to its own `out/<scene>/`. Returns `{ format, exported: [{ scene, file, width, height, bytes }], failed: [{ scene, error }] }`; one that fails doesn't stop the rest. |
 | `next_request()` | Claims the oldest request waiting for an external agent and returns the whole thread, with instructions for this turn. |
 | `get_request(id)` | A request by id, as in a pasted line, with its thread. A turn that is still waiting gets claimed, so its checkpoint is taken. |
 | `complete_request(id, status, summary)` | Ends your turn as `done` or `failed`, with a one-line summary the viewer shows. The thread stays open for the user to reply or settle. |
@@ -64,6 +65,12 @@ Frames are a frame number or an `MM:SS:FF` timecode, where `FF` is the frame wit
 In Claude Code the server also offers the `/frame-studio:next` command, which takes the next request and hands it to the agent, and the resource `@frame-studio:selection://current`, the viewer's current selection.
 
 A selection is `{ sceneId, layerId?, partId?, from, to }`. `layerId` comes from `hit_test`, and `"background"` means the background. Leaving out `layerId` selects the whole frame range, and then params go to every layer whose rig takes all of them. A rig swap always needs a layer. A patch is `{ rig?, params? }`, or `{ remove: true }` to clear overrides over the range. Without a `layerId`, `remove` reaches every layer with an override there, and a range with none is refused. An override the range only partly covers is split, so it keeps applying outside the range and the patch lands on top of it inside. A `partId` is accepted, but params apply to the whole layer. A part-level change needs a rig variant.
+
+## Stills
+
+A still is a scene with one frame (ADR 0020), for an image: a social post, a carousel slide, a thumbnail. `create_scene` with `still: true` makes one, `update_scene` fills it, `render_frame` shows it, and `export` with `png` or `jpg` writes it at its exact size. Set params directly. Keys, overrides, `apply_to_selection` and contact sheets do nothing useful on one frame. A request from the viewer on a still has the range `[0, 1)`, and its description says the scene is a still.
+
+`check` on a still passes the checks that need time as "Skipped: a still has one frame": `duration`, `freeze`, `opening`, `loop-seam`, `flashing`, `sparse` and `reading-time`. It still measures `format`, `black`, `text-frame`, `text-safe` and `text-contrast`. `text-safe` treats any stage taller than it is wide as a vertical video, so on a 1080x1350 post it warns about zones only TikTok, Reels and Shorts have.
 
 ## What check measures
 
@@ -138,7 +145,7 @@ The thread streams what the agent does: its reply, one line per step, and thumbn
 5. `check`, and fix what fails. Warnings are judgment calls.
 
 To follow a voice: `align_voice` with the script, a `captions` layer on the cue, then `update_scene` to put `"word": "voice#w12"` beside the `t` of any key or marker that should land on a word. Words are in `get_scene`, under the cue.
-6. `export` when it looks right.
+6. `export` when it looks right: `mp4`, `gif` or `html` for a video, `png` or `jpg` for a still.
 
 ## Notes
 

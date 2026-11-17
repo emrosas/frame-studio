@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { checkNewScene, checkNewVideo } from '../studio/protocol';
-import { FORMATS, LOOKS, PIXEL_DITHER } from './formats';
+import { FORMATS, LOOKS, PIXEL_DITHER, STILL_FORMATS } from './formats';
 
 describe('formats', () => {
   it('gives a pixel short the 180x320 stage', () => {
@@ -15,6 +15,17 @@ describe('formats', () => {
       expect(checkNewScene(input)).toBeNull();
       expect(checkNewVideo(input)).toBeNull();
     }
+  });
+});
+
+describe('still formats (ADR 0020)', () => {
+  it('are the social sizes, each one the server takes as a still', () => {
+    expect(STILL_FORMATS.map((f) => f.size.join('x'))).toEqual(['1080x1350', '1080x1080', '1080x1920', '1200x628']);
+    for (const f of STILL_FORMATS) expect(checkNewScene({ id: 'x', still: true, size: [...f.size] })).toBeNull();
+  });
+
+  it('leaves the animation formats as they were', () => {
+    expect(FORMATS.map((f) => `${f.id} ${f.size.join('x')} ${f.fps}`)).toEqual(['short 1080x1920 30', 'pixel 1080x1920 30', 'landscape 1920x1080 24', 'square 1080x1080 30']);
   });
 });
 

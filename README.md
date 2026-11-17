@@ -127,7 +127,7 @@ Render from the command line:
 
 ```sh
 npm run render -- --scene bear-test --frame 47          # PNG
-npm run export -- --scene bear-test --target mp4        # or gif, html
+npm run export -- --scene bear-test --target mp4        # or gif, html, png, jpg
 npm run contact-sheet -- --scene bear-test --every 6
 ```
 

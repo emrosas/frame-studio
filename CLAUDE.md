@@ -22,7 +22,7 @@ One scene, three outputs:
 2. **GIF**: the same frames, palette-quantized.
 3. **Single-file HTML embed**: engine + only the rigs the scene uses + scene data (+ audio generators), inlined into one file. No external requests, no dependencies, droppable into any website. Sound files stay out unless the export is asked to inline them (ADR 0012).
 
-Stills (PNG, JPG) are planned (M16).
+A frame also exports as a PNG or JPG at the scene's exact size. A **still** is a scene with one frame (ADR 0020): no field marks it, the hosts read `isStill(scene)`, and the viewer drops the transport, timeline and range on one.
 
 The embed is the differentiator. Protect it with the runtime budget below.
 
@@ -79,8 +79,9 @@ projects/     Films made before compositions (M9, ADR 0007): <id>/project.json,
               folders (tools/studio/convert.ts).
 references/   Reference images supplied by the user (agent input only, gitignored).
 tools/
-  render/     CLI rendering through a studio server's render worker: frame -> PNG,
-              range -> MP4/GIF, contact sheets. npm run render / export / contact-sheet.
+  render/     CLI rendering through a studio server's render worker: frame -> PNG
+              or JPG, range -> MP4/GIF, contact sheets, every still at once.
+              npm run render / export / contact-sheet.
   bundle/     Single-file HTML builder: validates the scene, bundles only the rigs
               it uses with the player, and only the glyphs its text uses, and
               inlines all, with Rolldown. npm run export -- --target html.
@@ -181,7 +182,7 @@ Engine support required from the start:
 
 ## Hand edits (ADR 0015)
 
-The timeline edits a scene's key times, and a press on the canvas drags a layer. On a composition it also adds, splits, duplicates, deletes and moves clips between tracks, and sound moves, trims, fades, splits and duplicates on scenes and compositions alike (ADR 0018, `src/studio/timeline-edit.ts`). Hand edits change when and where; values, drawing and easing stay the agent's, but for the transition presets, which write plain keys. A drag shows through a patched copy of the scene in the viewer, and `render()` never hears about it. A canvas drag writes params when untracked, a key at the playhead when tracked, and an override when a range is set around the playhead (`src/viewer/drag.ts`). Everything saves through the server's checked edit, stays locked while an agent works on the scene, and shares one Command-Z stack, which the Edit menu reaches too. A spoken word's text and timing are hand-editable too (ADR 0016), and dragging a key anchored to a word detaches it.
+The timeline edits a scene's key times, and a press on the canvas drags a layer. On a still a drag writes the plain param and removes that axis's track, never a key (ADR 0020). On a composition it also adds, splits, duplicates, deletes and moves clips between tracks, and sound moves, trims, fades, splits and duplicates on scenes and compositions alike (ADR 0018, `src/studio/timeline-edit.ts`). Hand edits change when and where; values, drawing and easing stay the agent's, but for the transition presets, which write plain keys. A drag shows through a patched copy of the scene in the viewer, and `render()` never hears about it. A canvas drag writes params when untracked, a key at the playhead when tracked, and an override when a range is set around the playhead (`src/viewer/drag.ts`). Everything saves through the server's checked edit, stays locked while an agent works on the scene, and shares one Command-Z stack, which the Edit menu reaches too. A spoken word's text and timing are hand-editable too (ADR 0016), and dragging a key anchored to a word detaches it.
 
 ## Reference images
 
@@ -219,7 +220,7 @@ Before a folder's `rigs/` or `audio/` load the first time, main asks. Trust is s
 `tools/mcp/server.ts`, over stdio, a shim that forwards to the studio server running on the folder, or starts a headless one (ADR 0008). The repo's `.mcp.json` registers it for Claude Code, and the app ships it as `frame-studio-mcp`. Setup and the full tool reference are in `docs/MCP.md`. Keep inputs and outputs simple JSON. Tools:
 - `list_scenes()`, `get_scene(id)`, `update_scene(id, patch)`: scenes and compositions, and JSON merge patches validated before saving, along with every composition that places the file. Old films' scenes take qualified ids, `<project>/<scene>`
 - `get_project(id?)`, `update_project(id?, patch)`: the folder's `project.json` with no id, an old film's with one (which waits while another thread in the film works); `list_projects()`: the old films
-- `create_scene(id, fps?, size?, duration)`, `create_composition(id, fps?, size?, duration)`: an empty scene (paper, no layers) and an empty composition (one track), in `project.json`'s format by default. The viewer's sidebar makes the same through the studio server
+- `create_scene(id, fps?, size?, duration?, still?)`, `create_composition(id, fps?, size?, duration)`: an empty scene (paper, no layers) and an empty composition (one track), in `project.json`'s format by default. `still: true` makes a one-frame scene (ADR 0020). The viewer's sidebar makes the same through the studio server
 - `list_rigs()`: each rig's param schema, parts, and variants, with `project` on a project's own rig
 - `list_generators()`: each audio generator's param schema
 - `list_media()`, `import_media(path)`: the sound files in `media/` with their lengths, and copying one in (ADR 0012)
@@ -229,8 +230,9 @@ Before a folder's `rigs/` or `audio/` load the first time, main asks. Trust is s
 - `render_contact_sheet(sceneId, from, to, every)`: a grid of frames for reviewing motion
 - `hit_test(sceneId, frame, x, y)`: layer/part id at a pixel
 - `apply_to_selection(selection, patch)`: writes a scoped override for the selection, or with `{ remove: true }` clears the overrides in it
-- `check(sceneId, from?, to?)`: measures a scene or composition before anyone watches it (format, black, freeze, flashing, loudness, sync, and where text sits, how long it stays and its contrast; ADR 0014), each result ranked P0 to P3
-- `export(sceneId, target, from?, to?, silent?, media?)`: `mp4` | `gif` | `html`, returns an output path; `media` inlines sound files in HTML
+- `check(sceneId, from?, to?)`: measures a scene or composition before anyone watches it (format, black, freeze, flashing, loudness, sync, and where text sits, how long it stays and its contrast; ADR 0014), each result ranked P0 to P3. On a still, the checks that need time pass as skipped
+- `export(sceneId, target, from?, to?, silent?, media?, frame?, quality?)`: `mp4` | `gif` | `html` | `png` | `jpg`, returns an output path; `media` inlines sound files in HTML; `png` and `jpg` are one `frame` at the scene's size, and `jpg` takes a `quality`
+- `export_stills(sceneIds?, format?, quality?)`: several stills in one call, or every still in the folder
 - `next_request()`, `get_request(id)`, `complete_request(id, status, summary)`, `get_selection()`: the viewer's request threads and current selection (ADR 0003, ADR 0006). `complete_request` ends a turn; the user replies or settles. Plus the `/frame-studio:next` prompt and the `selection://current` resource
 
 ## Integrated AI (M8)

@@ -214,6 +214,9 @@ export interface SelectionState {
   notice: string | null;
 }
 
+/** What the Export panel makes. PNG and JPG are the frame on screen (ADR 0020). */
+export type ExportFormat = 'mp4' | 'gif' | 'html' | 'png' | 'jpg';
+
 /** The Export panel (ADR 0008): closed, set up, running, or finished. */
 export interface ExportState {
   open: boolean;
@@ -345,7 +348,7 @@ export interface ViewerActions {
   /** Shows or hides the Export panel. */
   toggleExport(open?: boolean): void;
   /** Exports the scene on screen, or only the selected range. */
-  startExport(target: 'mp4' | 'gif' | 'html', options: { range: boolean; sound: boolean; media?: boolean }): Promise<string | null>;
+  startExport(target: ExportFormat, options: { range: boolean; sound: boolean; media?: boolean; quality?: number }): Promise<string | null>;
   cancelExport(): void;
   /** Shows the last export's file in Finder (the app only). */
   revealExport(): void;
@@ -487,6 +490,8 @@ export class ViewerUi {
   /** False without a valid scene; the play button is then disabled. */
   canPlay = $state(false);
   timeline = $state<TimelineReadout | null>(null);
+  /** The scene on screen is a still, one frame (ADR 0020): the transport, the timeline and the range step aside. */
+  still = $state(false);
   /** The scene's frame rate. */
   fps = $state<number | null>(null);
   sound = $state<SoundState | null>(null);

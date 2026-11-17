@@ -1,8 +1,30 @@
 # Progress
 
-Last updated 2026-11-10 (export speed on the `export-speed` branch). Before that, 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
+Last updated 2026-11-17 (M16, stills, on the `m16-stills` branch: 1899 unit tests pass, 276 browser tests pass with 19 skipped for want of a packaged build and the voice samples, and typecheck is clean). Before that, 2026-11-10 (export speed on the `export-speed` branch) and 2026-11-07. PRs #1 and #2 are merged to `main` at `75fcbc5`: the shorts studio, the UI pass, keyframe editing, canvas drag, thread cards, Generate Voice with provider keys and folder trust (ADR 0017), and word timing, captions, the voice row and word anchors (ADR 0016). At that merge 1709 unit and 240 browser tests passed, typecheck was clean, and the packaged app built. The leftovers, M15, the sidebar and the thread view below sit on the `leftovers-and-m15-plan` branch, uncommitted, at version 0.5.0: 1796 unit and 265 browser tests pass, and typecheck is clean. `/Applications` holds the 0.5.0 build from before the sidebar and thread changes; the build with them is in `build/desktop/dist/mac-arm64/`. 0.4.0 is kept in `build/desktop/previous/`.
 
 ## Done
+
+### M16: Stills (ADR 0020)
+
+- A still is a scene with one frame. No field marks it: `isStill(scene)` in `src/engine/time.ts` reads the frame count, and `render()`, hit testing, the embed and the scene format are unchanged. New stills are written as 1 fps for 1 second.
+- `export` takes `png` and `jpg` for one frame at the scene's exact size, from the MCP tool, the Export panel and the CLI (`npm run export -- --target png`, and `npm run render -- --format jpg --quality 85`). `frame` defaults to 0, a JPG's `quality` to 90, and a JPG goes over white. The render worker's `writeImage` makes both. A still's file is `out/<scene>/<scene>.png`.
+- `export_stills` and `npm run export -- --stills` export every still in the folder, or the scenes named, and report the ones that failed.
+- `create_scene` takes `still: true`. New scene has a Kind switch, and Still offers 1080x1350, 1080x1080, 1080x1920, 1200x628 and a custom size. The animation formats are as they were.
+- On a still the viewer's dock is the selection bar with a Still badge: no transport, timeline or range fields, and Space, the arrows, Home, End, I, O, X and S do nothing. Select, hover, drag and requests work, and a request's range is `[0, 1)`. The Export panel offers PNG, JPG and HTML there, and adds PNG and JPG of the frame on screen to every other scene.
+- A drag on a still writes the param and removes that axis's track (`writePosition` in `src/viewer/drag.ts`). An override already setting the axis on frame 0 still takes the value.
+- `check` on a still passes `duration`, `freeze`, `opening`, `loop-seam`, `flashing`, `sparse` and `reading-time` as skipped, and still measures format, black frames and text.
+- A thread on a still tells the agent so, and the studio agents' instructions cover stills.
+- The segmented control lays any number of choices in one row. It was fixed at three columns.
+
+### How each M16 acceptance criterion was verified
+
+1. `tests/browser/stills.test.ts`: the PNG is 1080x1350 with the same pixel hash as `render_frame`'s file and as a second export; a JPG at quality 20 is under 70% of the bytes at 95, and 90 sits between; the CLI and the Export panel write the same files.
+2. The same file drives New scene: Still shows the four sizes and Custom, and the scene written is 1 fps, 1 second, 1200x628. `src/viewer/formats.test.ts` pins the four animation formats.
+3. The viewer tests find no `.transport`, `.ruler` or `.token-when`, press the time keys and read frame 0 and no range, click the dot, and read the queued request's selection as `{ layerId: 'dot', from: 0, to: 1 }`.
+4. `src/viewer/drag.test.ts` covers the rule, and the browser test drags a layer with an `x` track and reads the file: no `tracks`, the param moved, and Command-Z brings the track back.
+5. `create_scene` and `check` in the same browser file, and `buildReport` in `src/export/check.test.ts`.
+6. `export_stills` with no ids, with ids in order, and with one id that doesn't exist.
+7. `npm test`: 86 files, 1899 tests. `npm run test:browser`: 21 files and 276 tests pass, 2 files and 19 tests skipped (the packaged app, which isn't built here, and tests that need the voice samples). `npm run typecheck` is clean.
 
 ### Export speed: benchmark and parallel MP4 (ADR 0019)
 
@@ -966,7 +988,7 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 1. **Take feedback from real use first.** The user is making videos in the installed app. What they run into outranks everything below.
 2. **One real ElevenLabs Generate, by the user, with their own key.** Voices, model and price have only run against a fake host, and the Spanish voice list is the likeliest thing to need fixing.
 3. **Publish 0.5.0 when the user asks.** `package.json` says 0.5.0 and the build is installed on this computer. The updater and other computers only see a GitHub release, and tagging and publishing need the user's word (`docs/RELEASING.md`).
-4. M16, stills.
+4. An HTML layer for stills, on the `html-layer` branch (ADR 0021).
 5. Typefaces of a project's own, converted by the app from a font file you own (a `fonts/` folder, or a drop in the viewer).
 6. Other candidates, from ADR 0008 and "Later": signing and notarization (then electron-updater), Windows and Linux builds, selecting inside a shot from its parent, and threads that start without a scene, so the agent makes it from a description.
 
@@ -987,7 +1009,10 @@ Captions keep time on their own now, and a key or marker can land on a spoken wo
 - Trimming a clip's start leaves its transition's keys behind. Apply the preset again.
 - A mask rig that uses its rng draws differently on the second half of a split clip, since the seed comes from the layer's id. The preset rigs don't use it.
 - A turn you sent that was still waiting when the server stopped needs Start afterwards. The new server can't tell it from a planted one.
-- Safe-zone guides are approximations, not measured from each app.
+- Safe-zone guides are approximations, not measured from each app. A 1080x1350 still counts as vertical, so `text-safe` judges it against the zones TikTok, Reels and Shorts cover, which an Instagram feed post doesn't have.
+- A still at 1 fps can't be a clip in a composition at another fps, and a one-frame clip would show for one frame anyway. Holding a still in a video isn't built.
+- The viewer has no button for exporting every still at once; `export_stills` and `npm run export -- --stills` do it.
+- `npm ci` in a fresh checkout skipped Electron's install script here, so `node node_modules/electron/install.js` had to run once before the browser tests.
 - A voice row's words are read-only on a composition, as its keys are, though the voice itself moves and trims. Timing is scenes only in the viewer; `align_voice` takes either.
 - `voice.test.ts` needs the pinned whisper-cli, the model and sample voices outside the repo, and skips without them.
 - whisper-cli's first run on a machine takes about 18 s while Metal compiles.

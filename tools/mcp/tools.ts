@@ -141,8 +141,14 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'Create a scene',
       description:
-        "Creates a new, empty scene in scenes/<id>.json: a paper background and no layers, to fill in with update_scene. A scene draws and places nothing; arrange scenes in a composition. Its fps and size default to project.json's, else 24 fps at 1920×1080. Refuses an id a scene or composition has. Returns the id to use with the other tools.",
-      inputSchema: { id: newId, fps: fps.optional(), size: size.optional(), duration },
+        "Creates a new, empty scene in scenes/<id>.json: a paper background and no layers, to fill in with update_scene. A scene draws and places nothing; arrange scenes in a composition. Its fps and size default to project.json's, else 24 fps at 1920×1080. For an image, pass still: true in place of fps and duration: a still is a scene with one frame, exported with export as png or jpg. Social sizes: [1080, 1350] 4:5, [1080, 1080] 1:1, [1080, 1920] 9:16, [1200, 628] landscape. Refuses an id a scene or composition has. Returns the id to use with the other tools.",
+      inputSchema: {
+        id: newId,
+        fps: fps.optional(),
+        size: size.optional(),
+        duration: duration.optional().describe('Seconds. Required unless still is true'),
+        still: z.boolean().optional().describe('True for a still: one frame, with no fps or duration'),
+      },
     },
     tool('create_scene', async (w, input: NewScene) => text(await w.createScene(input))),
   );
@@ -379,23 +385,49 @@ export function registerStudioTools(server: McpServer, options: StudioToolsOptio
     {
       title: 'Export',
       description:
-        "Exports a scene. mp4 is H.264 at the scene fps, gif loops, and html is a single self-contained file that draws the scene live with no network requests. mp4 and html carry the scene's audio unless silent is true; gif is always silent. html leaves sound file cues out (and says which in mediaLeftOut) unless media is true, which inlines the files and makes the export as big as its sound. mp4 and gif take an optional [from, to) range; html is always the whole scene. Returns the output path.",
+        "Exports a scene. mp4 is H.264 at the scene fps, gif loops, and html is a single self-contained file that draws the scene live with no network requests. png and jpg are one frame as an image at the scene's exact pixel size: frame says which (0 when left out, which is a still's only frame), and jpg takes a quality. mp4 and html carry the scene's audio unless silent is true; gif is always silent. html leaves sound file cues out (and says which in mediaLeftOut) unless media is true, which inlines the files and makes the export as big as its sound. mp4 and gif take an optional [from, to) range; html is always the whole scene. Returns the output path.",
       inputSchema: {
         sceneId,
-        target: z.enum(['mp4', 'gif', 'html']),
+        target: z.enum(['mp4', 'gif', 'html', 'png', 'jpg']),
         from: frame.optional(),
         to: frame.optional(),
         silent: z.boolean().optional().describe("Leave the scene's audio out of an mp4 or html export."),
         media: z.boolean().optional().describe('For html: inline the sound files its cues play.'),
+        frame: frame.optional().describe('For png and jpg: the frame to export. Defaults to 0'),
+        quality: z.number().int().min(1).max(100).optional().describe('For jpg: 1 to 100, 90 when left out'),
       },
     },
     tool(
       'export',
       async (
         w,
-        { sceneId: id, target, from, to, silent, media }: { sceneId: string; target: 'mp4' | 'gif' | 'html'; from?: number | string; to?: number | string; silent?: boolean; media?: boolean },
-      ) => text(await w.export(id, target, { from, to, silent, media })),
+        {
+          sceneId: id,
+          target,
+          from,
+          to,
+          silent,
+          media,
+          frame: at,
+          quality,
+        }: { sceneId: string; target: 'mp4' | 'gif' | 'html' | 'png' | 'jpg'; from?: number | string; to?: number | string; silent?: boolean; media?: boolean; frame?: number | string; quality?: number },
+      ) => text(await w.export(id, target, { from, to, silent, media, frame: at, quality })),
     ),
+  );
+
+  server.registerTool(
+    'export_stills',
+    {
+      title: 'Export stills',
+      description:
+        "Exports several stills in one call, each as an image at its scene's exact size in out/<scene>/: the scenes in sceneIds, or every still in the folder when it's left out. A still is a scene with one frame. Returns the file for each, and the reason for any that failed; the rest still export. For a carousel, name its slides in order.",
+      inputSchema: {
+        sceneIds: z.array(z.string()).min(1).max(100).optional().describe('Scene ids, in the order to export. Every still when left out'),
+        format: z.enum(['png', 'jpg']).optional().describe('png when left out'),
+        quality: z.number().int().min(1).max(100).optional().describe('For jpg: 1 to 100, 90 when left out'),
+      },
+    },
+    tool('export_stills', async (w, input: { sceneIds?: string[]; format?: 'png' | 'jpg'; quality?: number }) => text(await w.exportStills(input))),
   );
 
   if (!options.requests) return;

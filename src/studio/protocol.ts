@@ -577,14 +577,18 @@ export function checkNewRequest(input: unknown, options: { reply?: boolean } = {
 /**
  * A new, empty scene: paper and no layers. One in the folder's scenes/ takes the fps and size it's given, or
  * else project.json's, or else 24 fps at 1920×1080 (ADR 0013); one in an M9 project takes that project's,
- * so it leaves them out.
+ * so it leaves them out. A still (ADR 0020) is one frame, written as 1 fps for 1 second, so it takes
+ * `still` in place of fps and duration.
  */
 export interface NewScene {
   id: string;
   project?: string;
   fps?: number;
   size?: [number, number];
-  duration: number;
+  /** Seconds. Left out for a still. */
+  duration?: number;
+  /** One frame, for an image (ADR 0020). */
+  still?: boolean;
   /** A pixel stage (ADR 0014), for a scene in the folder. The server writes it into the new scene file. */
   pixel?: NewPixel;
 }
@@ -658,7 +662,10 @@ export interface LayerChange {
 /** The format a new scene or composition gets when neither it nor project.json says. */
 export const DEFAULT_FORMAT = { fps: 24, size: [1920, 1080] as [number, number] };
 
-const NEW_SCENE_FIELDS = new Set(['id', 'project', 'fps', 'size', 'duration', 'pixel']);
+const NEW_SCENE_FIELDS = new Set(['id', 'project', 'fps', 'size', 'duration', 'pixel', 'still']);
+
+/** What a still is written as: one frame (ADR 0020). */
+export const STILL_TIMING = { fps: 1, duration: 1 };
 const NEW_COMPOSITION_FIELDS = new Set(['id', 'fps', 'size', 'duration']);
 const NEW_VIDEO_FIELDS = new Set([...NEW_COMPOSITION_FIELDS, 'scene', 'pixel']);
 const ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -709,6 +716,12 @@ export function checkNewScene(input: unknown): string | null {
   for (const key of Object.keys(input)) if (!NEW_SCENE_FIELDS.has(key)) return `unknown field "${key}"`;
   const problem = checkId(input.id, 'a scene');
   if (problem) return problem;
+  if (input.still !== undefined && typeof input.still !== 'boolean') return 'still must be true or false';
+  if (input.still === true) {
+    if (input.project !== undefined) return 'a still is for scenes in the folder; a scene in a film made before compositions takes its fps';
+    if (input.fps !== undefined || input.duration !== undefined) return 'a still is one frame; leave out fps and duration';
+    return checkFormat(input) ?? checkNewPixel(input.pixel, input.size);
+  }
   if (input.project !== undefined) {
     const inProject = checkId(input.project, 'the project');
     if (inProject) return inProject;

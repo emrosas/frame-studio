@@ -1,6 +1,9 @@
 // Frame Studio render tools.
 //
 //   npm run render -- --scene bear-test --frame 47
+//   npm run render -- --scene launch-1 --format jpg --quality 85
+//   npm run export -- --scene launch-1 --target png
+//   npm run export -- --stills --target png
 //   npm run export -- --scene bear-test --target mp4
 //   npm run export -- --scene bear-test --target html
 //   npm run contact-sheet -- --scene bear-test --every 6
@@ -9,6 +12,10 @@
 // A long MP4 splits across render workers, as many as the machine suits;
 // --workers sets the number, and --workers 1 makes it in one page (ADR 0019).
 // HTML leaves sound files out unless --media inlines them (ADR 0012).
+// An image is one frame at the scene's exact size (ADR 0020): --frame says
+// which, 0 when left out, and a JPG takes --quality from 1 to 100. --stills
+// exports every one-frame scene in the folder, or the ones --scene names,
+// separated by commas.
 // Frames and range ends take a frame number or an MM:SS:FF timecode. Files go
 // to out/<scene>/ in the studio folder unless --out says otherwise. The
 // written path is printed on stdout; progress goes to stderr.
@@ -25,10 +32,13 @@ import { writeFileAtomic } from '../scene-files.ts';
 import { connectStudio } from '../studio/connect.ts';
 import { withheldNote } from '../studio/code.ts';
 import { studioFolder, trustsCode } from '../studio/folder.ts';
-import { openStudio, writeViaSink, type Studio } from './studio.ts';
+import { imageName, isImageFormat, type ImageFormat, type RenderSceneInfo } from '../../src/viewer/render-api.ts';
+import { openStudio, writeViaSink, type RenderTransport, type Studio } from './studio.ts';
 
 const USAGE = `Usage:
-  node tools/render/cli.ts frame --scene <id> --frame <n|MM:SS:FF> [--out file.png]
+  node tools/render/cli.ts frame --scene <id> [--frame <n|MM:SS:FF>] [--format png|jpg] [--quality <1-100>] [--out file]
+  node tools/render/cli.ts export --scene <id> --target png|jpg [--frame <n|MM:SS:FF>] [--quality <1-100>] [--out file]
+  node tools/render/cli.ts export --stills [--scene <id,id>] --target png|jpg [--quality <1-100>]
   node tools/render/cli.ts export --scene <id> --target mp4|gif [--from <n|tc>] [--to <n|tc>] [--silent] [--workers <n>] [--out file]
   node tools/render/cli.ts export --scene <id> --target html [--silent] [--media] [--out file.html]
   node tools/render/cli.ts contact-sheet --scene <id> [--from <n|tc>] [--to <n|tc>] [--every <n>] [--columns <n>] [--out file.png]
@@ -40,6 +50,9 @@ const { values } = parseArgs({
   options: {
     scene: { type: 'string' },
     frame: { type: 'string' },
+    format: { type: 'string' },
+    quality: { type: 'string' },
+    stills: { type: 'boolean' },
     target: { type: 'string' },
     from: { type: 'string' },
     to: { type: 'string' },
@@ -74,17 +87,30 @@ if (values.help || !command) {
   process.exit(0);
 }
 if (!['frame', 'export', 'contact-sheet'].includes(command)) fail(`Unknown command ${JSON.stringify(command)}.\n${USAGE}`);
-if (!values.scene) fail(`${command} needs --scene <id>\n${USAGE}`);
-if (command === 'frame' && values.frame === undefined) fail('frame needs --frame <n|MM:SS:FF>');
+if (!values.scene && !values.stills) fail(`${command} needs --scene <id>\n${USAGE}`);
 const target = values.target;
-if (command === 'export' && target !== 'mp4' && target !== 'gif' && target !== 'html') fail('export needs --target mp4, gif or html');
+if (command === 'export' && target !== 'mp4' && target !== 'gif' && target !== 'html' && !isImageFormat(target)) fail('export needs --target mp4, gif, html, png or jpg');
+if (values.format !== undefined && command !== 'frame') fail('--format is for the frame command; export takes --target');
+if (values.format !== undefined && !isImageFormat(values.format)) fail(`--format must be png or jpg; got ${JSON.stringify(values.format)}`);
+/** The image a frame command or an image export writes; undefined for every other command. */
+const image: ImageFormat | undefined = command === 'frame' ? ((values.format as ImageFormat | undefined) ?? 'png') : command === 'export' && isImageFormat(target) ? target : undefined;
+if (values.frame !== undefined && !image) fail('--frame is for an image: the frame command, or --target png or jpg');
+if (values.quality !== undefined && image !== 'jpg') fail('--quality applies to jpg; a png is lossless');
+if (values.stills && (command !== 'export' || !image)) fail('--stills goes with export --target png or jpg');
+if (values.stills && (values.frame !== undefined || values.out !== undefined)) fail('--stills writes each still to out/<scene>/; drop --frame and --out');
+if (image && command === 'export') {
+  const extra = ['from', 'to', 'every', 'columns'].filter((name) => values[name as keyof typeof values] !== undefined);
+  if (extra.length > 0) fail(`--target ${image} exports one frame; drop ${extra.map((name) => `--${name}`).join(', ')} and give --frame`);
+}
+const quality = positiveInt('quality', values.quality);
+if (quality !== undefined && quality > 100) fail(`--quality must be from 1 to 100; got ${quality}`);
 if (command === 'export' && target === 'html') {
   const extra = ['from', 'to', 'every', 'columns'].filter((name) => values[name as keyof typeof values] !== undefined);
   if (extra.length > 0) fail(`--target html exports the whole scene; drop ${extra.map((name) => `--${name}`).join(', ')}`);
 }
 if (values.media && (command !== 'export' || target !== 'html')) fail('--media applies to html exports; mp4 always carries sound files');
-if (values.silent && (command !== 'export' || target === 'gif')) fail(`--silent applies to mp4 and html exports; ${target === 'gif' ? 'GIFs are always silent' : `${command} makes no sound`}`);
-if (values.workers !== undefined && (command !== 'export' || target === 'html')) fail('--workers applies to mp4 and gif exports');
+if (values.silent && (command !== 'export' || target === 'gif' || image)) fail(`--silent applies to mp4 and html exports; ${target === 'gif' ? 'GIFs are always silent' : image ? 'an image makes no sound' : `${command} makes no sound`}`);
+if (values.workers !== undefined && (command !== 'export' || target === 'html' || image)) fail('--workers applies to mp4 and gif exports');
 const every = positiveInt('every', values.every);
 const workers = positiveInt('workers', values.workers);
 const columns = positiveInt('columns', values.columns);
@@ -113,11 +139,13 @@ async function range(studio: Studio): Promise<{ from?: number; to?: number }> {
 async function run(studio: Studio): Promise<void> {
   const id = studio.scene.id;
   const dir = `out/${studio.scene.out}`;
-  if (command === 'frame') {
-    const frame = await studio.call('resolveFrame', values.frame ?? '');
-    const path = outPath(`${dir}/frame-${pad(frame)}.png`);
-    const bytes = await writeViaSink(studio, path, (sink) => studio.call('writePng', frame, sink));
-    process.stderr.write(`${id} frame ${frame}: ${studio.scene.width}x${studio.scene.height}, ${bytes} bytes\n`);
+  if (image) {
+    const frame = values.frame === undefined ? 0 : await studio.call('resolveFrame', values.frame);
+    // The frame command keeps its frame-00047 names; an export is named after the scene.
+    const name = command === 'frame' ? `frame-${pad(frame)}.${image}` : imageName(id, image, frame, studio.scene.frameCount);
+    const path = values.stills ? resolve(folder.root, `${dir}/${name}`) : outPath(`${dir}/${name}`);
+    const result = await writeViaSink(studio, path, (sink) => studio.call('writeImage', frame, sink, { format: image, ...(quality !== undefined ? { quality } : {}) }));
+    process.stderr.write(`${id} frame ${frame}: ${result.width}x${result.height} ${image}, ${result.bytes} bytes\n`);
     process.stdout.write(`${shown(path)}\n`);
     return;
   }
@@ -142,6 +170,18 @@ async function run(studio: Studio): Promise<void> {
     process.stdout.write(`${shown(path)}\n`);
     return;
   }
+}
+
+/** Every scene in the folder that renders and has one frame (ADR 0020). */
+async function stillKeys(transport: RenderTransport): Promise<string[]> {
+  type Info = { scene: RenderSceneInfo | null; errors: string[]; scenes: string[] };
+  const { scenes } = (await transport.call('', 'info', [])) as Info;
+  const stills: string[] = [];
+  for (const key of scenes) {
+    const info = (await transport.call(key, 'info', [])) as Info;
+    if (info.scene?.frameCount === 1 && info.errors.length === 0) stills.push(key);
+  }
+  return stills;
 }
 
 /** The HTML embed is bundled in Node; it needs no browser. */
@@ -169,8 +209,25 @@ if (command === 'export' && target === 'html') {
   const connected = await connectStudio(folder, { log: (line) => process.stderr.write(`${line}\n`) });
   let studio: Studio | undefined;
   try {
-    studio = await openStudio(values.scene ?? '', { transport: connected.transport, onProgress: progress });
-    await run(studio);
+    if (values.stills) {
+      // Every one-frame scene, or the ones named. One that fails says why and the rest still export.
+      const named = values.scene?.split(',').map((s) => s.trim()).filter(Boolean);
+      const keys = named ?? (await stillKeys(connected.transport));
+      if (keys.length === 0) throw new Error('There are no stills in this folder. A still is a scene with one frame.');
+      for (const key of keys) {
+        try {
+          if (studio) await studio.load(key);
+          else studio = await openStudio(key, { transport: connected.transport, onProgress: progress });
+          await run(studio);
+        } catch (err) {
+          process.stderr.write(`${key}: ${err instanceof Error ? err.message : String(err)}\n`);
+          process.exitCode = 1;
+        }
+      }
+    } else {
+      studio = await openStudio(values.scene ?? '', { transport: connected.transport, onProgress: progress });
+      await run(studio);
+    }
   } catch (err) {
     const note = connected.untrusted ? await withheldNote(folder) : '';
     process.stderr.write(`${err instanceof Error ? err.message : String(err)}${note}\n`);

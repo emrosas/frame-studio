@@ -8,7 +8,8 @@
   a Library item can be dragged onto the timeline.
   The App finds .stage and .stage-frame after this mounts, so they are never
   inside an {#if}. Which side columns show and the dock's height are ui.layout,
-  kept with the viewer's prefs.
+  kept with the viewer's prefs. On a still (ADR 0020) the dock is the selection
+  bar alone: no transport, no timeline and no height to drag.
 -->
 <script lang="ts">
   import { untrack } from 'svelte';
@@ -117,9 +118,18 @@
       <ErrorPanel errors={ui.errors} />
       <Toast toast={ui.toast} {actions} onview={showPanel} />
     </div>
-    <footer class="dock" class:is-sized={ui.layout.dock !== null} bind:this={dock} bind:clientHeight={dockHeight} inert={ui.home && !ui.libraryOverScene} style={ui.layout.dock === null ? '' : `height: ${ui.layout.dock}px`}>
+    <footer
+      class="dock"
+      class:is-sized={ui.layout.dock !== null && !ui.still}
+      class:is-still={ui.still}
+      bind:this={dock}
+      bind:clientHeight={dockHeight}
+      inert={ui.home && !ui.libraryOverScene}
+      style={ui.layout.dock === null || ui.still ? '' : `height: ${ui.layout.dock}px`}
+    >
       <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
       <div
+        hidden={ui.still}
         class="dock-grip"
         role="separator"
         aria-orientation="horizontal"
@@ -134,10 +144,14 @@
         onkeydown={dockKey}
       ></div>
       <div class="dock-bar">
-        <Controls {ui} {actions} />
+        {#if ui.still}
+          <span class="still-badge" title="A still is a scene with one frame. Export it as PNG or JPG.">Still</span>
+        {:else}
+          <Controls {ui} {actions} />
+        {/if}
         <SelectionBar {ui} {actions} />
       </div>
-      <Timeline {ui} {actions} />
+      {#if !ui.still}<Timeline {ui} {actions} />{/if}
     </footer>
     {#if ui.home && !ui.switching}<Library {ui} {actions} />{/if}
   </section>

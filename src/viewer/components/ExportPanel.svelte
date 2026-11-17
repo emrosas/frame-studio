@@ -1,20 +1,36 @@
 <!--
   The Export panel (ADR 0008), a popover under Export in the top bar: MP4,
   GIF or HTML of the scene on screen, or of its selected range, with or
-  without sound. The studio server encodes it in the render worker while the
+  without sound, and PNG or JPG of the frame on screen at the scene's exact
+  size (ADR 0020). On a still it offers PNG, JPG and HTML, since one frame
+  makes no video. The studio server encodes it in the render worker while the
   viewer keeps playing, and writes it to out/. Progress shows with Cancel;
   the finished file shows with Reveal in Finder in the app. Check video, under
   it, measures the scene first (CheckPanel.svelte).
 -->
 <script lang="ts">
   import { spanLabel } from '../selection';
-  import type { ViewerActions, ViewerUi } from '../ui.svelte';
+  import type { ExportFormat, ViewerActions, ViewerUi } from '../ui.svelte';
   import CheckPanel from './CheckPanel.svelte';
   import Icon from './Icon.svelte';
 
   let { ui, actions }: { ui: ViewerUi; actions: ViewerActions } = $props();
 
-  let target = $state<'mp4' | 'gif' | 'html'>('mp4');
+  const TARGETS = [
+    ['mp4', 'MP4'],
+    ['gif', 'GIF'],
+    ['html', 'HTML'],
+    ['png', 'PNG'],
+    ['jpg', 'JPG'],
+  ] as const;
+  const STILL_TARGETS = [
+    ['png', 'PNG'],
+    ['jpg', 'JPG'],
+    ['html', 'HTML'],
+  ] as const;
+
+  let picked = $state<ExportFormat | null>(null);
+  let quality = $state(90);
   let useRange = $state(false);
   let sound = $state(true);
   // HTML leaves sound files out unless asked (ADR 0012): they make the file as big as the sound.
@@ -23,17 +39,15 @@
 
   const job = $derived(ui.exporting);
   const range = $derived(ui.selection.range);
-  const rangeAllowed = $derived(range !== null && target !== 'html');
-  const soundAllowed = $derived(target !== 'gif');
+  const formats = $derived<readonly (readonly [ExportFormat, string])[]>(ui.still ? STILL_TARGETS : TARGETS);
+  // What was picked, while this scene offers it; else the first: MP4, or PNG on a still.
+  const target = $derived<ExportFormat>(picked !== null && formats.some(([value]) => value === picked) ? picked : formats[0][0]);
+  const image = $derived(target === 'png' || target === 'jpg');
+  const rangeAllowed = $derived(range !== null && target !== 'html' && !image);
+  const soundAllowed = $derived(target !== 'gif' && !image);
   const mediaAllowed = $derived(target === 'html' && sound && ui.usesMedia);
   const percent = $derived(job.running && job.running.total > 0 ? Math.round((job.running.done / job.running.total) * 100) : 0);
   const fileName = (path: string) => path.split(/[\\/]/).pop() ?? path;
-
-  const formats = [
-    ['mp4', 'MP4'],
-    ['gif', 'GIF'],
-    ['html', 'HTML'],
-  ] as const;
 
   let panel = $state<HTMLElement | null>(null);
 
@@ -45,7 +59,8 @@
   }
 
   async function start(): Promise<void> {
-    error = await actions.startExport(target, { range: useRange && rangeAllowed, sound: sound && soundAllowed, media: media && mediaAllowed });
+    const q = Math.min(100, Math.max(1, Math.round(quality) || 90));
+    error = await actions.startExport(target, { range: useRange && rangeAllowed, sound: sound && soundAllowed, media: media && mediaAllowed, ...(target === 'jpg' ? { quality: q } : {}) });
   }
 </script>
 
@@ -63,17 +78,32 @@
     </header>
     <div class="segmented" role="radiogroup" aria-label="Format">
       {#each formats as [value, label] (value)}
-        <label><input type="radio" name="export-target" {value} bind:group={target} disabled={job.running !== null} />{label}</label>
+        <label><input type="radio" name="export-target" {value} checked={target === value} onchange={() => (picked = value)} disabled={job.running !== null} />{label}</label>
       {/each}
     </div>
-    <label class="check-row" class:is-disabled={!rangeAllowed}>
-      <input type="checkbox" bind:checked={useRange} disabled={!rangeAllowed || job.running !== null} />
-      {range && target !== 'html' ? `Only ${spanLabel(range, ui.selection.fps)}` : target === 'html' ? 'HTML is always the whole scene' : 'Only the selected range (none set)'}
-    </label>
-    <label class="check-row" class:is-disabled={!soundAllowed}>
-      <input type="checkbox" bind:checked={sound} disabled={!soundAllowed || job.running !== null} />
-      {soundAllowed ? 'With sound' : 'GIFs are silent'}
-    </label>
+    {#if image}
+      <p class="panel-note export-image-note">
+        {ui.still ? 'The still' : `Frame ${ui.timeline?.frame ?? 0}, the one on screen`}, at {ui.header?.size ? `${ui.header.size[0]}×${ui.header.size[1]}` : 'its own size'}.
+      </p>
+      {#if target === 'jpg'}
+        <label class="check-row export-quality">
+          Quality
+          <input type="range" min="1" max="100" step="1" bind:value={quality} disabled={job.running !== null} aria-label="JPG quality" />
+          <output>{quality}</output>
+        </label>
+      {/if}
+    {:else}
+      {#if !ui.still}
+        <label class="check-row" class:is-disabled={!rangeAllowed}>
+          <input type="checkbox" bind:checked={useRange} disabled={!rangeAllowed || job.running !== null} />
+          {range && target !== 'html' ? `Only ${spanLabel(range, ui.selection.fps)}` : target === 'html' ? 'HTML is always the whole scene' : 'Only the selected range (none set)'}
+        </label>
+      {/if}
+      <label class="check-row" class:is-disabled={!soundAllowed}>
+        <input type="checkbox" bind:checked={sound} disabled={!soundAllowed || job.running !== null} />
+        {soundAllowed ? 'With sound' : 'GIFs are silent'}
+      </label>
+    {/if}
     {#if target === 'html' && ui.usesMedia}
       <label class="check-row" class:is-disabled={!mediaAllowed}>
         <input type="checkbox" bind:checked={media} disabled={!mediaAllowed || job.running !== null} />

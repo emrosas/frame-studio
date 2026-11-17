@@ -70,17 +70,19 @@
 {/snippet}
 
 <section class="check-panel" aria-label="Check">
-  <label class="check-row">
-    <input type="checkbox" bind:checked={loop} disabled={job.running !== null} />
-    This video should loop
-  </label>
+  {#if !ui.still}
+    <label class="check-row">
+      <input type="checkbox" bind:checked={loop} disabled={job.running !== null} />
+      This video should loop
+    </label>
+  {/if}
   <button
     type="button"
     class="btn"
     onclick={() => (job.running ? actions.cancelCheck() : start())}
     disabled={!job.running && ui.selection.sceneId === null}
   >
-    {job.running ? 'Cancel check' : 'Check video'}
+    {job.running ? 'Cancel check' : ui.still ? 'Check still' : 'Check video'}
   </button>
   {#if job.running}
     <div class="export-progress">

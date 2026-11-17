@@ -20,6 +20,22 @@ export const FORMATS: readonly FormatPreset[] = [
   { id: 'square', label: 'Square', hint: '1:1', size: [1080, 1080], fps: 30, duration: 10 },
 ];
 
+/** A still's size, for the New dialog (ADR 0020). A still has one frame, so no fps or length. */
+export interface StillPreset {
+  id: string;
+  label: string;
+  hint: string;
+  size: readonly [number, number];
+}
+
+/** The sizes social posts use: a feed post or carousel slide, a square, a story, and a link card. */
+export const STILL_FORMATS: readonly StillPreset[] = [
+  { id: 'portrait', label: 'Portrait', hint: '4:5', size: [1080, 1350] },
+  { id: 'square', label: 'Square', hint: '1:1', size: [1080, 1080] },
+  { id: 'story', label: 'Story', hint: '9:16', size: [1080, 1920] },
+  { id: 'landscape', label: 'Landscape', hint: '1.91:1', size: [1200, 628] },
+];
+
 /** How much a pixel short dithers between its look's colours. */
 export const PIXEL_DITHER = 0.5;
 

@@ -4,6 +4,8 @@
 // in this file is arithmetic on those, so it is unit tested on synthetic
 // pixels and samples. Never imported by the runtime.
 
+import { isStill } from '../engine/time';
+
 /** The longest side frames are measured at. Plenty for black, freezes and flashes, and quick to draw. */
 export const CHECK_MAX_SIZE = 320;
 
@@ -610,11 +612,15 @@ export function rankChecks(results: readonly CheckResult[]): RankedResult[] {
   return results.map((r) => ({ ...r, rank: rankOf(r) })).sort(compareChecks);
 }
 
+/** The checks that measure something over time, which a still doesn't have. */
+export const STILL_SKIPS: ReadonlySet<string> = new Set(['duration', 'freeze', 'opening', 'loop-seam', 'flashing', 'sparse', 'reading-time']);
+const skipped = (id: string): CheckResult => ({ id, status: 'pass', message: 'Skipped: a still has one frame.' });
+
 /** Every check, ranked and sorted by rank. `ok` is false when any failed. */
 export function buildReport(input: CheckInput): CheckReport {
   const { fps, from, to, frames } = input;
   const { stats, seam } = frames;
-  const checks = [
+  const timed = [
     checkFormat({ fps, width: input.width, height: input.height, audio: input.audio !== null }),
     checkDuration(input.duration, fps),
     checkBlack(stats, fps, from),
@@ -626,5 +632,7 @@ export function buildReport(input: CheckInput): CheckReport {
     ...checkSound(input),
     ...(input.extra ?? []),
   ];
+  // A still has one frame (ADR 0020), so what needs time passes as skipped instead of judging it as a video.
+  const checks = isStill(input) ? timed.map((c) => (STILL_SKIPS.has(c.id) ? skipped(c.id) : c)) : timed;
   return { ok: checks.every((c) => c.status !== 'fail'), scene: input.scene, from, to, checks: rankChecks(checks) };
 }
