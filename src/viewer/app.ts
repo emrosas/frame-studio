@@ -34,7 +34,7 @@ import { anchorKeys, deleteKeys, keyLanes, keyMarks, keysAt, moveTarget, type Ke
 import type { GeneratedVoice } from './speech';
 import type { VoiceLine } from './voice';
 import { cueTarget, isLayerTarget, MARKERS_TARGET, STRUCTURE_TARGET, type LayerChange } from '../studio/protocol';
-import { wordRef, wordTime } from '../engine';
+import { isStill, wordRef, wordTime } from '../engine';
 import { formatClock, visibleSpans, type ClipPlace } from './timeline';
 import { dropKind, type DropTrack, type LibraryItem } from './drop';
 import { ErrorLog, errorText } from './errors';
@@ -74,7 +74,7 @@ import {
 import { desktop } from './desktop';
 import { readPref, writePref } from './prefs';
 import { StudioClient } from './studio-client';
-import type { EditTarget, LayerRow, SceneOption, ShotBand, ShotHead, ShotRows, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
+import type { EditTarget, ExportFormat, LayerRow, SceneOption, ShotBand, ShotHead, ShotRows, SoundBand, ViewerActions, ViewerUi } from './ui.svelte';
 import { asLayer, EditHistory, layerKey, layerSet, sceneState } from './undo';
 import { transitionSeconds, type RawClip, type TimelineEdit, type TimelineResult, type Transition } from '../studio/timeline-edit';
 import { clipRunOn, clipUnder, type CuePlace, type StackedClip } from './timeline';
@@ -201,6 +201,8 @@ interface CanvasDrag {
 
 /** How long Left and Right wait before a run of nudges saves, as one edit. */
 const NUDGE_SAVE_MS = 250;
+/** The keys that do nothing on a still: it has one frame, so no playing, stepping, range or split (ADR 0020). */
+const STILL_IDLE: ReadonlySet<string> = new Set(['toggle', 'step', 'seek', 'markIn', 'markOut', 'markSpan', 'split']);
 /** How long a saved layer stays held if its file never shows that edit, which means someone else's arrived first. */
 const HOLD_MS = 2000;
 /** How long a transition preset runs, in seconds, or the clip's length if that's shorter. */
@@ -1598,19 +1600,25 @@ export class App {
   // ---- export (ADR 0008) ----
 
   /** Asks the studio server to export the scene on screen, or its selected range. Returns an error message, or null. */
-  private async startExport(target: 'mp4' | 'gif' | 'html', options: { range: boolean; sound: boolean; media?: boolean }): Promise<string | null> {
+  private async startExport(target: ExportFormat, options: { range: boolean; sound: boolean; media?: boolean; quality?: number }): Promise<string | null> {
     const scene = this.validScene();
     if (!scene || !this.entry) return 'There is no valid scene to export.';
     if (this.ui.exporting.running) return 'An export is already running.';
-    const range = options.range && target !== 'html' && this.range ? this.range : null;
+    const image = target === 'png' || target === 'jpg';
+    const range = options.range && !image && target !== 'html' && this.range ? this.range : null;
     try {
-      const id = await this.studio.startExport({
-        scene: this.entry.key,
-        target,
-        ...(range ? { from: range.from, to: range.to } : {}),
-        ...(target !== 'gif' && !options.sound ? { silent: true } : {}),
-        ...(target === 'html' && options.sound && options.media ? { media: true } : {}),
-      });
+      const id = await this.studio.startExport(
+        image
+          ? // The frame on screen, which on a still is its only one (ADR 0020).
+            { scene: this.entry.key, target, frame: this.clock.frame, ...(target === 'jpg' && options.quality !== undefined ? { quality: options.quality } : {}) }
+          : {
+              scene: this.entry.key,
+              target,
+              ...(range ? { from: range.from, to: range.to } : {}),
+              ...(target !== 'gif' && !options.sound ? { silent: true } : {}),
+              ...(target === 'html' && options.sound && options.media ? { media: true } : {}),
+            },
+      );
       this.ui.exporting = { ...this.ui.exporting, running: { id, stage: 'starting', done: 0, total: 1 }, result: null, canReveal: desktop() !== null };
       return null;
     } catch (err) {
@@ -1688,14 +1696,21 @@ export class App {
 
   // ---- playback ----
 
+  /** The scene on screen has one frame (ADR 0020). A one-frame composition keeps its timeline, where clips go. */
+  private get still(): boolean {
+    const scene = this.validScene();
+    return scene !== null && this.entry?.kind !== 'composition' && isStill(scene);
+  }
+
   private togglePlay(): void {
+    if (this.still) return;
     if (this.clock.playing) this.pauseInternal();
     else this.playInternal();
   }
 
   private playInternal(): boolean {
     this.resumeWhenValid = false;
-    if (!this.clock.play()) return false;
+    if (this.still || !this.clock.play()) return false;
     this.hoverLayer = null;
     this.uiDirty = true;
     this.schedule();
@@ -1755,6 +1770,8 @@ export class App {
     if (!action || focusKeepsKey(e.target, e.key)) return;
     e.preventDefault();
     if (!this.clock.timeline) return;
+    // A still has no time to move through or mark (ADR 0020).
+    if (this.still && STILL_IDLE.has(action.type)) return;
     switch (action.type) {
       case 'toggle':
         this.togglePlay();
@@ -1843,7 +1860,7 @@ export class App {
 
   /** The moment a drag starts, if it starts: the range counts when the playhead is inside it. */
   private dragMoment(scene: Scene): DragMoment {
-    return { frame: this.clock.frame, fps: scene.fps, range: this.range };
+    return { frame: this.clock.frame, fps: scene.fps, range: this.range, still: this.still };
   }
 
   /**
@@ -2159,7 +2176,8 @@ export class App {
   }
 
   private userSetRange(range: FrameRange | null): void {
-    this.range = range;
+    // A still's range is its one frame, so there is none to set (ADR 0020).
+    this.range = this.still ? null : range;
     this.selectionChanged();
   }
 
@@ -2694,7 +2712,9 @@ export class App {
     const scene = this.validScene();
     const ui = this.ui;
     ui.playing = this.clock.playing;
-    ui.canPlay = scene !== null;
+    ui.still = this.still;
+    if (ui.still && this.range !== null) this.range = null;
+    ui.canPlay = scene !== null && !ui.still;
     const status = this.soundStatus === 'ready' && !this.sound.unlocked ? 'locked' : this.soundStatus;
     ui.sound = scene && status !== 'none' ? { status, muted: this.sound.isMuted } : null;
     ui.band = scene && this.range ? { range: this.range, frameCount: this.total } : null;

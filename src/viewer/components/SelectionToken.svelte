@@ -21,7 +21,7 @@
   const cue = $derived(docked ? ui.cue : null);
   const picked = $derived(sel.layer !== '' || sel.range !== null || cue !== null);
   const who = $derived(sel.layer || cue || WHOLE_SCENE);
-  const hint = 'Select on the canvas, a timeline row, or with @ in the prompt';
+  const hint = $derived(ui.still ? 'Select on the canvas, or with @ in the prompt' : 'Select on the canvas, a timeline row, or with @ in the prompt');
   const display = (end: End): string => (sel.range ? String(sel.range[end]) : '');
 
   let text = $state<Record<End, string>>({ from: '', to: '' });
@@ -103,7 +103,9 @@
   {:else}
     <span class="token-who" title={picked ? who : hint}>{who}</span>
   {/if}
-  {#if docked && ui.rangeEditing}
+  {#if ui.still}
+    <!-- A still's range is its one frame, so there is nothing to show or type (ADR 0020). -->
+  {:else if docked && ui.rangeEditing}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <span
       class="token-fields"

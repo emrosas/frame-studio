@@ -42,10 +42,14 @@ export type RequestAction = 'cancel' | 'requeue' | 'settle' | 'stop';
 /** What the viewer asks the studio server to export (ADR 0008). */
 export interface ExportInput {
   scene: string;
-  target: 'mp4' | 'gif' | 'html';
+  target: 'mp4' | 'gif' | 'html' | 'png' | 'jpg';
   from?: number;
   to?: number;
   silent?: boolean;
+  /** For PNG and JPG: the frame to export (ADR 0020). */
+  frame?: number;
+  /** For JPG: 1 to 100. */
+  quality?: number;
   /** For HTML: inline the sound files its cues play (ADR 0012). */
   media?: boolean;
 }

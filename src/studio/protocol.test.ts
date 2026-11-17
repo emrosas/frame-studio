@@ -278,6 +278,19 @@ describe('new scenes and projects', () => {
     expect(checkNewScene({ ...good, layers: [] })).toMatch(/unknown field "layers"/);
   });
 
+  it('checks a new still: one frame, so a size and no fps or duration (ADR 0020)', () => {
+    expect(checkNewScene({ id: 'launch-1', still: true, size: [1080, 1350] })).toBeNull();
+    expect(checkNewScene({ id: 'launch-1', still: true })).toBeNull();
+    expect(checkNewScene({ id: 'launch-1', still: true, duration: 1 })).toMatch(/leave out fps and duration/);
+    expect(checkNewScene({ id: 'launch-1', still: true, fps: 30 })).toMatch(/leave out fps and duration/);
+    expect(checkNewScene({ id: 'launch-1', still: true, size: [8, 8] })).toMatch(/size/);
+    expect(checkNewScene({ id: 'launch-1', still: 'yes', duration: 1 })).toMatch(/true or false/);
+    expect(checkNewScene({ id: 'shot-1', project: 'story', still: true })).toMatch(/scenes in the folder/);
+    // Not a still, so it needs its length as before.
+    expect(checkNewScene({ id: 'launch-1', still: false })).toMatch(/duration/);
+    expect(checkNewScene({ id: 'launch-1', still: false, duration: 2 })).toBeNull();
+  });
+
   it("checks a new project scene, which takes the project's fps and size", () => {
     expect(checkNewScene({ id: 'shot-1', project: 'story', duration: 3 })).toBeNull();
     expect(checkNewScene({ id: 'shot-1', project: 'story', fps: 24, duration: 3 })).toMatch(/leave them out/);

@@ -12,6 +12,8 @@ export interface SceneInfo {
   file?: string;
   /** Frame to MM:SS:FF, when the scene is valid. */
   timecode?: (frame: number) => string;
+  /** A one-frame scene (ADR 0020). */
+  still?: boolean;
 }
 
 export interface DescribeOptions {
@@ -81,6 +83,11 @@ export function describeThread(request: StudioRequest, info: SceneInfo, options:
     '',
     'How to do it: look with render_frame, render_contact_sheet and hit_test. Change it with apply_to_selection (pass this selection), update_scene, or a new rig variant under src/rigs applied through an override. Render again to check. Before calling a film done, run check and fix what fails.',
   );
+  if (info.still) {
+    lines.push(
+      'This scene is a still: one frame, exported as an image. Set params with update_scene; keys, overrides and contact sheets add nothing here. Export it with export, target png or jpg.',
+    );
+  }
   if (options.agent === 'external') {
     lines.push(
       `When you finish this turn, call complete_request with id ${request.id}, status "done" or "failed", and a one-line summary of what you changed or why it failed. The user may reply; a reply comes back as the next turn of this request.`,

@@ -73,6 +73,7 @@ import { Pairing } from './pairing.ts';
 import { isImportable } from './project-code.ts';
 import { electronWorker } from './electron-worker.ts';
 import { exportVideoFile } from './export-video.ts';
+import { isImageFormat, type ImageFormat } from '../../src/viewer/render-api.ts';
 import { RenderPool } from './render-pool.ts';
 import { StudioQueue } from './queue.ts';
 
@@ -351,8 +352,18 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   const exports = new Map<string, AbortController>();
   let exportCount = 0;
   const pad = (n: number) => String(n).padStart(5, '0');
-  async function runExport(id: string, input: { scene: string; target: 'mp4' | 'gif' | 'html'; from?: number; to?: number; silent?: boolean; media?: boolean }, signal: AbortSignal) {
+  async function runExport(
+    id: string,
+    input: { scene: string; target: 'mp4' | 'gif' | 'html' | ImageFormat; from?: number; to?: number; silent?: boolean; media?: boolean; frame?: number; quality?: number },
+    signal: AbortSignal,
+  ) {
     const progress = (stage: string, done: number, total: number) => events.send(EXPORT_EVENT, { id, stage, done, total });
+    if (isImageFormat(input.target)) {
+      // One frame, through the same job the export tool runs (ADR 0020).
+      progress('rendering', 0, 1);
+      const image = await (await ws()).exportImage(input.scene, input.target, { frame: input.frame, quality: input.quality });
+      return { ...image, file: join(folder.root, image.file) };
+    }
     if (input.target === 'html') {
       progress('bundling', 0, 1);
       const embed = await buildEmbed(input.scene, { folder, code, silent: input.silent, media: input.media });
@@ -633,10 +644,25 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
 
     // Exports from the viewer.
     if (req.method === 'POST' && path === '/export') {
-      const input = await json<{ scene?: unknown; target?: unknown; from?: unknown; to?: unknown; silent?: unknown; media?: unknown }>(req);
+      const input = await json<{ scene?: unknown; target?: unknown; from?: unknown; to?: unknown; silent?: unknown; media?: unknown; frame?: unknown; quality?: unknown }>(req);
       if (typeof input.scene !== 'string') throw new HttpError(400, 'scene must be a scene id');
-      if (input.target !== 'mp4' && input.target !== 'gif' && input.target !== 'html') throw new HttpError(400, 'target must be mp4, gif or html');
-      const job = { scene: input.scene, target: input.target as 'mp4' | 'gif' | 'html', from: frame(input.from, 'from'), to: frame(input.to, 'to'), silent: input.silent === true, media: input.media === true };
+      const image = isImageFormat(input.target);
+      if (input.target !== 'mp4' && input.target !== 'gif' && input.target !== 'html' && !image) throw new HttpError(400, 'target must be mp4, gif, html, png or jpg');
+      if (input.quality !== undefined && !(input.target === 'jpg' && Number.isInteger(input.quality) && (input.quality as number) >= 1 && (input.quality as number) <= 100)) {
+        throw new HttpError(400, 'quality is for jpg, a whole number from 1 to 100');
+      }
+      if (image && (input.from !== undefined || input.to !== undefined)) throw new HttpError(400, `${String(input.target)} exports one frame; give frame`);
+      if (!image && input.frame !== undefined) throw new HttpError(400, 'frame is for png and jpg');
+      const job = {
+        scene: input.scene,
+        target: input.target as 'mp4' | 'gif' | 'html' | ImageFormat,
+        from: frame(input.from, 'from'),
+        to: frame(input.to, 'to'),
+        silent: input.silent === true,
+        media: input.media === true,
+        frame: frame(input.frame, 'frame'),
+        ...(input.quality !== undefined ? { quality: input.quality as number } : {}),
+      };
       if (job.target === 'html' && (job.from !== undefined || job.to !== undefined)) throw new HttpError(400, 'html exports the whole scene');
       const id = `export-${++exportCount}`;
       const abort = new AbortController();

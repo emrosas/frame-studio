@@ -697,7 +697,7 @@ Scripts and agents can drive the page through `window.studio`. `studio.shots` li
 
 ## Rendering and exporting
 
-In the viewer, **Export** in the top bar makes an MP4, GIF or HTML file of the scene on screen, or only of the selected range, with or without sound. It shows progress with Cancel, keeps playing meanwhile, and writes the file to the folder's `out/`. In the app, **Reveal in Finder** shows it.
+In the viewer, **Export** in the top bar makes an MP4, GIF or HTML file of the scene on screen, or only of the selected range, with or without sound, or a PNG or JPG of the frame on screen. It shows progress with Cancel, keeps playing meanwhile, and writes the file to the folder's `out/`. In the app, **Reveal in Finder** shows it.
 
 Three commands render a scene without the viewer. They render through a render worker, a hidden Electron window that takes jobs from a studio server (ADR 0008): the running app's or `npm run dev`'s when one is open on the folder, or else one they start and stop themselves. Each prints the file it wrote on stdout and puts progress on stderr. `--folder` picks the studio folder; it defaults to the current one. Frames and range ends take a frame number or a timecode.
 
@@ -707,6 +707,8 @@ npm run export -- --scene bear-test --target mp4          # out/bear-test/bear-t
 npm run export -- --scene bear-test --target gif --from 00:02:00 --to 00:04:00
 npm run contact-sheet -- --scene bear-test --every 6      # out/bear-test/contact-sheet-...png
 npm run export -- --scene bear-test --target html         # out/bear-test/bear-test.html
+npm run export -- --scene launch-1 --target png           # out/launch-1/launch-1.png
+npm run export -- --stills --target jpg --quality 85      # every still in the folder
 ```
 
 These commands load built-ins only in a folder that isn't the repo, unless the running app already trusts it. To load the folder's own rigs and generators, add `--trust`, or set `FRAME_STUDIO_TRUST=1` (ADR 0017). Do that for folders you trust: rigs are code. `npm run dev --folder` takes the same flag.
@@ -720,6 +722,22 @@ A scene with audio exports its sound into the MP4: AAC at 128 kb/s where the bro
 An MP4 of 10 seconds or more is drawn by several render workers at once (ADR 0019). The range splits into segments on key frames, each worker draws and encodes some of them, one renders the sound, and the studio server muxes the pieces in order. By default it uses one worker per core less one, as memory allows, up to 8. `--workers 4` sets the number, `--workers 1` makes the file in one page, and `FRAME_STUDIO_EXPORT_WORKERS` sets the default for a server. The file decodes to the same frames whatever the count, since the encoder starts over at every key frame on both paths. Helpers are extra hidden windows; they close 30 seconds after the last export that used them. GIFs are always made in one page.
 
 `npm run bench:export` times MP4 exports through the render worker, by stage, for `bear-test`, the 9:16 `why-lakes-stay-liquid` and a long composition it builds in a temporary folder, at each worker count in `--workers` (default 1 and the machine's default). With ffmpeg installed it checks that each parallel file decodes to the same frames and sound as the one-worker file. `--cases`, `--minutes` and `--fps` pick what runs. Results for an M1 Pro are in `.scratch/export-speed/research/benchmark.md`.
+
+### Stills and images
+
+A still is a scene with one frame (ADR 0020). There is no field for it: `"fps": 1, "duration": 1` is one frame, and so is any scene whose `duration` is `1 / fps`. `create_scene` with `still: true` writes one, and so does New scene with Still picked, at 1080x1350, 1080x1080, 1080x1920, 1200x628 or a size you type.
+
+```json
+{ "id": "launch-1", "fps": 1, "duration": 1, "size": [1080, 1350], "seed": 7, "background": { "rig": "paper" }, "layers": [] }
+```
+
+On a still the viewer drops the transport, the timeline and the range. You click a layer, drag it, or write a request about it, and the request's range is `[0, 1)`. A drag writes the layer's `x` and `y` params. If an axis had a track, the drag removes the track, since a still has nothing to key.
+
+`--target png` and `--target jpg` export one frame at the scene's exact pixel size. `--frame` picks it and defaults to 0. A still's file is `out/<scene>/<scene>.png`, and a frame of a longer scene is `out/<scene>/<scene>-00047.png`. `--quality` sets a JPG's quality from 1 to 100, 90 when left out. A JPG has no transparency, so the frame goes over white. `--stills` exports every still in the folder, or with `--scene a,b,c` the ones named, each to its own folder under `out/`.
+
+`npm run render` takes `--format jpg` and `--quality` too, and keeps its `frame-00047` names. On a still, `--frame` can be left out.
+
+Name a carousel's slides in order, such as `launch-1` to `launch-6`. Keys, overrides and `stepFps` do nothing on one frame, so set params directly.
 
 ### The HTML embed
 

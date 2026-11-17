@@ -23,6 +23,11 @@ export function frameCount(scene: { fps: number; duration: number }): number {
   return Math.ceil(scene.duration * scene.fps - EPS);
 }
 
+/** A still is a scene with one frame (ADR 0020). Nothing in it can move, so the hosts drop what works on time. */
+export function isStill(scene: { fps: number; duration: number }): boolean {
+  return frameCount(scene) === 1;
+}
+
 /**
  * The time a layer sees on an output frame. With stepFps, time is held on a
  * coarser grid ("on twos"). Integer math first so held frames compare equal.

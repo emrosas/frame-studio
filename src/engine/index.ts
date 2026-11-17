@@ -4,7 +4,7 @@
  * The image at frame N is a pure function of (scene, frame, registry).
  */
 export * from './types';
-export { frameToTime, timeToFrame, frameCount, quantizeTime } from './time';
+export { frameToTime, timeToFrame, frameCount, isStill, quantizeTime } from './time';
 export { formatTimecode, parseTimecode } from './timecode';
 export { EASING_NAMES, easings, ease } from './easing';
 export { createRng } from './rng';

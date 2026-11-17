@@ -376,6 +376,26 @@ describe('buildReport', () => {
     expect(warned.checks.find((c) => c.id === 'opening')?.status).toBe('warn');
   });
 
+  it('skips what needs time on a still, and still measures the frame (ADR 0020)', () => {
+    const one = { ...base, fps: 1, duration: 1, to: 1 };
+    const extra = [
+      { id: 'reading-time', status: 'warn' as const, message: 'too short' },
+      { id: 'text-frame', status: 'warn' as const, message: 'cut' },
+    ];
+    const report = buildReport({ ...one, frames: meter([picture(0)]), audio: null, extra });
+    expect(report.ok).toBe(true);
+    for (const id of ['duration', 'freeze', 'opening', 'loop-seam', 'flashing', 'sparse', 'reading-time']) {
+      expect(report.checks.find((c) => c.id === id)).toMatchObject({ status: 'pass', message: 'Skipped: a still has one frame.' });
+    }
+    expect(report.checks.find((c) => c.id === 'text-frame')?.status).toBe('warn');
+    expect(report.checks.find((c) => c.id === 'format')?.message).toMatch(/1920x1080/);
+    // A black still shows nothing, which is still a failure.
+    expect(buildReport({ ...one, frames: meter([solid(0)]), audio: null }).ok).toBe(false);
+    // One frame of a longer scene is not a still.
+    const ranged = buildReport({ ...base, to: 1, frames: meter([picture(0)]), audio: null, extra });
+    expect(ranged.checks.find((c) => c.id === 'reading-time')?.status).toBe('warn');
+  });
+
   it('measures only the range of the sound', () => {
     const quiet = sine(1000, -40, 2);
     const loud = sine(1000, -14, 2);

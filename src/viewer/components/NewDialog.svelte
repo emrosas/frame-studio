@@ -7,12 +7,14 @@
   empty composition gives you nothing to point at. The studio server writes the
   files (agents do the same with create_scene and create_composition), and the
   viewer then shows the new one with a new thread open, so the next step is
-  saying what goes in it.
+  saying what goes in it. A scene in the folder can also be a still (ADR 0020):
+  one frame, for an image, with the sizes social posts use and no frame rate
+  or length.
 -->
 <script lang="ts">
   import { onMount, untrack } from 'svelte';
   import { DEFAULT_FORMAT, toId, type NewPixel } from '../../studio/protocol';
-  import { FORMATS, LOOKS, PIXEL_DITHER } from '../formats';
+  import { FORMATS, LOOKS, PIXEL_DITHER, STILL_FORMATS } from '../formats';
   import type { NewWhat, ViewerActions, ViewerUi } from '../ui.svelte';
   import Icon from './Icon.svelte';
 
@@ -38,12 +40,17 @@
   let look = $state(LOOKS[0].id);
   let duration = $state<number>(start.video ? (matching?.duration ?? 10) : 5);
   let firstScene = $state(true);
+  // A still: one frame, for an image. Offered for a scene in the folder.
+  let kind = $state<'animation' | 'still'>('animation');
+  let stillFormat = $state(STILL_FORMATS[0].id);
   let busy = $state(false);
   let error = $state<string | null>(null);
 
   const project = $derived(what.kind === 'scene' ? what.project : null);
   const preset = $derived(FORMATS.find((f) => f.id === format) ?? null);
   const pixel = $derived(preset?.pixelScale !== undefined);
+  const still = $derived(what.kind === 'scene' && project === null && kind === 'still');
+  const stillPreset = $derived(STILL_FORMATS.find((f) => f.id === stillFormat) ?? null);
   const id = $derived(toId(name));
   const title = $derived(what.kind === 'video' ? 'New video' : project ? `New scene in ${project.name}` : 'New scene');
   const where = $derived.by(() => {
@@ -75,6 +82,16 @@
     }
     busy = true;
     error = null;
+    if (still) {
+      const problem = await actions.createScene({ id, still: true, size: stillPreset ? [stillPreset.size[0], stillPreset.size[1]] : [width, height] });
+      busy = false;
+      if (problem) error = problem;
+      else {
+        dialog?.close();
+        ondone();
+      }
+      return;
+    }
     const size: [number, number] = preset ? [preset.size[0], preset.size[1]] : [width, height];
     const rate = preset?.fps ?? fps;
     const stage: NewPixel | undefined = preset?.pixelScale ? { scale: preset.pixelScale, palette: [...(LOOKS.find((l) => l.id === look) ?? LOOKS[0]).palette], dither: PIXEL_DITHER } : undefined;
@@ -102,11 +119,52 @@
     <label class="field">
       <span class="field-label">Name</span>
       <!-- svelte-ignore a11y_autofocus -->
-      <input type="text" bind:value={name} placeholder={what.kind === 'video' ? 'why-bread-rises' : 'opening-shot'} maxlength="100" autocomplete="off" spellcheck="false" autofocus required />
+      <input type="text" bind:value={name} placeholder={what.kind === 'video' ? 'why-bread-rises' : still ? 'launch-1' : 'opening-shot'} maxlength="100" autocomplete="off" spellcheck="false" autofocus required />
       <span class="field-hint">{where}</span>
     </label>
 
-    {#if project}
+    {#if what.kind === 'scene' && !project}
+      <div class="field">
+        <span class="field-label" id="new-kind">Kind</span>
+        <div class="segmented" role="radiogroup" aria-labelledby="new-kind">
+          <label><input type="radio" name="new-kind" value="animation" bind:group={kind} />Animation</label>
+          <label><input type="radio" name="new-kind" value="still" bind:group={kind} />Still</label>
+        </div>
+      </div>
+    {/if}
+
+    {#if still}
+      <div class="field">
+        <span class="field-label" id="new-format">Size</span>
+        <div class="format-cards" role="radiogroup" aria-labelledby="new-format">
+          {#each STILL_FORMATS as f (f.id)}
+            <label class="format-card" class:is-on={stillFormat === f.id} title="{f.size[0]}×{f.size[1]}">
+              <input type="radio" name="new-still-format" value={f.id} checked={stillFormat === f.id} onchange={() => (stillFormat = f.id)} />
+              <span class="format-shape" style={shape(f.size[0], f.size[1])}></span>
+              <span class="format-name">{f.label}</span>
+              <span class="format-hint">{f.hint}</span>
+            </label>
+          {/each}
+          <label class="format-card" class:is-on={stillFormat === 'custom'}>
+            <input type="radio" name="new-still-format" value="custom" checked={stillFormat === 'custom'} onchange={() => (stillFormat = 'custom')} />
+            <span class="format-shape is-custom" style={shape(width > 0 ? width : 4, height > 0 ? height : 5)}></span>
+            <span class="format-name">Custom</span>
+            <span class="format-hint">Any size</span>
+          </label>
+        </div>
+        <span class="field-hint">{stillPreset ? `${stillPreset.size[0]}×${stillPreset.size[1]} pixels. ` : ''}One frame, exported as PNG or JPG at this exact size.</span>
+      </div>
+      {#if stillFormat === 'custom'}
+        <div class="field">
+          <span class="field-label">Pixels</span>
+          <span class="field-row">
+            <input type="number" aria-label="Width" bind:value={width} min="16" max="8192" step="1" required />
+            ×
+            <input type="number" aria-label="Height" bind:value={height} min="16" max="8192" step="1" required />
+          </span>
+        </div>
+      {/if}
+    {:else if project}
       <p class="field-hint">
         {project.size ? `${project.size[0]}×${project.size[1]}` : '?'} · {project.fps ?? '?'} fps, like every scene in the project
       </p>
@@ -169,10 +227,12 @@
       {/if}
     {/if}
 
-    <label class="field">
-      <span class="field-label">Length</span>
-      <span class="field-row"><input type="number" bind:value={duration} min="0.5" max="3600" step="0.5" required /> seconds</span>
-    </label>
+    {#if !still}
+      <label class="field">
+        <span class="field-label">Length</span>
+        <span class="field-row"><input type="number" bind:value={duration} min="0.5" max="3600" step="0.5" required /> seconds</span>
+      </label>
+    {/if}
 
     {#if what.kind === 'video' && !pixel}
       <label class="field-check"><input type="checkbox" bind:checked={firstScene} /> Start with an empty scene</label>

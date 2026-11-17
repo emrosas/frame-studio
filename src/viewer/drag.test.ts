@@ -200,3 +200,40 @@ describe('withLayers', () => {
     expect(base.background).toEqual({ rig: 'paper' });
   });
 });
+
+describe('writePosition on a still (ADR 0020)', () => {
+  const still = moment({ frame: 0, fps: 1, still: true });
+
+  it('writes the plain param', () => {
+    const result = writePosition(dot(), { x: 150, y: 260 }, { x: 100, y: 200 }, still);
+    expect(result).toEqual({ ok: true, layer: dot({ params: { x: 150, y: 260 } }) });
+  });
+
+  it('never writes a key: an axis with a track loses the track and takes the value', () => {
+    const tracked = dot({ tracks: [{ param: 'x', keys: [{ t: 0, v: 100 }, { t: 1, v: 300 }] }, { param: 'opacity', keys: [{ t: 0, v: 1 }] }] });
+    const result = writePosition(tracked, { x: 150, y: 200 }, { x: 100, y: 200 }, still);
+    expect(result).toEqual({ ok: true, layer: dot({ params: { x: 150, y: 200 }, tracks: [{ param: 'opacity', keys: [{ t: 0, v: 1 }] }] }) });
+    const only = dot({ tracks: [{ param: 'y', keys: [{ t: 0, v: 200 }] }] });
+    const moved = writePosition(only, { x: 100, y: 240 }, { x: 100, y: 200 }, still);
+    expect(moved).toEqual({ ok: true, layer: dot({ params: { x: 100, y: 240 } }) });
+    expect(moved.ok && 'tracks' in moved.layer).toBe(false);
+  });
+
+  it('leaves the track of an axis that did not move', () => {
+    const tracked = dot({ tracks: [{ param: 'x', keys: [{ t: 0, v: 100 }] }] });
+    const result = writePosition(tracked, { x: 100, y: 240 }, { x: 100, y: 200 }, still);
+    expect(result.ok && result.layer.tracks).toEqual([{ param: 'x', keys: [{ t: 0, v: 100 }] }]);
+  });
+
+  it('ignores a range, so it writes no override', () => {
+    const result = writePosition(dot(), { x: 150, y: 200 }, { x: 100, y: 200 }, { ...still, range: { from: 0, to: 1 } });
+    expect(result).toEqual({ ok: true, layer: dot({ params: { x: 150, y: 200 } }) });
+  });
+
+  it('still updates an override that already sets the axis, since it outranks the param', () => {
+    const held = dot({ overrides: [{ from: 0, to: 1, params: { x: 120 } }] });
+    const result = writePosition(held, { x: 150, y: 200 }, { x: 120, y: 200 }, still);
+    expect(result.ok && result.layer.overrides).toEqual([{ from: 0, to: 1, params: { x: 150 } }]);
+    expect(result.ok && result.layer.params).toEqual({ x: 100, y: 200 });
+  });
+});

@@ -94,6 +94,8 @@ export interface DragMoment {
   fps: number;
   /** The selected range. An override is written only when the frame is inside it. */
   range: FrameRange | null;
+  /** A one-frame scene (ADR 0020): nothing is keyed and no range is set, so a move lands on the param. */
+  still?: boolean;
 }
 
 export type PositionWrite = { ok: true; layer: Layer } | { ok: false; error: string };
@@ -112,13 +114,23 @@ function withKey(tracks: readonly Track[], param: string, t: number, v: number, 
   });
 }
 
+/** The layer without a param's track, and without `tracks` once none is left. */
+function withoutTrack(layer: Layer, param: string): Layer {
+  if (!layer.tracks?.some((t) => t.param === param)) return layer;
+  const { tracks, ...rest } = layer;
+  const kept = tracks.filter((t) => t.param !== param);
+  return kept.length > 0 ? { ...rest, tracks: kept } : rest;
+}
+
 /**
  * The layer with its position set at a moment, the rule from ADR 0015. A range around the frame: an override on
  * that range. Otherwise each axis by itself: an override already setting it on this frame, which outranks the
  * rest; a key at the playhead if it has a track; else its param. An axis `from` says didn't move stays as it is.
+ * On a still there is no range and no key: an axis with a track loses the track and takes the value as its param.
  */
 export function writePosition(layer: Layer, to: Position, from: Position, moment: DragMoment): PositionWrite {
-  const { frame, fps, range } = moment;
+  const { frame, fps, still } = moment;
+  const range = still ? null : moment.range;
   if (range && frame >= range.from && frame < range.to) {
     const overrides = layer.overrides ?? [];
     const exact = overrides.find((o) => o.from === range.from && o.to === range.to);
@@ -138,6 +150,7 @@ export function writePosition(layer: Layer, to: Position, from: Position, moment
     const value = to[axis];
     const active = next.overrides?.find((o) => frame >= o.from && frame < o.to && o.params?.[axis] !== undefined);
     if (active) next = { ...next, overrides: next.overrides!.map((o) => (o === active ? { ...o, params: { ...o.params, [axis]: value } } : o)) };
+    else if (still) next = withoutTrack({ ...next, params: { ...next.params, [axis]: value } }, axis);
     else if (next.tracks?.some((t) => t.param === axis)) next = { ...next, tracks: withKey(next.tracks, axis, quantizeTime(frame, fps, next.stepFps), value, fps) };
     else next = { ...next, params: { ...next.params, [axis]: value } };
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { frameCount, frameToTime, quantizeTime, timeToFrame } from './time';
+import { frameCount, frameToTime, isStill, quantizeTime, timeToFrame } from './time';
 
 const FPS_LIST = [1, 12, 24, 25, 30, 60];
 
@@ -117,5 +117,20 @@ describe('quantizeTime', () => {
         }
       }
     }
+  });
+});
+
+describe('isStill (ADR 0020)', () => {
+  it('is a scene with one frame, however it says so', () => {
+    expect(isStill({ fps: 1, duration: 1 })).toBe(true);
+    for (const fps of FPS_LIST) expect(isStill({ fps, duration: 1 / fps })).toBe(true);
+    // A partial frame counts as one.
+    expect(isStill({ fps: 30, duration: 0.01 })).toBe(true);
+  });
+
+  it('is not a scene with more', () => {
+    expect(isStill({ fps: 1, duration: 2 })).toBe(false);
+    expect(isStill({ fps: 30, duration: 2 / 30 })).toBe(false);
+    expect(isStill({ fps: 24, duration: 10 })).toBe(false);
   });
 });

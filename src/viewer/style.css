@@ -299,7 +299,9 @@ kbd {
 
 .segmented {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  /* One row, however many choices: two kinds of scene, three frame rates, five export formats. */
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
   gap: 2px;
   padding: 2px;
   border-radius: var(--r-s);
@@ -1290,6 +1292,21 @@ kbd {
 
 .dock.is-sized {
   max-height: 55vh;
+}
+
+/* A still has no timeline (ADR 0020): the dock is the selection bar alone. */
+.dock.is-still {
+  min-height: 0;
+}
+
+.still-badge {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border: 0.5px solid var(--hairline);
+  border-radius: 999px;
+  color: var(--text-2);
+  font-size: 11px;
+  letter-spacing: 0.02em;
 }
 
 /* It fits what's on the timeline, up to a moderate height, until you drag it. */

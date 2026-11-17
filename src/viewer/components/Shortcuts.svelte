@@ -1,29 +1,42 @@
 <!-- The keyboard shortcuts and pointer gestures, inside the View popover. -->
 <script lang="ts">
-  let { sound }: { sound: boolean } = $props();
+  let { sound, still = false }: { sound: boolean; still?: boolean } = $props();
 
+  // On a still (ADR 0020) the keys that move through time do nothing, so they aren't listed.
   const rows: { keys: string[]; what: string }[] = $derived([
-    { keys: ['Space'], what: 'Play or pause' },
-    { keys: ['←', '→'], what: 'Previous or next frame' },
-    { keys: ['Shift', '←', '→'], what: 'One second back or on' },
-    { keys: ['Home', 'End'], what: 'First or last frame' },
+    ...(still
+      ? []
+      : [
+          { keys: ['Space'], what: 'Play or pause' },
+          { keys: ['←', '→'], what: 'Previous or next frame' },
+          { keys: ['Shift', '←', '→'], what: 'One second back or on' },
+          { keys: ['Home', 'End'], what: 'First or last frame' },
+        ]),
     ...(sound ? [{ keys: ['M'], what: 'Sound on or off' }] : []),
     { keys: ['Click'], what: 'Select what is under the pointer; again to go deeper' },
     { keys: ['Option', 'Click'], what: 'Select a part' },
     { keys: ['Right-click'], what: 'List every layer under the pointer' },
-    { keys: ['↑', '↓'], what: 'Next layer, from a timeline row' },
-    { keys: ['I', 'O'], what: 'Range starts or ends here' },
-    { keys: ['X'], what: 'Mark the selected clip or layer as the range' },
-    { keys: ['Esc'], what: 'Clear the layer, then the range' },
+    ...(still
+      ? [{ keys: ['Esc'], what: 'Clear the selection' }]
+      : [
+          { keys: ['↑', '↓'], what: 'Next layer, from a timeline row' },
+          { keys: ['I', 'O'], what: 'Range starts or ends here' },
+          { keys: ['X'], what: 'Mark the selected clip or layer as the range' },
+          { keys: ['Esc'], what: 'Clear the layer, then the range' },
+        ]),
     { keys: ['Return'], what: 'Go to the prompt' },
     { keys: ['@'], what: 'Pick a layer, in the prompt' },
     { keys: ['Drag'], what: 'Move what is under the pointer on the canvas' },
     { keys: ['Shift', 'Drag'], what: 'Move along one axis' },
-    { keys: ['Delete'], what: 'Remove the selected key, sound or clip' },
-    { keys: ['S'], what: 'Split the selected clip or sound at the playhead' },
-    { keys: ['⌘', 'D'], what: 'Duplicate the selected clip or sound' },
-    { keys: ['←', '→'], what: 'Nudge the selected key a frame; Shift for ten' },
-    { keys: ['⌘', 'Z'], what: 'Undo a key, clip, sound or canvas edit' },
+    ...(still
+      ? [{ keys: ['⌘', 'Z'], what: 'Undo a canvas edit' }]
+      : [
+          { keys: ['Delete'], what: 'Remove the selected key, sound or clip' },
+          { keys: ['S'], what: 'Split the selected clip or sound at the playhead' },
+          { keys: ['⌘', 'D'], what: 'Duplicate the selected clip or sound' },
+          { keys: ['←', '→'], what: 'Nudge the selected key a frame; Shift for ten' },
+          { keys: ['⌘', 'Z'], what: 'Undo a key, clip, sound or canvas edit' },
+        ]),
   ]);
 </script>
 

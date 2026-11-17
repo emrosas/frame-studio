@@ -13,7 +13,7 @@ import { dirname, join, relative } from 'node:path';
 import type { Layer, Params, Rig, RigRegistry, Scene, SpokenWord } from '../../src/engine/types.ts';
 import type { SceneEntry, SceneLibrary } from '../../src/viewer/library.ts';
 import type { CheckReport } from '../../src/export/check.ts';
-import type { ContactSheetResult, RenderExportResult, RenderHit } from '../../src/viewer/render-api.ts';
+import { imageName, isImageFormat, type ContactSheetResult, type ImageFormat, type ImageResult, type RenderExportResult, type RenderHit } from '../../src/viewer/render-api.ts';
 import { buildEmbed } from '../bundle/embed.ts';
 import { openStudio, poolTransport, writeViaSink, type Studio } from '../render/studio.ts';
 import { entryPath, libraryFrom, loadModules, readSceneFiles, sceneLibrary, writeFileAtomic, type LoadedModules } from '../scene-files.ts';
@@ -22,7 +22,7 @@ import { withheldNote, type CodeHost } from '../studio/code.ts';
 import type { StudioFolder } from '../studio/folder.ts';
 import type { RenderPool } from '../studio/render-pool.ts';
 import { hear, nextWords, type VoiceProgress } from '../voice/align.ts';
-import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, editFields, isLayerTarget, MARKERS_TARGET, projectOf, STRUCTURE_FIELDS, STRUCTURE_TARGET, type LayerChange, type NewComposition, type NewScene, type PlacedVoice, type StudioRequest } from '../../src/studio/protocol.ts';
+import { checkNewComposition, checkNewScene, DEFAULT_FORMAT, STILL_TIMING, editFields, isLayerTarget, MARKERS_TARGET, projectOf, STRUCTURE_FIELDS, STRUCTURE_TARGET, type LayerChange, type NewComposition, type NewScene, type PlacedVoice, type StudioRequest } from '../../src/studio/protocol.ts';
 import { describeThread, type SceneInfo } from '../studio/describe.ts';
 import { importMedia, mediaInfo, type MediaInfo } from '../studio/media.ts';
 import { applyTimelineEdit, freshId, freshTrack, type RawClip, type RawCue as TimelineCue, type TimelineEdit, type TimelineFile, type TimelineResult } from '../../src/studio/timeline-edit.ts';
@@ -678,12 +678,14 @@ export class Workspace {
       if (!project.project) throw new Error(`${project.file} has errors, so the project can't take a new scene until they're fixed:\n${project.errors.join('\n')}`);
       key = `${project.id}/${input.id}`;
       path = join(this.folder.projects, project.id, `${input.id}.json`);
-      scene = this.emptyScene(input.id, project.project.fps, project.project.size, input.duration);
+      scene = this.emptyScene(input.id, project.project.fps, project.project.size, input.duration ?? 0);
     } else {
       key = input.id;
       path = join(this.folder.scenes, `${input.id}.json`);
       const format = this.defaultFormat(lib);
-      scene = this.emptyScene(input.id, input.fps ?? format.fps, input.size ?? format.size, input.duration);
+      // A still is one frame (ADR 0020).
+      const timing = input.still ? STILL_TIMING : { fps: input.fps ?? format.fps, duration: input.duration ?? 0 };
+      scene = this.emptyScene(input.id, timing.fps, input.size ?? format.size, timing.duration);
     }
     if (lib.entries.some((e) => e.key === key) || (await stat(path).catch(() => null))) {
       throw new Error(`There is already a scene "${key}"${input.project === undefined ? ' in scenes/' : ''}. Pick another name.`);
@@ -903,11 +905,57 @@ export class Workspace {
     }));
   }
 
+  /**
+   * One frame as an image at the scene's size (ADR 0020). A still's file is named after the scene; a frame
+   * of a longer scene carries its number.
+   */
+  async exportImage(key: string, format: ImageFormat, options: { frame?: FrameInput; quality?: number } = {}): Promise<{ file: string } & ImageResult> {
+    if (format !== 'jpg' && options.quality !== undefined) throw new Error('quality applies to jpg; a png is lossless');
+    const { scene, files } = await this.validScene(key);
+    const studio = await this.page(key, files);
+    const n = options.frame === undefined ? 0 : await this.resolveFrame(studio, options.frame);
+    const path = join(this.folder.out, studio.scene.out, imageName(scene.id, format, n, studio.scene.frameCount));
+    const result = await writeViaSink(studio, path, (sink) => studio.call('writeImage', n, sink, { format, ...(options.quality !== undefined ? { quality: options.quality } : {}) }));
+    return { file: this.show(path), ...result };
+  }
+
+  /**
+   * Several stills in one call: the scenes named, or every still in the folder. One that fails says why
+   * and the rest still export.
+   */
+  async exportStills(options: { sceneIds?: string[]; format?: ImageFormat; quality?: number } = {}): Promise<{ format: ImageFormat; exported: ({ scene: string; file: string } & ImageResult)[]; failed: { scene: string; error: string }[] }> {
+    const format = options.format ?? 'png';
+    if (format !== 'jpg' && options.quality !== undefined) throw new Error('quality applies to jpg; a png is lossless');
+    let keys = options.sceneIds;
+    if (!keys) {
+      const { modules, lib } = await this.library();
+      keys = lib.entries.filter((e) => e.scene && e.errors.length === 0 && modules.engine.isStill(e.scene)).map((e) => e.key);
+      if (keys.length === 0) throw new Error('There are no stills here. A still is a scene with one frame; make one with create_scene and still: true.');
+    }
+    if (keys.length === 0) throw new Error('sceneIds is empty; leave it out to export every still');
+    const exported: ({ scene: string; file: string } & ImageResult)[] = [];
+    const failed: { scene: string; error: string }[] = [];
+    for (const key of keys) {
+      try {
+        exported.push({ scene: key, ...(await this.exportImage(key, format, { quality: options.quality })) });
+      } catch (err) {
+        failed.push({ scene: key, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    return { format, exported, failed };
+  }
+
   async export(
     key: string,
-    target: ExportTarget,
-    options: { from?: FrameInput; to?: FrameInput; silent?: boolean; media?: boolean } = {},
-  ): Promise<{ file: string } & Partial<RenderExportResult> & { bytes?: number; rigs?: string[]; generators?: string[]; mediaLeftOut?: string[] }> {
+    target: ExportTarget | ImageFormat,
+    options: { from?: FrameInput; to?: FrameInput; silent?: boolean; media?: boolean; frame?: FrameInput; quality?: number } = {},
+  ): Promise<{ file: string } & Partial<RenderExportResult> & Partial<ImageResult> & { bytes?: number; rigs?: string[]; generators?: string[]; mediaLeftOut?: string[] }> {
+    if (isImageFormat(target)) {
+      const extra = (['from', 'to', 'silent', 'media'] as const).filter((name) => options[name] !== undefined);
+      if (extra.length > 0) throw new Error(`${target} exports one frame; leave out ${extra.join(', ')} and give frame`);
+      return this.exportImage(key, target, { frame: options.frame, quality: options.quality });
+    }
+    if (options.frame !== undefined || options.quality !== undefined) throw new Error(`frame and quality are for png and jpg; ${target} takes ${target === 'html' ? 'the whole scene' : 'from and to'}`);
     const { scene, files } = await this.validScene(key);
     if (target === 'html') {
       if (options.from !== undefined || options.to !== undefined) throw new Error('html exports the whole scene; leave out from and to');
@@ -947,7 +995,7 @@ export class Workspace {
     try {
       const { modules, entry } = await this.entry(sceneId);
       const scene = entry.scene;
-      return { file: entry.file, ...(scene ? { timecode: (f: number) => modules.engine.formatTimecode(f, scene.fps) } : {}) };
+      return { file: entry.file, ...(scene ? { timecode: (f: number) => modules.engine.formatTimecode(f, scene.fps), still: modules.engine.isStill(scene) } : {}) };
     } catch {
       // The scene may have been renamed; the id still says which one.
       return {};

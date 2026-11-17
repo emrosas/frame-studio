@@ -40,7 +40,7 @@ import {
 } from '../export';
 import { findEntry, type SceneLibrary } from './library';
 import { pair } from './pairing';
-import type { AudioTrackResult, ContactSheetResult, ExportTarget, RenderExportResult, RenderStudioApi, SegmentResult } from './render-api';
+import { isImageFormat, JPG_QUALITY, type AudioTrackResult, type ContactSheetResult, type ExportTarget, type RenderExportResult, type RenderStudioApi, type SegmentResult } from './render-api';
 import { loadLibrary } from './scenes';
 import { parseFrameText, rangeError } from './selection';
 
@@ -81,9 +81,9 @@ const NO_HOST: RenderHost = {
   progress: () => {},
 };
 
-async function blobBytes(canvas: HTMLCanvasElement): Promise<Uint8Array> {
-  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-  if (!blob) throw new Error('The canvas could not be encoded as PNG.');
+async function blobBytes(canvas: HTMLCanvasElement, type = 'image/png', quality?: number): Promise<Uint8Array> {
+  const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, type, quality));
+  if (!blob || blob.type !== type) throw new Error(`The canvas could not be encoded as ${type === 'image/png' ? 'PNG' : 'JPG'}.`);
   return new Uint8Array(await blob.arrayBuffer());
 }
 
@@ -289,6 +289,31 @@ function boot(library: SceneLibrary, requested: string | null, host: RenderHost)
       await sink.write(bytes, 0);
       await sink.close?.();
       return bytes.length;
+    },
+    async writeImage(frame, sinkId, options = {}) {
+      const format = options.format ?? 'png';
+      const quality = options.quality ?? JPG_QUALITY;
+      if (!isImageFormat(format)) throw new Error(`An image is png or jpg, got ${JSON.stringify(format)}.`);
+      if (format === 'jpg' && !(Number.isInteger(quality) && quality >= 1 && quality <= 100)) throw new Error(`quality must be a whole number from 1 to 100, got ${JSON.stringify(quality)}.`);
+      checkFrame(frame);
+      await prepare(frame);
+      draw(frame);
+      let source = canvas;
+      if (format === 'jpg') {
+        // A JPG has no alpha, and Chromium would put black under it.
+        source = document.createElement('canvas');
+        source.width = canvas.width;
+        source.height = canvas.height;
+        const flat = context2d(source);
+        flat.fillStyle = '#ffffff';
+        flat.fillRect(0, 0, source.width, source.height);
+        flat.drawImage(canvas, 0, 0);
+      }
+      const bytes = format === 'jpg' ? await blobBytes(source, 'image/jpeg', quality / 100) : await blobBytes(source);
+      const sink = hostSink(sinkId);
+      await sink.write(bytes, 0);
+      await sink.close?.();
+      return { format, frame, width: canvas.width, height: canvas.height, bytes: bytes.length };
     },
     async hitTest(frame, x, y, options = {}) {
       const ready = need();
@@ -576,7 +601,7 @@ async function runWorker(): Promise<void> {
       }
       const value =
         job.method === 'info'
-          ? { scene: api.scene, errors: [...api.errors] }
+          ? { scene: api.scene, errors: [...api.errors], scenes: [...api.scenes] }
           : job.method === 'gpu'
             ? ((window as unknown as { frameStudioGpu?: Record<string, string> }).frameStudioGpu ?? null)
             : // JSON turns an argument left out into null; the API's defaults want undefined.

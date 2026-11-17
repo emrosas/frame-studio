@@ -1,5 +1,6 @@
-// The render page's window.studio (render.html). Types only, so the Node
-// render tools can import them without pulling in browser code.
+// The render page's window.studio (render.html). Types, and a few constants
+// about image exports, so the Node render tools can import them without
+// pulling in browser code.
 
 import type { CheckReport } from '../export/check.ts';
 import type { ExportStages } from '../export/mp4.ts';
@@ -7,6 +8,26 @@ import type { ExportStages } from '../export/mp4.ts';
 export type { ExportStages };
 
 export type ExportTarget = 'mp4' | 'gif';
+
+/** An image of one frame (ADR 0020). */
+export type ImageFormat = 'png' | 'jpg';
+export const IMAGE_FORMATS: readonly ImageFormat[] = ['png', 'jpg'];
+export const isImageFormat = (value: unknown): value is ImageFormat => value === 'png' || value === 'jpg';
+/** A JPG's quality when none is given, of 1 to 100. */
+export const JPG_QUALITY = 90;
+
+/** An image's file name: the scene's for a still, with the frame's number for a frame of a longer scene. */
+export function imageName(sceneId: string, format: ImageFormat, frame: number, frameCount: number): string {
+  return frameCount === 1 ? `${sceneId}.${format}` : `${sceneId}-${String(frame).padStart(5, '0')}.${format}`;
+}
+
+export interface ImageResult {
+  format: ImageFormat;
+  frame: number;
+  width: number;
+  height: number;
+  bytes: number;
+}
 
 export interface RenderSceneInfo {
   id: string;
@@ -116,6 +137,11 @@ export interface RenderStudioApi {
    * wider than that is scaled down to fit, for previews. Returns the byte count.
    */
   writePng(frame: number, sinkId: string, options?: { maxWidth?: number }): Promise<number>;
+  /**
+   * Draws frame n and writes it to the sink at the scene's size, as PNG or JPG (ADR 0020). A JPG takes a
+   * quality from 1 to 100, and has no alpha, so the frame goes over white.
+   */
+  writeImage(frame: number, sinkId: string, options?: { format?: ImageFormat; quality?: number }): Promise<ImageResult>;
   /** The layer, and with parts the part, at scene pixel (x, y) on frame n. */
   hitTest(frame: number, x: number, y: number, options?: { parts?: boolean }): Promise<RenderHit>;
   /**

@@ -60,7 +60,11 @@
   </div>
   {#if header?.size && header.fps && !ui.home}
     <span class="scene-meta">
-      {header.size[0]}×{header.size[1]} · <output aria-label="Frame rate">{ui.fps} fps</output> · {Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s
+      {#if ui.still}
+        {header.size[0]}×{header.size[1]} still
+      {:else}
+        {header.size[0]}×{header.size[1]} · <output aria-label="Frame rate">{ui.fps} fps</output> · {Number.isInteger(seconds) ? seconds : seconds.toFixed(1)} s
+      {/if}
     </span>
   {/if}
   <span class="spacer"></span>
@@ -93,7 +97,7 @@
             }}><Icon name="safe" />Safe zones</button
           >
         {/if}
-        <Shortcuts sound={ui.sound !== null} />
+        <Shortcuts sound={ui.sound !== null} still={ui.still} />
         <button
           type="button"
           class="menu-item"
