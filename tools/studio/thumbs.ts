@@ -30,7 +30,7 @@ export interface ThumbsOptions {
   dir: string;
   enabled: boolean;
   /** The folder's entries now, and what every picture depends on besides them (the rigs). */
-  entries(): Promise<{ entries: readonly PosterEntry[]; shared: unknown; media?: readonly { file: string; bytes: number; modified: number }[] }>;
+  entries(): Promise<{ entries: readonly PosterEntry[]; shared: unknown; media?: readonly { file: string; bytes: number; modified: number }[]; pages?: readonly { file: string; size: number; mtime: number }[] }>;
   /** Writes frame `frame` of scene `key` to `path`, scaled to fit `maxWidth`. */
   render(key: string, frame: number, path: string, maxWidth: number): Promise<unknown>;
   /** Tells pages a poster is ready. */
@@ -74,7 +74,7 @@ export class Thumbs {
   /** Every scene's poster file, or null where it isn't there yet. Missing ones start rendering. */
   async list(): Promise<Record<string, string | null>> {
     if (!this.options.enabled) return {};
-    const { entries, shared, media = [] } = await this.options.entries();
+    const { entries, shared, media = [], pages = [] } = await this.options.entries();
     const out: Record<string, string | null> = {};
     this.wanted.clear();
     for (const entry of entries) {
@@ -89,7 +89,8 @@ export class Thumbs {
       const scenes = closure(scene, entry.world);
       const files = new Set(scenes.flatMap((s) => s.layers.flatMap((l) => (l.file !== undefined ? [l.file] : []))));
       const hash = createHash('sha256')
-        .update(JSON.stringify([scenes, entry.world.cast ?? null, shared, media.filter((m) => files.has(m.file))]))
+        // A scene with an html layer draws from html/ (ADR 0021): any change there may change it.
+        .update(JSON.stringify([scenes, entry.world.cast ?? null, shared, media.filter((m) => files.has(m.file)), scenes.some((s) => s.layers.some((l) => l.html !== undefined)) ? pages : []]))
         .digest('hex')
         .slice(0, 12);
       const file = `${slug(entry.key)}-${hash}.png`;

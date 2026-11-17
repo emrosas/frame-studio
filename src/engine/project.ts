@@ -28,9 +28,43 @@ export interface FolderProjectFile {
   /** The language spoken, for timing a voice whose cue doesn't say (ADR 0016). */
   lang?: string;
   cast?: Cast;
+  /** Stills grouped in order, as posts that are swiped through (ADR 0022). Slides are scene ids. */
+  carousels?: { id: string; slides: string[] }[];
 }
 
-const FOLDER_PROJECT_FIELDS = new Set(['name', 'fps', 'size', 'lang', 'cast']);
+const CAROUSEL_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+/** Why `input` isn't a list of carousels, as "path: message" lines; empty when it is. */
+export function carouselErrors(input: unknown): string[] {
+  const errors: string[] = [];
+  if (!Array.isArray(input)) return [`carousels: must be a list like [{ "id": "launch", "slides": ["launch-1", "launch-2"] }], got ${JSON.stringify(input)}`];
+  const ids = new Set<string>();
+  const used = new Map<string, string>();
+  input.forEach((c: unknown, i: number) => {
+    const at = `carousels[${i}]`;
+    if (typeof c !== 'object' || c === null || Array.isArray(c)) {
+      errors.push(`${at}: must be { "id", "slides" }, got ${JSON.stringify(c)}`);
+      return;
+    }
+    const { id, slides, ...rest } = c as Record<string, unknown>;
+    for (const key of Object.keys(rest)) errors.push(`${at}.${key}: unknown field "${key}"; a carousel has id and slides`);
+    if (typeof id !== 'string' || !CAROUSEL_ID.test(id) || id.length > 64) errors.push(`${at}.id: must be lowercase letters, digits and single hyphens, like "launch", got ${JSON.stringify(id)}`);
+    else if (ids.has(id)) errors.push(`${at}.id: duplicate carousel "${id}"`);
+    else ids.add(id);
+    if (!Array.isArray(slides) || slides.length === 0 || !slides.every((s) => typeof s === 'string' && s !== '')) {
+      errors.push(`${at}.slides: must be a list of scene ids, at least one, got ${JSON.stringify(slides)}`);
+      return;
+    }
+    for (const slide of slides as string[]) {
+      const other = used.get(slide);
+      if (other !== undefined) errors.push(`${at}.slides: "${slide}" is already a slide of ${other === String(id) ? 'this carousel' : `"${other}"`}; a still is in one carousel, once`);
+      else used.set(slide, String(id));
+    }
+  });
+  return errors;
+}
+
+const FOLDER_PROJECT_FIELDS = new Set(['name', 'fps', 'size', 'lang', 'cast', 'carousels']);
 
 /** Checks a project folder's project.json: every field optional; the cast as an M9 project's. */
 export function validateFolderProject(input: unknown, registry?: RigRegistry): { ok: true; project: FolderProjectFile } | { ok: false; errors: string[] } {
@@ -49,6 +83,7 @@ export function validateFolderProject(input: unknown, registry?: RigRegistry): {
     if (!isObject(input.cast)) err('cast', `must map names to { "rig": "...", "params": {...} }, got ${show(input.cast)}`);
     else for (const [name, member] of Object.entries(input.cast)) checkMember(name, member, registry, err);
   }
+  if (input.carousels !== undefined) errors.push(...carouselErrors(input.carousels));
   return errors.length > 0 ? { ok: false, errors } : { ok: true, project: input as unknown as FolderProjectFile };
 }
 

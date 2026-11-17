@@ -1,6 +1,6 @@
 # 0021: HTML layers on stills, drawn with Chromium's HTML-in-Canvas
 
-Status: accepted, 2026-11-17, on the owner's decision. Amends ADR 0014: "HTML authoring" leaves its Refused list for this one layer type, and "a scene that names a file is refused" gains one exception. Amends CLAUDE.md's "no fonts, images, or base64 blobs in rigs or scenes": a still's html layer points at a page whose fonts and images sit beside it in the project folder. Rigs stay as they were.
+Status: accepted, 2026-11-17, on the owner's decision. ADR 0022 lets a still be held in a video, so a page reaches MP4 and GIF through its still. Amends ADR 0014: "HTML authoring" leaves its Refused list for this one layer type, and "a scene that names a file is refused" gains one exception. Amends CLAUDE.md's "no fonts, images, or base64 blobs in rigs or scenes": a still's html layer points at a page whose fonts and images sit beside it in the project folder. Rigs stay as they were.
 
 ## Context
 

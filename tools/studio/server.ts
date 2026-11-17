@@ -53,6 +53,7 @@ import { kokoro } from '../voice/kokoro.ts';
 import { saveVoiceFile } from '../voice/save.ts';
 import { listMedia, mediaInfo, saveMedia, serveMedia } from './media.ts';
 import { listHtml, serveHtml } from './html.ts';
+import { checkCarouselEdit, type CarouselEdit } from '../../src/studio/carousels.ts';
 import { listRenders, serveRender } from './renders.ts';
 import { Thumbs } from './thumbs.ts';
 import { createSerial } from '../mcp/tools.ts';
@@ -327,7 +328,8 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
     entries: async () => {
       const mods = await loadModules(code);
       const library = await sceneLibrary(mods, folder);
-      return { entries: library.entries, shared: await modules.manifest(), media: await listMedia(folder) };
+      // A still's poster follows its page (ADR 0021), so pages count with the media a poster is made from.
+      return { entries: library.entries, shared: await modules.manifest(), media: await listMedia(folder), pages: await listHtml(folder) };
     },
     render: (key, frame, path, maxWidth) => withSink(path, (sink) => pool.call(key, 'writePng', [frame, sink, { maxWidth }], { low: true, release: true })),
     push: (key, file) => events.send(THUMB_EVENT, { key, file }),
@@ -355,10 +357,25 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
   const pad = (n: number) => String(n).padStart(5, '0');
   async function runExport(
     id: string,
-    input: { scene: string; target: 'mp4' | 'gif' | 'html' | ImageFormat; from?: number; to?: number; silent?: boolean; media?: boolean; frame?: number; quality?: number },
+    input: { scene: string; target: 'mp4' | 'gif' | 'html' | ImageFormat; from?: number; to?: number; silent?: boolean; media?: boolean; frame?: number; quality?: number; stills?: 'all' | { carousel: string } },
     signal: AbortSignal,
   ) {
     const progress = (stage: string, done: number, total: number) => events.send(EXPORT_EVENT, { id, stage, done, total });
+    if (isImageFormat(input.target) && input.stills) {
+      // Every still, or a carousel's slides in order into one folder (ADR 0022).
+      progress('exporting stills', 0, 1);
+      const out = await (await ws()).exportStills({
+        format: input.target,
+        ...(input.quality !== undefined ? { quality: input.quality } : {}),
+        ...(input.stills === 'all' ? {} : { carousel: input.stills.carousel }),
+        onProgress: (done, total) => progress('exporting stills', done, total),
+        signal,
+      });
+      if (out.exported.length === 0) throw new Error(out.failed.map((f) => `${f.scene}: ${f.error}`).join('\n') || 'There was nothing to export.');
+      const count = `${out.exported.length} ${out.exported.length === 1 ? 'still' : 'stills'}`;
+      const failed = out.failed.length > 0 ? ` ${out.failed.length} failed: ${out.failed.map((f) => `${f.scene} (${f.error})`).join('; ')}` : '';
+      return { file: out.folder ? join(folder.root, out.folder) : folder.out, note: `${count}${out.folder ? ', numbered in order' : ', each in its own folder'}.${failed}` };
+    }
     if (isImageFormat(input.target)) {
       // One frame, through the same job the export tool runs (ADR 0020).
       progress('rendering', 0, 1);
@@ -647,7 +664,11 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
 
     // Exports from the viewer.
     if (req.method === 'POST' && path === '/export') {
-      const input = await json<{ scene?: unknown; target?: unknown; from?: unknown; to?: unknown; silent?: unknown; media?: unknown; frame?: unknown; quality?: unknown }>(req);
+      const input = await json<{ scene?: unknown; target?: unknown; from?: unknown; to?: unknown; silent?: unknown; media?: unknown; frame?: unknown; quality?: unknown; stills?: unknown }>(req);
+      const group = input.stills as { carousel?: unknown } | 'all' | undefined;
+      if (group !== undefined && !(isImageFormat(input.target) && (group === 'all' || (typeof group === 'object' && group !== null && typeof group.carousel === 'string')))) {
+        throw new HttpError(400, 'stills is "all" or { carousel }, with target png or jpg');
+      }
       if (typeof input.scene !== 'string') throw new HttpError(400, 'scene must be a scene id');
       const image = isImageFormat(input.target);
       if (input.target !== 'mp4' && input.target !== 'gif' && input.target !== 'html' && !image) throw new HttpError(400, 'target must be mp4, gif, html, png or jpg');
@@ -665,6 +686,7 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
         media: input.media === true,
         frame: frame(input.frame, 'frame'),
         ...(input.quality !== undefined ? { quality: input.quality as number } : {}),
+        ...(group !== undefined ? { stills: group === 'all' ? ('all' as const) : { carousel: group.carousel as string } } : {}),
       };
       if (job.target === 'html' && (job.from !== undefined || job.to !== undefined)) throw new HttpError(400, 'html exports the whole scene');
       const id = `export-${++exportCount}`;
@@ -706,6 +728,18 @@ export async function startStudioServer(options: StudioServerOptions): Promise<S
       const problem = checkNewScene(input);
       if (problem) throw new HttpError(400, problem);
       return send(res, 201, await created(() => makeScene(input)));
+    }
+    // Carousels (ADR 0022): grouping stills, reordering them, and a new slide at the end of one.
+    if (req.method === 'POST' && path === '/carousels') {
+      const edit = await json<CarouselEdit>(req);
+      const problem = checkCarouselEdit(edit);
+      if (problem) throw new HttpError(400, problem);
+      return send(res, 200, await created(async () => (await ws()).editCarousels(edit)));
+    }
+    if (req.method === 'POST' && path === '/carousels/slide') {
+      const input = await json<{ carousel?: unknown }>(req);
+      if (typeof input.carousel !== 'string') throw new HttpError(400, 'carousel must be a carousel id');
+      return send(res, 201, await created(async () => (await ws()).addCarouselSlide(input.carousel as string)));
     }
     if (req.method === 'POST' && path === '/videos') {
       const input = await json<NewVideo>(req);

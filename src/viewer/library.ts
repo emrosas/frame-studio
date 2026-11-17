@@ -40,6 +40,8 @@ export interface FolderProject {
   /** The language voices and captions start from, such as "es". */
   lang?: string;
   cast?: Record<string, { rig: string; params?: Record<string, unknown> }>;
+  /** Stills grouped in order (ADR 0022). */
+  carousels?: { id: string; slides: string[] }[];
 }
 
 export interface ProjectEntry {

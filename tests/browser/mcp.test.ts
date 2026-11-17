@@ -100,6 +100,7 @@ describe('an agent session', () => {
         'create_html_stills',
         'align_voice',
         'create_scene',
+        'edit_carousel',
         'export',
         'export_stills',
         'generate_voice',

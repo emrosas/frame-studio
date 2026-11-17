@@ -737,7 +737,29 @@ On a still the viewer drops the transport, the timeline and the range. You click
 
 `npm run render` takes `--format jpg` and `--quality` too, and keeps its `frame-00047` names. On a still, `--frame` can be left out.
 
-Name a carousel's slides in order, such as `launch-1` to `launch-6`. Keys, overrides and `stepFps` do nothing on one frame, so set params directly.
+Keys, overrides and `stepFps` do nothing on one frame, so set params directly.
+
+### Carousels
+
+Stills that make one post are grouped as a carousel (ADR 0022), in `project.json`:
+
+```json
+{ "carousels": [{ "id": "launch", "slides": ["launch-1", "launch-2", "launch-3"] }] }
+```
+
+`slides` are scene ids in the order they are swiped. A still is in one carousel at most, and a still in none is on its own. Under a still, the dock shows its carousel as a strip: click a slide to open it, press Left and Right to step through, drag a slide to reorder, add an empty slide with the plus, or take the one on screen out. A still on its own offers Start a carousel there. The Library's Stills section shows each carousel as a row of its slides, then the stills on their own.
+
+Export on a still offers this still, its carousel, or every still. A carousel goes to one folder, `out/launch/01-launch-1.png`, `02-launch-2.png`, so the files sort as the post swipes. From the command line, `npm run export -- --stills --scene launch-1,launch-2 --target png` exports the scenes named, each to its own folder.
+
+### A still in a video
+
+A still can be a clip in a composition, held like an image: it shows its one frame for as long as the clip says, at the composition's fps.
+
+```json
+{ "id": "card", "scene": "launch-1", "start": 2, "out": 4 }
+```
+
+`out` is required and is how many seconds it shows; with `in`, it shows for `out - in`. Dragged onto the timeline it starts 3 seconds long, and its edge trims as far as you like. It takes placement, opacity keys and transitions like any clip, and brings no sound.
 
 ### HTML layers
 

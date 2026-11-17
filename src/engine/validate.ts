@@ -594,6 +594,9 @@ function checkSeconds(env: Env, v: unknown, path: string, what: string): number 
 }
 
 /** A scene layer (ADR 0007): a sibling scene of the project, a start, a trim, and placement params. */
+/** Whether a placed scene is a still, which a clip holds for as long as it likes. */
+const held = (shot: { duration: number; fps?: number }): boolean => shot.fps !== undefined && isStill({ fps: shot.fps, duration: shot.duration });
+
 function checkSceneLayer(env: Env, layer: Obj, path: string): void {
   const { err, project } = env;
   let shot: { duration: number; fps?: number } | undefined;
@@ -609,7 +612,7 @@ function checkSceneLayer(env: Env, layer: Obj, path: string): void {
       const known = [...project.scenes.keys()].filter((id) => id !== env.sceneId);
       if (project.kind) err(`${path}.scene`, `no scene or composition "${layer.scene}" in the project; there are ${known.length ? known.join(', ') : 'none yet'}`);
       else err(`${path}.scene`, `no scene "${layer.scene}" in project "${project.id}"; its scenes are ${known.length ? known.join(', ') : 'none yet'}`);
-    } else if (project.kind === 'composition' && shot.fps !== undefined && env.fps !== undefined && shot.fps !== env.fps) {
+    } else if (project.kind === 'composition' && !held(shot) && shot.fps !== undefined && env.fps !== undefined && shot.fps !== env.fps) {
       err(`${path}.scene`, `"${layer.scene}" runs at ${shot.fps} fps; a composition's clips run at its own fps (${env.fps}), so change one of them`);
     }
   }
@@ -617,8 +620,13 @@ function checkSceneLayer(env: Env, layer: Obj, path: string): void {
   const from = checkSeconds(env, layer.in, `${path}.in`, 'where the shot starts, in its own time');
   const to = checkSeconds(env, layer.out, `${path}.out`, 'where the shot ends, in its own time');
   if (to !== undefined && to <= (from ?? 0)) err(`${path}.out`, `must be after in (${from ?? 0} s), got ${to}`);
-  if (shot && to !== undefined && to > shot.duration) err(`${path}.out`, `must be within the shot's duration (${shot.duration} s), got ${to}`);
-  if (shot && from !== undefined && from >= shot.duration) err(`${path}.in`, `must be before the shot ends (${shot.duration} s), got ${from}`);
+  // A still is held like an image (ADR 0020): `out` says how long it shows, at any fps, so its own second sets no limit.
+  if (shot && held(shot) && project?.kind === 'composition') {
+    if (to === undefined) err(`${path}.out`, `"${String(layer.scene)}" is a still, which has no length of its own; give out, how many seconds it shows`);
+  } else {
+    if (shot && to !== undefined && to > shot.duration) err(`${path}.out`, `must be within the shot's duration (${shot.duration} s), got ${to}`);
+    if (shot && from !== undefined && from >= shot.duration) err(`${path}.in`, `must be before the shot ends (${shot.duration} s), got ${from}`);
+  }
   if (start !== undefined && env.duration !== undefined && start >= env.duration) {
     err(`${path}.start`, `must be before this scene ends (${env.duration} s), got ${start}`);
   }

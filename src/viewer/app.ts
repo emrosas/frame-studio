@@ -34,6 +34,7 @@ import { anchorKeys, deleteKeys, keyLanes, keyMarks, keysAt, moveTarget, type Ke
 import type { GeneratedVoice } from './speech';
 import type { VoiceLine } from './voice';
 import { cueTarget, isLayerTarget, MARKERS_TARGET, STRUCTURE_TARGET, type LayerChange } from '../studio/protocol';
+import { carouselOf, type Carousel } from '../studio/carousels';
 import { htmlRequest, isStill, scenePlacement, wordRef, wordTime, type HtmlRequest } from '../engine';
 import { pagePoint, sceneBox, type HtmlElement } from '../export/html-pages';
 import type { OverlayBox } from './overlay';
@@ -480,6 +481,29 @@ export class App {
         this.ui.exporting = { ...this.ui.exporting, open: open ?? !this.ui.exporting.open };
       },
       startExport: (target, options) => this.startExport(target, options),
+      editCarousel: (edit) => attempt(() => this.studio.editCarousels(edit)),
+      exportStills: async (carousel) => {
+        if (this.ui.exporting.running) return 'An export is already running.';
+        try {
+          const id = await this.studio.startExport({ scene: carousel ?? '', target: 'png', stills: carousel === null ? 'all' : { carousel } });
+          this.ui.exporting = { ...this.ui.exporting, open: true, running: { id, stage: 'starting', done: 0, total: 1 }, result: null, canReveal: desktop() !== null };
+          return null;
+        } catch (err) {
+          return errorText(err).message;
+        }
+      },
+      startCarousel: () =>
+        attempt(async () => {
+          const key = this.entry?.key;
+          if (!key || !this.still) throw new Error('Open a still first.');
+          // Named after the still, without a trailing number: "launch-1" starts "launch".
+          const stem = key.replace(/-\d+$/, '') || key;
+          const taken = new Set([...this.ui.carousels.map((c) => c.id), ...this.library.entries.map((e) => e.key).filter((k) => k !== key)]);
+          let id = stem === key ? `${stem}-set` : stem;
+          for (let n = 2; taken.has(id); n++) id = `${stem}-set-${n}`;
+          await this.studio.editCarousels({ op: 'create', id, slides: [key] });
+        }),
+      addSlide: (carousel) => this.create(() => this.studio.addCarouselSlide(carousel)),
       cancelExport: () => {
         const running = this.ui.exporting.running;
         if (running) void this.studio.cancelExport(running.id).catch(() => {});
@@ -1392,6 +1416,11 @@ export class App {
     this.errors.set('render', null);
     this.syncErrors();
     this.ui.scenes = this.sceneOptions();
+    // Carousels (ADR 0022), with only the slides the folder still has.
+    const known = new Set(this.library.entries.filter((e) => e.project === null).map((e) => e.key));
+    this.ui.carousels = (this.library.folder?.project?.carousels ?? []).map((c) => ({ id: c.id, slides: c.slides.filter((s) => known.has(s)) })).filter((c) => c.slides.length > 0);
+    const mine = entry ? carouselOf(this.ui.carousels as Carousel[], entry.key) : null;
+    this.ui.carousel = mine ? { id: mine.carousel.id, slides: mine.carousel.slides, index: mine.index } : null;
     this.ui.projects = this.library.projects.map((p) => ({ id: p.id, name: p.name, fps: p.project?.fps ?? null, size: p.project?.size ?? null }));
     const folder = this.library.folder?.project;
     this.ui.format = { fps: folder?.fps, size: folder?.size };
@@ -1504,6 +1533,7 @@ export class App {
         kind: e.kind,
         usedIn: project ? [] : (usedIn.get(e.key) ?? []),
         format: e.scene ? { size: e.scene.size, fps: e.scene.fps, seconds: e.scene.duration, pixel: e.scene.pixel !== undefined || this.showsPixels(e.scene, e.world) } : null,
+        still: e.scene !== null && e.kind === 'scene' && isStill(e.scene),
       };
     });
     // The project's own keep library order; older films follow in id order, each with its main scene first.
@@ -1536,9 +1566,11 @@ export class App {
       const span = sceneLayerSpan(layer, scene, shot);
       // A composition's clips are folder entries, keyed by their plain id; an M9 shot is "<project>/<scene>".
       const key = entry.project === null ? layer.scene! : `${entry.project}/${layer.scene}`;
-      const length = countFrames(shot);
+      // A still is held like an image (ADR 0020): its clip can run as long as you like, and its end is its out.
+      const still = isStill(shot);
+      const length = still ? Number.MAX_SAFE_INTEGER : countFrames(shot);
       // The trim's end, which the span doesn't show when the composition cuts the clip off.
-      const end = layer.out === undefined || layer.out >= shot.duration ? length : Math.min(length, timeToFrame(layer.out, scene.fps));
+      const end = still ? timeToFrame(layer.out ?? scene.duration, scene.fps) : layer.out === undefined || layer.out >= shot.duration ? length : Math.min(length, timeToFrame(layer.out, scene.fps));
       return span.to > span.from ? [{ layerId: layer.id, key, label: layer.scene!, span, end, length }] : [];
     });
   }
@@ -1606,7 +1638,7 @@ export class App {
   // ---- export (ADR 0008) ----
 
   /** Asks the studio server to export the scene on screen, or its selected range. Returns an error message, or null. */
-  private async startExport(target: ExportFormat, options: { range: boolean; sound: boolean; media?: boolean; quality?: number }): Promise<string | null> {
+  private async startExport(target: ExportFormat, options: { range: boolean; sound: boolean; media?: boolean; quality?: number; stills?: 'carousel' | 'all' }): Promise<string | null> {
     const scene = this.validScene();
     if (!scene || !this.entry) return 'There is no valid scene to export.';
     if (this.ui.exporting.running) return 'An export is already running.';
@@ -1615,8 +1647,13 @@ export class App {
     try {
       const id = await this.studio.startExport(
         image
-          ? // The frame on screen, which on a still is its only one (ADR 0020).
-            { scene: this.entry.key, target, frame: this.clock.frame, ...(target === 'jpg' && options.quality !== undefined ? { quality: options.quality } : {}) }
+          ? // The frame on screen, which on a still is its only one (ADR 0020); or every still, or this still's carousel (ADR 0022).
+            {
+              scene: this.entry.key,
+              target,
+              ...(options.stills === 'all' ? { stills: 'all' as const } : options.stills === 'carousel' && this.ui.carousel ? { stills: { carousel: this.ui.carousel.id } } : { frame: this.clock.frame }),
+              ...(target === 'jpg' && options.quality !== undefined ? { quality: options.quality } : {}),
+            }
           : {
               scene: this.entry.key,
               target,
@@ -1776,7 +1813,13 @@ export class App {
     if (!action || focusKeepsKey(e.target, e.key)) return;
     e.preventDefault();
     if (!this.clock.timeline) return;
-    // A still has no time to move through or mark (ADR 0020).
+    // A still has no time to move through or mark (ADR 0020). In a carousel, the arrows go to the slide before or after.
+    if (this.still && action.type === 'step' && this.ui.carousel) {
+      const { slides, index } = this.ui.carousel;
+      const next = findEntry(this.library, slides[Math.max(0, Math.min(slides.length - 1, index + Math.sign(action.delta)))]);
+      if (next && next.key !== this.entry?.key) this.userSelect(next);
+      return;
+    }
     if (this.still && STILL_IDLE.has(action.type)) return;
     switch (action.type) {
       case 'toggle':
